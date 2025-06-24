@@ -1,0 +1,7 @@
+# requirements.txt
+
+# 核心 Discord 库
+discord.py
+
+# discord.py 的一个重要依赖，通常会自动安装，但明确列出是好习惯
+aiohttp
