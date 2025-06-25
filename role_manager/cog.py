@@ -214,7 +214,7 @@ class RoleManagerCog(commands.Cog, name="RoleManager"):
             f"• {role.mention}" for role in sorted([r for r in guild.roles if r.id in current_worn_fashion_ids], key=lambda r: r.name)) or "无"
 
         embed = discord.Embed(title=f"👗 {user.display_name} 的幻化面板",
-                              description="在这里，你可以为你拥有的基础身份组生成“幻化”，以覆盖你的其他的基础身份组。\n只有当你拥有某个基础身份组时，对应的幻化选项才会出现在下面的菜单中。",
+                              description="在这里，你可以为你拥有的基础身份组生成“幻化”，以覆盖你的其他的基础身份组。\n只有当你拥有某个基础身份组时，对应的幻化选项才会在下面的菜单中可用。",
                               color=Color.from_rgb(255, 105, 180))
         embed.add_field(name="当前佩戴的幻化", value=worn_fashion_text, inline=False)
         timeout_minutes = config.ROLE_MANAGER_CONFIG.get("private_panel_timeout_minutes", 3)
@@ -615,22 +615,31 @@ class FashionRoleSelect(ui.Select):
             role_obj = guild.get_role(role_id)
             if role_obj: roles_to_actually_remove.append(role_obj)
 
+        await interaction.edit_original_response(content="# ✅ 正在尝试变更身份……")
+
         if roles_to_actually_add: await member.add_roles(*roles_to_actually_add, reason="自助幻化")
         if roles_to_actually_remove: await member.remove_roles(*roles_to_actually_remove, reason="自助卸下幻化")
 
         if failed_attempts:
-            await interaction.followup.send(
+            warning_message = await interaction.followup.send(
                 f"❌ 操作部分成功。\n你无法佩戴以下幻化，因为你缺少必需的基础身份组：\n- " + "\n- ".join(failed_attempts),
                 ephemeral=True
             )
+            # 等待5秒
+            await asyncio.sleep(2)
+
+            # 删除后续消息
+            await warning_message.delete()
 
         refreshed_member = await try_get_member(guild, member.id)
         if refreshed_member:
             new_embed, new_view = await self.cog._create_fashion_panel(refreshed_member)
             if interaction.response.is_done():
-                await interaction.edit_original_response(embed=new_embed, view=new_view)
+                await interaction.edit_original_response(content=None,embed=new_embed, view=new_view)
             else:
                 await interaction.followup.send(embed=new_embed, view=new_view, ephemeral=True)
+        else:
+            await interaction.edit_original_response(content=None)
 
 
 class PaginationButton(ui.Button):
@@ -683,6 +692,8 @@ class PrivateTimedRoleSelect(ui.Select):
                 dangerous_attempted_names.append(role_obj.name)
             elif role_obj:
                 roles_to_actually_add_ids.add(role_id_to_add)
+
+        await interaction.edit_original_response(content="# ✅ 正在尝试变更身份……")
         if dangerous_attempted_names:
             await interaction.followup.send(f"❌ 操作失败：尝试获取的身份组 '{', '.join(dangerous_attempted_names)}' 包含敏感权限。", ephemeral=True)
             refreshed_member = await try_get_member(guild, member.id)
@@ -714,6 +725,8 @@ class PrivateTimedRoleSelect(ui.Select):
         if refreshed_member:
             new_embed, new_view = await self.cog._create_private_manage_panel(refreshed_member)
             await interaction.edit_original_response(embed=new_embed, view=new_view)
+        else:
+            await interaction.edit_original_response(content=None)
 
 
 class SelfServiceRoleButton(ui.Button):
