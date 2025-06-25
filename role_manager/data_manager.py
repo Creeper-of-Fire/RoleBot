@@ -1,8 +1,9 @@
 # src/role_manager/data_manager.py
+import asyncio
 import json
 import os
-import asyncio
 from datetime import datetime, time, timedelta, timezone
+
 import config_data  # 引入全局配置
 
 DATA_DIR = "data"
@@ -120,11 +121,21 @@ class DataManager:
     async def daily_reset(self):
         """重置所有用户的每日计时"""
         now = datetime.now(UTC8)
-        last_reset_time = datetime.fromisoformat(self._data.get("last_reset", datetime.min.isoformat()))
+        # --- 核心改动开始 ---
+        # 步骤 1: 获取 last_reset_time，如果不存在，则使用带时区的最小值
+        aware_min_datetime = datetime.min.replace(tzinfo=UTC8)
+        last_reset_iso_str = self._data.get("last_reset", aware_min_datetime.isoformat())
+        last_reset_time = datetime.fromisoformat(last_reset_iso_str)
+
+        # 步骤 2: 强制检查和附加时区，确保万无一失
+        # 如果解析出来的时间对象没有时区信息(naive)，就给它安上 UTC8
+        if last_reset_time.tzinfo is None:
+            last_reset_time = last_reset_time.replace(tzinfo=UTC8)
+        # --- 核心改动结束 ---
 
         today_reset_time = now.replace(hour=RESET_TIME.hour, minute=RESET_TIME.minute, second=RESET_TIME.second, microsecond=0)
 
-        if now >= today_reset_time and last_reset_time < today_reset_time:
+        if now >= today_reset_time > last_reset_time:
             # 确保在重置前，所有正在计时的用户都先“归还”，将已用时间计入
             for user_id_str, user_data in self._data["users"].items():
                 if user_data["current_timed_role"] and user_data["last_claim_timestamp"]:
