@@ -269,7 +269,6 @@ class RoleManagerCog(commands.Cog, name="RoleManager"):
     @commands.Cog.listener()
     async def on_ready(self):
         self.bot.add_view(MainPanelView(self))
-        self.bot.add_view(FashionManageView(self, None))
         self.logger.info("身份组管理模块已就绪，持久化视图已注册。")
 
     @app_commands.command(name="打开身份组自助中心面板", description="发送身份组管理面板到当前频道")
@@ -379,38 +378,34 @@ class FashionManageView(ui.View):
         timeout_minutes = config_data.ROLE_MANAGER_CONFIG.get("private_panel_timeout_minutes", 3)
         super().__init__(timeout=timeout_minutes * 60)
         self.cog = cog
-        # 在 on_ready 注册时 user 为 None, __init__ 逻辑在此处停止
-        if not user: return
 
         self.user = user
         self.guild = user.guild
         self.fashion_page = 0
 
-        # 【改动】确定用户可用的幻化选项 (一对多逻辑)
+        # 【核心改动】获取所有配置的幻化，而不仅仅是用户可用的
         safe_fashion_map = self.cog.safe_fashion_map_cache.get(self.guild.id, {})
-        user_role_ids = {r.id for r in self.user.roles}
 
-        # self.available_fashion_options 是一个 (fashion_id, base_id) 的元组列表，方便后续生成带描述的选项
-        self.available_fashion_options: List[tuple[int, int]] = []
+        # self.all_fashion_options 包含所有可能的幻化 (fashion_id, base_id)
+        self.all_fashion_options: List[tuple[int, int]] = []
+        # self.fashion_to_base_map 用于在 callback 中快速校验权限 {fashion_id: base_id}
+        self.fashion_to_base_map: Dict[int, int] = {}
+
         for base_id, fashion_ids_list in safe_fashion_map.items():
-            if base_id in user_role_ids:
-                for fashion_id in fashion_ids_list:
-                    self.available_fashion_options.append((fashion_id, base_id))
+            for fashion_id in fashion_ids_list:
+                self.all_fashion_options.append((fashion_id, base_id))
+                self.fashion_to_base_map[fashion_id] = base_id
 
         # 按幻化名称排序，保证显示顺序稳定
-        self.available_fashion_options.sort(key=lambda x: self.cog.role_name_cache.get(x[0], ''))
+        self.all_fashion_options.sort(key=lambda x: self.cog.role_name_cache.get(x[0], ''))
 
-        if not self.available_fashion_options and not safe_fashion_map:
+        if not self.all_fashion_options:
             self.cog.logger.info(f"服务器 {self.guild.id} 未配置幻化系统。")
-        # elif not self.available_fashion_options and safe_fashion_map:
-        #     self.cog.logger.info(f"用户 {self.user.id} 没有基础身份组，无法使用幻化系统。")
 
         self._rebuild_view()
 
     def _rebuild_view(self):
         self.clear_items()
-        if not hasattr(self, 'user'):  # 防止在 on_ready 时调用
-            return
 
         member = self.guild.get_member(self.user.id)
         if not member:
@@ -420,14 +415,18 @@ class FashionManageView(ui.View):
             return
 
         current_worn_fashion_ids = {role.id for role in member.roles}
-        total_pages = math.ceil(len(self.available_fashion_options) / FASHION_ROLES_PER_PAGE)
+        total_pages = math.ceil(len(self.all_fashion_options) / FASHION_ROLES_PER_PAGE)
 
         start_index = self.fashion_page * FASHION_ROLES_PER_PAGE
         end_index = start_index + FASHION_ROLES_PER_PAGE
-        page_fashion_options = self.available_fashion_options[start_index:end_index]
+        page_fashion_options = self.all_fashion_options[start_index:end_index]
+
+        # 【修复】在这里获取用户身份组ID，并将其传递给 FashionRoleSelect
+        user_role_ids = {r.id for r in self.user.roles}
 
         self.add_item(FashionRoleSelect(
             self.cog, self.guild.id, page_fashion_options, current_worn_fashion_ids,
+            user_role_ids,  # 将 user_role_ids 作为参数传入
             page_num=self.fashion_page, total_pages=total_pages
         ))
 
@@ -447,6 +446,108 @@ class FashionManageView(ui.View):
             await interaction.response.edit_message(content="操作已完成或出现错误。", view=None, embed=None)
         else:
             await interaction.response.edit_message(view=self)
+
+
+# 【改动】FashionRoleSelect 升级，以支持显示所有（包括锁定的）选项
+class FashionRoleSelect(ui.Select):
+    # 【修复】__init__ 签名增加了 user_role_ids 参数
+    def __init__(self, cog: RoleManagerCog, guild_id: int, page_options_data: List[tuple[int, int]],
+                 current_selection_ids: set[int], user_role_ids: set[int], page_num: int, total_pages: int):
+        self.cog = cog
+        self.guild_id = guild_id
+
+        # 【修复】现在直接使用传入的 user_role_ids 参数，而不是 self.view.user.roles
+        options = []
+        for fashion_id, base_id in page_options_data:
+            fashion_name = cog.role_name_cache.get(fashion_id, f"未知(ID:{fashion_id})")
+            base_name = cog.role_name_cache.get(base_id, "未知基础组")
+
+            if fashion_name and base_name:
+                is_unlocked = base_id in user_role_ids
+                label_prefix = "✅ " if is_unlocked else "🔒 "
+                description_text = f"由「{base_name}」解锁" if is_unlocked else f"需要拥有「{base_name}」"
+
+                options.append(
+                    discord.SelectOption(
+                        label=f"{label_prefix}{fashion_name}",
+                        value=str(fashion_id),
+                        description=description_text,
+                        default=(fashion_id in current_selection_ids)
+                    )
+                )
+
+        placeholder = "选择你的幻化（✅=可佩戴, 🔒=未解锁）..."
+        if total_pages > 1: placeholder = f"幻化 (第 {page_num + 1}/{total_pages} 页, ✅=可佩戴, 🔒=未解锁)..."
+
+        safe_fashion_map = self.cog.safe_fashion_map_cache.get(guild_id, {})
+        if not page_options_data and not safe_fashion_map:
+            placeholder = "本服未配置幻化系统"
+        elif not page_options_data and safe_fashion_map and not any(base_id in user_role_ids for _, base_id in page_options_data):
+            placeholder = "你没有可幻化的基础身份组"
+        elif not options and page_options_data:
+            placeholder = "幻化名称加载中..."
+
+        super().__init__(
+            placeholder=placeholder, min_values=0, max_values=len(options) if options else 1,
+            options=options if options else [discord.SelectOption(label="无可用选项", value="_placeholder", default=False)],
+            custom_id="private_fashion_role_select", disabled=not options, row=0
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await safe_defer(interaction, thinking=True)
+        member, guild = interaction.user, interaction.guild
+
+        # 【重要】在 callback 中，self.view 是可用的
+        fashion_to_base_map = self.view.fashion_to_base_map
+        all_fashion_role_ids = set(fashion_to_base_map.keys())
+
+        member_role_ids = {r.id for r in member.roles}
+        old_selection_set = member_role_ids.intersection(all_fashion_role_ids)
+
+        new_selection_in_page = {int(v) for v in self.values if v != "_placeholder"}
+        options_in_this_page_ids = {int(opt.value) for opt in self.options if opt.value != "_placeholder"}
+        selections_not_in_this_page = old_selection_set - options_in_this_page_ids
+        final_new_selection_set = selections_not_in_this_page.union(new_selection_in_page)
+
+        roles_to_add_ids = final_new_selection_set - old_selection_set
+        roles_to_remove_ids = old_selection_set - final_new_selection_set
+
+        roles_to_actually_add, roles_to_actually_remove = [], []
+        failed_attempts = []
+
+        for role_id in roles_to_add_ids:
+            required_base_id = fashion_to_base_map.get(role_id)
+            if required_base_id and required_base_id in member_role_ids:
+                role_obj = guild.get_role(role_id)
+                if role_obj and not self.cog._is_role_dangerous(role_obj):
+                    roles_to_actually_add.append(role_obj)
+                else:
+                    self.cog.logger.warning(f"用户 {member.id} 尝试获取危险/不存在的幻化 {role_id}，已阻止。")
+            else:
+                role_name = self.cog.role_name_cache.get(role_id, f"ID:{role_id}")
+                base_name = self.cog.role_name_cache.get(required_base_id, f"ID:{required_base_id}")
+                failed_attempts.append(f"**{role_name}** (需要 **{base_name}**)")
+
+        for role_id in roles_to_remove_ids:
+            role_obj = guild.get_role(role_id)
+            if role_obj: roles_to_actually_remove.append(role_obj)
+
+        if roles_to_actually_add: await member.add_roles(*roles_to_actually_add, reason="自助幻化")
+        if roles_to_actually_remove: await member.remove_roles(*roles_to_actually_remove, reason="自助卸下幻化")
+
+        if failed_attempts:
+            await interaction.followup.send(
+                f"❌ 操作部分成功。\n你无法佩戴以下幻化，因为你缺少必需的基础身份组：\n- " + "\n- ".join(failed_attempts),
+                ephemeral=True
+            )
+
+        refreshed_member = await try_get_member(guild, member.id)
+        if refreshed_member:
+            new_embed, new_view = await self.cog._create_fashion_panel(refreshed_member)
+            if interaction.response.is_done():
+                await interaction.edit_original_response(embed=new_embed, view=new_view)
+            else:
+                await interaction.followup.send(embed=new_embed, view=new_view, ephemeral=True)
 
 
 class PaginationButton(ui.Button):
@@ -531,82 +632,6 @@ class PrivateTimedRoleSelect(ui.Select):
             new_embed, new_view = await self.cog._create_private_manage_panel(refreshed_member)
             await interaction.edit_original_response(embed=new_embed, view=new_view)
 
-
-# 【改动】FashionRoleSelect 升级，以支持带描述的选项
-class FashionRoleSelect(ui.Select):
-    def __init__(self, cog: RoleManagerCog, guild_id: int, page_options_data: List[tuple[int, int]], current_selection_ids: set[int], page_num: int,
-                 total_pages: int):
-        self.cog = cog
-        self.guild_id = guild_id
-
-        # 使用 page_options_data 生成带描述的 SelectOption
-        options = []
-        for fashion_id, base_id in page_options_data:
-            fashion_name = cog.role_name_cache.get(fashion_id, f"未知(ID:{fashion_id})")
-            base_name = cog.role_name_cache.get(base_id, "未知基础组")
-            if fashion_name and base_name:
-                options.append(
-                    discord.SelectOption(
-                        label=fashion_name,
-                        value=str(fashion_id),
-                        description=f"由「{base_name}」解锁",
-                        default=(fashion_id in current_selection_ids)
-                    )
-                )
-
-        placeholder = "选择你的幻化..."
-        if total_pages > 1: placeholder = f"幻化选择 (第 {page_num + 1}/{total_pages} 页)..."
-
-        safe_fashion_map = self.cog.safe_fashion_map_cache.get(guild_id, {})
-        if not page_options_data and not safe_fashion_map:
-            placeholder = "本服未配置幻化系统"
-        elif not page_options_data and safe_fashion_map:
-            placeholder = "你没有可幻化的基础身份组"
-        elif not options and page_options_data:
-            placeholder = "幻化名称加载中..."
-
-        super().__init__(
-            placeholder=placeholder, min_values=0, max_values=len(options) if options else 1,
-            options=options if options else [discord.SelectOption(label="无可用选项", value="_placeholder", default=False)],
-            custom_id="private_fashion_role_select", disabled=not options, row=0
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        await safe_defer(interaction, thinking=True)
-        member, guild = interaction.user, interaction.guild
-
-        safe_fashion_map = self.cog.safe_fashion_map_cache.get(guild.id, {})
-        all_fashion_role_ids = {fid for fid_list in safe_fashion_map.values() for fid in fid_list}
-
-        member_role_ids = {r.id for r in member.roles}
-        old_selection_set = member_role_ids.intersection(all_fashion_role_ids)
-
-        new_selection_in_page = {int(v) for v in self.values if v != "_placeholder"}
-        options_in_this_page_ids = {int(opt.value) for opt in self.options if opt.value != "_placeholder"}
-        selections_not_in_this_page = old_selection_set - options_in_this_page_ids
-        final_new_selection_set = selections_not_in_this_page.union(new_selection_in_page)
-
-        roles_to_add_ids = final_new_selection_set - old_selection_set
-        roles_to_remove_ids = old_selection_set - final_new_selection_set
-
-        roles_to_actually_add, roles_to_actually_remove = [], []
-        for role_id in roles_to_add_ids:
-            role_obj = guild.get_role(role_id)
-            if role_obj and not self.cog._is_role_dangerous(role_obj):
-                roles_to_actually_add.append(role_obj)
-            else:
-                self.cog.logger.warning(f"用户 {member.id} 尝试获取危险/不存在的幻化 {role_id}，已阻止。")
-        for role_id in roles_to_remove_ids:
-            role_obj = guild.get_role(role_id)
-            if role_obj: roles_to_actually_remove.append(role_obj)
-
-        if roles_to_actually_add: await member.add_roles(*roles_to_actually_add, reason="自助幻化幻化")
-        if roles_to_actually_remove: await member.remove_roles(*roles_to_actually_remove, reason="自助卸下幻化")
-
-        refreshed_member = await try_get_member(guild, member.id)
-        if refreshed_member:
-            new_embed, new_view = await self.cog._create_fashion_panel(refreshed_member)
-            await interaction.edit_original_response(embed=new_embed, view=new_view)
 
 class SelfServiceRoleButton(ui.Button):
     # (此类无改动)
