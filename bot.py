@@ -8,6 +8,7 @@ from discord.ext import commands
 import config
 # 导入我们的配置和模块
 import config_data
+import env_token
 from role_manager.cog import RoleManagerCog
 
 # ===================================================================
@@ -125,9 +126,9 @@ async def main():
     global cog_manager
     cog_manager = CogManager(bot, config_data)
     try:
-        await bot.start(config_data.TOKEN)
+        await bot.start(env_token.TOKEN)
     except discord.LoginFailure:
-        logger.error("机器人 Token 无效，请检查 config_data.py 中的 TOKEN 设置。")
+        logger.error("机器人 Token 无效，请检查 env_token.py 中的 TOKEN 设置。")
     except Exception as e:
         logger.critical(f"机器人运行时发生致命错误: {e}", exc_info=True)
 
