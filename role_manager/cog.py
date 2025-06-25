@@ -1,6 +1,7 @@
 # src/role_manager/cog.py
 from __future__ import annotations
 
+import asyncio
 import math
 from typing import TYPE_CHECKING, List, Dict
 
@@ -183,11 +184,11 @@ class RoleManagerCog(commands.Cog, name="RoleManager"):
         embed = discord.Embed(title=f"⚙️ {user.display_name} 在「{guild.name}」的身份组管理面板",
                               description="在这里管理你的身份组。你的选择会自动保存并刷新此面板。", color=Color.green())
         embed.add_field(name="⏱️ 本服限时组时间",
-                        value=f"已用: {format_duration_hms(used_seconds)}\n剩余: {format_duration_hms(remaining_seconds)}\n每天 UTC+8  {config_data.ROLE_MANAGER_CONFIG.get('reset_hour_utc8', 16)} 点重置。",
+                        value=f"已用: {format_duration_hms(used_seconds)}\n剩余: {format_duration_hms(remaining_seconds)}\n每天 UTC+8  {config.ROLE_MANAGER_CONFIG.get('reset_hour_utc8', 16)} 点重置。",
                         inline=False)
         embed.add_field(name="🎨 当前限时高亮组", value=timed_roles_text, inline=True)
         embed.add_field(name="🔧 当前自助身份组", value=self_service_roles_text, inline=True)
-        timeout_minutes = config_data.ROLE_MANAGER_CONFIG.get("private_panel_timeout_minutes", 3)
+        timeout_minutes = config.ROLE_MANAGER_CONFIG.get("private_panel_timeout_minutes", 3)
         embed.set_footer(text=f"此面板将在{timeout_minutes}分钟后失效。")
         view = UserManageView(self, member)
         return embed, view
@@ -216,7 +217,7 @@ class RoleManagerCog(commands.Cog, name="RoleManager"):
                               description="在这里，你可以为你拥有的基础身份组生成“幻化”，以覆盖你的其他的基础身份组。\n只有当你拥有某个基础身份组时，对应的幻化选项才会出现在下面的菜单中。",
                               color=Color.from_rgb(255, 105, 180))
         embed.add_field(name="当前佩戴的幻化", value=worn_fashion_text, inline=False)
-        timeout_minutes = config_data.ROLE_MANAGER_CONFIG.get("private_panel_timeout_minutes", 3)
+        timeout_minutes = config.ROLE_MANAGER_CONFIG.get("private_panel_timeout_minutes", 3)
         embed.set_footer(text=f"此面板将在{timeout_minutes}分钟后失效。")
         view = FashionManageView(self, member)
         return embed, view
@@ -225,33 +226,114 @@ class RoleManagerCog(commands.Cog, name="RoleManager"):
     # ...
     @tasks.loop(minutes=1)
     async def daily_reset_task(self):
-        if await self.data_manager.daily_reset(): self.logger.info(f"每日计时器已在 UTC+8 {config_data.ROLE_MANAGER_CONFIG.get('reset_hour_utc8', 16)} 点重置。")
+        if await self.data_manager.daily_reset(): self.logger.info(f"每日计时器已在 UTC+8 {config.ROLE_MANAGER_CONFIG.get('reset_hour_utc8', 16)} 点重置。")
 
     @tasks.loop(minutes=1)
     async def check_expired_roles_task(self):
         self.logger.debug("正在检查过期限时身份组...")
-        for user_id, guild_id, role_ids in self.data_manager.get_users_with_active_timed_role():
+        # 获取所有活跃用户，这里不涉及API
+        users_to_check = self.data_manager.get_users_with_active_timed_role()
+
+        # 引入一个计数器和更长的延迟间隔
+        processed_count = 0
+        for user_id, guild_id, role_ids in users_to_check:
+            # 这里的 get_remaining_seconds 内部可能调用 _get_guild_user_data，不涉及API
             if self.data_manager.get_remaining_seconds(user_id, guild_id) <= 0:
                 self.logger.info(f"用户 {user_id} 在服务器 {guild_id} 的限时身份组已过期，正在移除...")
                 guild, member = self.bot.get_guild(guild_id), None
-                if guild: member = await try_get_member(guild, user_id)
+                if guild:
+                    # try_get_member 可能会触发 API
+                    member = await try_get_member(guild, user_id)
+
                 if not guild or not member:
+                    # 无法获取成员或服务器，强制清除本地状态
                     await self.data_manager.force_return_timed_roles(user_id, guild_id)
                     continue
+
                 roles_to_remove = [role for role in guild.roles if role.id in role_ids and role in member.roles]
                 if roles_to_remove:
                     try:
+                        # remove_roles 会触发 API
                         await member.remove_roles(*roles_to_remove, reason="限时身份组过期自动移除")
                         self.logger.info(f"成功为用户 {user_id} 移除了 {len(roles_to_remove)} 个身份组。")
                         await self.data_manager.force_return_timed_roles(user_id, guild_id)
-                        try:
-                            await member.send(f"你在服务器 **{guild.name}** 的限时身份组因使用时长已耗尽，已自动移除。")
-                        except discord.Forbidden:
-                            pass
+                        # try:
+                        #     # member.send 也会触发 API
+                        #     await member.send(f"你在服务器 **{guild.name}** 的限时身份组因使用时长已耗尽，已自动移除。")
+                        # except discord.Forbidden:
+                        #     pass
                     except Exception as e:
                         self.logger.error(f"自动移除用户 {user_id} 的身份组失败: {e}")
                 else:
                     await self.data_manager.force_return_timed_roles(user_id, guild_id)
+
+                # 【新增】处理完一个用户后暂停，根据实际情况调整延迟
+                # 例如：每5个用户延迟1秒，或者每个用户延迟0.2秒
+                processed_count += 1
+                if processed_count % 5 == 0:  # 每处理5个用户，暂停一小会儿
+                    await asyncio.sleep(1)  # 暂停1秒
+                elif processed_count % 1 == 0:  # 如果用户少，可以每个用户都暂停短时间
+                    await asyncio.sleep(0.1)  # 暂停0.1秒
+
+    # 【新增任务】每日检查幻化身份组的合法性
+    @tasks.loop(hours=24)  # 每天运行一次，这个频率是合理的
+    async def check_fashion_role_validity_task(self):
+        if not config.CHECK_FASHION_ROLE_VALIDITY:
+            return
+
+        self.logger.info("开始检查幻化身份组合法性...")
+
+        processed_count = 0
+        for user_id_str, guilds_data in self.data_manager._data["users"].items():
+            user_id = int(user_id_str)
+
+            for guild_id_str, user_guild_data in guilds_data.items():
+                guild_id = int(guild_id_str)
+                guild = self.bot.get_guild(guild_id)
+                if not guild:
+                    self.logger.warning(f"无法找到服务器 {guild_id}，跳过其幻化合法性检查。")
+                    continue
+
+                # try_get_member 可能会触发 API
+                member = await try_get_member(guild, user_id)
+                if not member:
+                    continue  # 用户不在服务器或无法获取，无需检查其幻化合法性
+
+                # 获取该服务器所有安全的幻化映射
+                safe_fashion_map = self.safe_fashion_map_cache.get(guild_id, {})
+                # 建立一个 {fashion_id: base_id} 的反向查找表
+                fashion_to_base_map = {fid: bid for bid, fids in safe_fashion_map.items() for fid in fids}
+
+                roles_to_remove = []
+                for role in member.roles:
+                    if role.id in fashion_to_base_map:  # 如果这是一个幻化身份组
+                        base_role_id = fashion_to_base_map[role.id]
+                        # 检查用户是否持有对应的基础身份组
+                        if not any(r.id == base_role_id for r in member.roles):
+                            roles_to_remove.append(role)
+                            self.logger.info(
+                                f"用户 {user_id} 在服务器 {guild_id} 失去了幻化组 {role.name} (ID:{role.id}) 的基础组 {self.role_name_cache.get(base_role_id, f'ID:{base_role_id}')}，将移除幻化。")
+
+                if roles_to_remove:
+                    try:
+                        await member.remove_roles(*roles_to_remove, reason="幻化基础身份组已丢失")
+                        self.logger.info(f"成功为用户 {user_id} 移除了 {len(roles_to_remove)} 个不合格的幻化身份组。")
+                        try:
+                            # 尝试私信用户
+                            removed_names = ", ".join([r.name for r in roles_to_remove])
+                            await member.send(f"你在服务器 **{guild.name}** 的幻化身份组 `{removed_names}` 已被移除，因为你不再拥有其对应的基础身份组。")
+                        except discord.Forbidden:
+                            pass  # 无法私信
+                    except Exception as e:
+                        self.logger.error(f"移除用户 {user_id} 的幻化身份组失败: {e}")
+
+                # 【新增】在处理每个用户后都进行延迟
+                processed_count += 1
+                if processed_count % 10 == 0:  # 例如，每处理10个用户，暂停3秒
+                    await asyncio.sleep(3)
+                else:  # 或者每个用户都暂停短暂时间
+                    await asyncio.sleep(0.2)  # 暂停0.2秒
+        self.logger.info("幻化身份组合法性检查完成。")
 
     @tasks.loop(hours=1)
     async def _update_role_cache_task(self):
@@ -262,6 +344,7 @@ class RoleManagerCog(commands.Cog, name="RoleManager"):
     @daily_reset_task.before_loop
     @check_expired_roles_task.before_loop
     @_update_role_cache_task.before_loop
+    @check_fashion_role_validity_task.before_loop
     async def before_all_tasks(self):
         await self.bot.wait_until_ready()
         await self._filter_and_cache_safe_roles()
@@ -291,7 +374,7 @@ class RoleManagerCog(commands.Cog, name="RoleManager"):
 # ...
 class UserManageView(ui.View):
     def __init__(self, cog: RoleManagerCog, user: discord.Member):
-        timeout_minutes = config_data.ROLE_MANAGER_CONFIG.get("private_panel_timeout_minutes", 3)
+        timeout_minutes = config.ROLE_MANAGER_CONFIG.get("private_panel_timeout_minutes", 3)
         super().__init__(timeout=timeout_minutes * 60)
         self.cog, self.user, self.guild = cog, user, user.guild
         self.timed_role_page, self.self_service_page = 0, 0
@@ -375,7 +458,7 @@ class UserManageView(ui.View):
 # 【改动】FashionManageView 升级
 class FashionManageView(ui.View):
     def __init__(self, cog: RoleManagerCog, user: discord.Member | None):
-        timeout_minutes = config_data.ROLE_MANAGER_CONFIG.get("private_panel_timeout_minutes", 3)
+        timeout_minutes = config.ROLE_MANAGER_CONFIG.get("private_panel_timeout_minutes", 3)
         super().__init__(timeout=timeout_minutes * 60)
         self.cog = cog
 
@@ -494,7 +577,7 @@ class FashionRoleSelect(ui.Select):
         )
 
     async def callback(self, interaction: discord.Interaction):
-        await safe_defer(interaction, thinking=True)
+        await safe_defer(interaction)
         member, guild = interaction.user, interaction.guild
 
         # 【重要】在 callback 中，self.view 是可用的
@@ -642,7 +725,7 @@ class SelfServiceRoleButton(ui.Button):
                          custom_id=f"toggle_self_service_role:{role.id}", row=row)
 
     async def callback(self, interaction: discord.Interaction):
-        await safe_defer(interaction, thinking=True)
+        await safe_defer(interaction)
         member = interaction.user
         if not (self.role in member.roles):
             if self.cog._is_role_dangerous(self.role):
@@ -727,7 +810,7 @@ class QueryTimeButton(ui.Button):
             embed.add_field(name="当前持有", value=f"你当前正在使用 {roles_text}，计时进行中。", inline=False)
         else:
             embed.add_field(name="当前持有", value="你当前未持有任何限时身份组。", inline=False)
-        reset_hour = config_data.ROLE_MANAGER_CONFIG.get("reset_hour_utc8", 16)
+        reset_hour = config.ROLE_MANAGER_CONFIG.get("reset_hour_utc8", 16)
         embed.set_footer(text=f"每日UTC+8 {reset_hour}点重置时长。")
         await interaction.followup.send(embed=embed, ephemeral=True)
 

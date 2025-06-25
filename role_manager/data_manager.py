@@ -1,16 +1,17 @@
 # src/role_manager/data_manager.py
+import asyncio
 import json
 import os
-import asyncio
 from datetime import datetime, time, timedelta, timezone
-import config_data
+
+import config
 
 DATA_DIR = "data"
 DATA_FILE = os.path.join(DATA_DIR, "user_data.json")
 UTC8 = timezone(timedelta(hours=8))
 
-RESET_HOUR = config_data.ROLE_MANAGER_CONFIG.get("reset_hour_utc8", 16)
-DAILY_LIMIT_HOURS = config_data.ROLE_MANAGER_CONFIG.get("daily_limit_hours", 1)
+RESET_HOUR = config.ROLE_MANAGER_CONFIG.get("reset_hour_utc8", 16)
+DAILY_LIMIT_HOURS = config.ROLE_MANAGER_CONFIG.get("daily_limit_hours", 1)
 RESET_TIME = time(RESET_HOUR, 0, 0, tzinfo=UTC8)
 DAILY_LIMIT_SECONDS = int(DAILY_LIMIT_HOURS * 3600)
 
