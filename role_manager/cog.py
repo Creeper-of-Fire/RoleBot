@@ -14,7 +14,7 @@ import config_data
 from .data_manager import DataManager, DAILY_LIMIT_SECONDS
 
 if TYPE_CHECKING:
-    from ..bot import RoleBot
+    from ..main import RoleBot
 
 # 分页常量
 TIMED_ROLES_PER_PAGE = 25
@@ -356,7 +356,7 @@ class RoleManagerCog(commands.Cog, name="RoleManager"):
 
     @app_commands.command(name="打开身份组自助中心面板", description="发送身份组管理面板到当前频道")
     @app_commands.guilds(*[discord.Object(id=gid) for gid in config.GUILD_IDS or config_data.FASHION_CONFIG.keys()])
-    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.default_permissions(manage_roles=True)
     async def send_panel(self, interaction: discord.Interaction):
         all_configured_guilds = set(config.GUILD_CONFIGS.keys()) | set(config_data.FASHION_CONFIG.keys())
         if interaction.guild_id not in all_configured_guilds:

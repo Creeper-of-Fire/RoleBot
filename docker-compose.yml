@@ -1,4 +1,4 @@
-version: '3.8' # Docker Compose 文件版本
+#version: '3.8' # Docker Compose 文件版本
 
 services:
   rolebot: # 定义一个名为 rolebot 的服务

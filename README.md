@@ -126,7 +126,7 @@ FASHION_CONFIG = {
 一切准备就绪后，运行主程序。
 
 ```bash
-python bot.py
+python main.py
 ```
 
 如果一切顺利，你会在控制台看到机器人成功登录的日志。
