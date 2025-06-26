@@ -1,0 +1,7 @@
+.git
+.venv
+venv
+__pycache__
+*.pyc
+*.log
+data/user_data.json  # 避免将本地的 user_data.json 复制到镜像中，而是使用卷进行持久化

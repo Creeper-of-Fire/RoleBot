@@ -1,0 +1,26 @@
+version: '3.8' # Docker Compose 文件版本
+
+services:
+  rolebot: # 定义一个名为 rolebot 的服务
+    build: . # Dockerfile 位于当前目录
+    container_name: rolebot # 指定容器的名称
+    restart: unless-stopped # 容器退出时自动重启，除非手动停止
+    volumes:
+      # 将宿主机上的一个 Docker 命名卷 (rolebot_data) 挂载到容器内的 /app/data 目录
+      # 这样，user_data.json 文件将存储在宿主机上，即使容器被删除，数据也不会丢失
+      [
+        rolebot_data:/app/data
+      ]
+    environment:
+      # 通过环境变量将敏感信息注入到容器中
+      # 这些变量将覆盖 config_data.py 中 os.getenv 的默认值
+      # 你需要在 docker-compose.yml 同级目录下创建一个 .env 文件来设置这些变量
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN} # 从 .env 文件读取 DISCORD_BOT_TOKEN
+      - DISCORD_BOT_PROXY=${DISCORD_BOT_PROXY:-} # 从 .env 文件读取 DISCORD_BOT_PROXY，如果没有则为空字符串
+    logging: # 可选：限制日志输出大小
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  rolebot_data: # 定义上面使用的命名卷，Docker 会自动创建和管理它

@@ -8,7 +8,6 @@ from discord.ext import commands
 import config
 # 导入我们的配置和模块
 import config_data
-import env_token
 from role_manager.cog import RoleManagerCog
 
 # ===================================================================
@@ -117,18 +116,18 @@ class CogManager:
 async def main():
     """主异步函数，负责初始化和启动机器人"""
     # 根据配置决定是否使用代理
-    if config_data.PROXY:
-        logger.info(f"检测到代理配置，将通过 {config_data.PROXY} 初始化机器人")
-        bot = RoleBot(proxy=config_data.PROXY)
+    if config.PROXY:
+        logger.info(f"检测到代理配置，将通过 {config.PROXY} 初始化机器人")
+        bot = RoleBot(proxy=config.PROXY)
     else:
         logger.info("未配置代理，直接初始化机器人")
         bot = RoleBot()
     global cog_manager
     cog_manager = CogManager(bot, config_data)
     try:
-        await bot.start(env_token.TOKEN)
+        await bot.start(config.TOKEN)
     except discord.LoginFailure:
-        logger.error("机器人 Token 无效，请检查 env_token.py 中的 TOKEN 设置。")
+        logger.error("机器人 Token 无效，请检查环境中的 TOKEN 设置。")
     except Exception as e:
         logger.critical(f"机器人运行时发生致命错误: {e}", exc_info=True)
 

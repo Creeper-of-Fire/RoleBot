@@ -3,4 +3,5 @@ config_data.py
 /data/user_data.json
 __pycache__/*
 */__pycache__/*
-env_token.py
+.env
+connect_rolebot.ps1
