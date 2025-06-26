@@ -1,6 +1,8 @@
 # 使用官方Python运行时作为基础镜像
 FROM python:3.12-slim-bookworm
 
+ENV TZ=Asia/Shanghai
+
 # 设置工作目录
 WORKDIR /app
 
@@ -18,6 +20,8 @@ COPY . .
 # 暴露你的应用可能使用的端口 (如果你的Bot有Web界面或API)
 # 对于Discord Bot，通常不需要暴露端口，除非你有额外的Web服务器
 # EXPOSE 8000
+
+ENV PYTHONPATH=/app
 
 # 定义容器启动时执行的命令
 # 假设你的Bot入口文件是 main.py
