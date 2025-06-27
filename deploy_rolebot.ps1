@@ -53,7 +53,7 @@ if (-not (Test-Path $sshKeyPath)) {
 }
 
 # 增加了 deploy_remote.sh 到需要复制的文件列表
-$localFilesToCopy = @(".\.env", ".\config_data.py", ".\deploy_remote.sh")
+$localFilesToCopy = @(".\.env", ".\config.py", ".\config_data.py", ".\deploy_remote.sh")
 foreach ($file in $localFilesToCopy) {
     if (-not (Test-Path $file)) {
         Write-Host "❌ 错误: 必需的配置文件 '$file' 不存在。" -ForegroundColor Red

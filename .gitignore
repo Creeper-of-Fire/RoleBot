@@ -1,4 +1,5 @@
 config_data.py
+config.py
 .idea/*
 /data/user_data.json
 __pycache__/*
