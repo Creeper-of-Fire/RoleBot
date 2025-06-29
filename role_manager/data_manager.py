@@ -121,45 +121,46 @@ class DataManager:
 
     async def daily_reset(self):
         """重置所有服务器中所有用户的每日计时。"""
-        now = datetime.now(UTC8)
-        last_reset_iso_str = self._data.get("last_reset", datetime.min.isoformat())
-        last_reset_time = datetime.fromisoformat(last_reset_iso_str)
-        if last_reset_time.tzinfo is None:
-            last_reset_time = last_reset_time.replace(tzinfo=UTC8)
+        async with self._lock:  # 添加锁机制防止并发问题
+            now = datetime.now(UTC8)
+            last_reset_iso_str = self._data.get("last_reset", datetime.min.isoformat())
+            last_reset_time = datetime.fromisoformat(last_reset_iso_str)
+            if last_reset_time.tzinfo is None:
+                last_reset_time = last_reset_time.replace(tzinfo=UTC8)
 
-        today_reset_time = now.replace(hour=RESET_TIME.hour, minute=RESET_TIME.minute, second=RESET_TIME.second, microsecond=0)
+            today_reset_time = now.replace(hour=RESET_TIME.hour, minute=RESET_TIME.minute, second=RESET_TIME.second, microsecond=0)
 
-        if now >= today_reset_time > last_reset_time:
-            for user_id_str, guilds_data in self._data["users"].items():
-                for guild_id_str, user_data in guilds_data.items():
-                    # 结算仍在计时的人
-                    if user_data["current_timed_roles"] and user_data["last_claim_timestamp"]:
-                        last_claim_time = datetime.fromisoformat(user_data["last_claim_timestamp"])
-                        used_this_session = (now - last_claim_time).total_seconds()
-                        user_data["used_seconds"] += used_this_session
-                        user_data["current_timed_roles"] = []
-                        user_data["last_claim_timestamp"] = None
-                    # 重置时长
-                    user_data["used_seconds"] = 0
+            if now >= today_reset_time > last_reset_time:
+                for user_id_str, guilds_data in self._data["users"].items():
+                    for guild_id_str, user_data in guilds_data.items():
+                        # 结算仍在计时的人
+                        if user_data["current_timed_roles"] and user_data["last_claim_timestamp"]:
+                            last_claim_time = datetime.fromisoformat(user_data["last_claim_timestamp"])
+                            used_this_session = (now - last_claim_time).total_seconds()
+                            user_data["used_seconds"] += used_this_session
+                            user_data["current_timed_roles"] = []
+                            user_data["last_claim_timestamp"] = None
+                        # 重置时长
+                        user_data["used_seconds"] = 0
 
-            # 清理不活跃的用户数据
-            users_to_delete = []
-            for user_id_str, guilds_data in self._data["users"].items():
-                all_guilds_inactive = True
-                for guild_id_str, user_data in guilds_data.items():
-                    if user_data["used_seconds"] != 0 or user_data["current_timed_roles"] or user_data["last_claim_timestamp"] is not None:
-                        all_guilds_inactive = False
-                        break
-                if all_guilds_inactive:
-                    users_to_delete.append(user_id_str)
+                # 清理不活跃的用户数据
+                users_to_delete = []
+                for user_id_str, guilds_data in self._data["users"].items():
+                    all_guilds_inactive = True
+                    for guild_id_str, user_data in guilds_data.items():
+                        if user_data["used_seconds"] != 0 or user_data["current_timed_roles"] or user_data["last_claim_timestamp"] is not None:
+                            all_guilds_inactive = False
+                            break
+                    if all_guilds_inactive:
+                        users_to_delete.append(user_id_str)
 
-            for user_id_str in users_to_delete:
-                del self._data["users"][user_id_str]
+                for user_id_str in users_to_delete:
+                    del self._data["users"][user_id_str]
 
-            self._data["last_reset"] = now.isoformat()
-            await self.save_data(force=True)
-            return True
-        return False
+                self._data["last_reset"] = now.isoformat()
+                await self.save_data(force=True)
+                return True
+            return False
 
     # 【核心改动】返回的结构也变了
     def get_users_with_active_timed_role(self) -> list[tuple[int, int, list[int]]]:
