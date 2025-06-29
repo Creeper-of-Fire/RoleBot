@@ -142,6 +142,20 @@ class DataManager:
                     # 重置时长
                     user_data["used_seconds"] = 0
 
+            # 清理不活跃的用户数据
+            users_to_delete = []
+            for user_id_str, guilds_data in self._data["users"].items():
+                all_guilds_inactive = True
+                for guild_id_str, user_data in guilds_data.items():
+                    if user_data["used_seconds"] != 0 or user_data["current_timed_roles"] or user_data["last_claim_timestamp"] is not None:
+                        all_guilds_inactive = False
+                        break
+                if all_guilds_inactive:
+                    users_to_delete.append(user_id_str)
+
+            for user_id_str in users_to_delete:
+                del self._data["users"][user_id_str]
+
             self._data["last_reset"] = now.isoformat()
             await self.save_data(force=True)
             return True
