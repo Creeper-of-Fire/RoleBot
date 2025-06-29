@@ -169,7 +169,9 @@ class RoleManagerCog(commands.Cog, name="RoleManager"):
                         # remove_roles 会触发 API
                         await member.remove_roles(*roles_to_remove, reason="限时身份组过期自动移除")
                         self.logger.info(f"成功为用户 {user_id} 移除了 {len(roles_to_remove)} 个身份组。")
-                        await self.data_manager.force_return_timed_roles(user_id, guild_id)
+                        # 调用归还函数来结算使用时长
+                        used_seconds_this_session = await self.data_manager.return_timed_roles(user_id, guild_id)
+                        self.logger.info(f"用户 {user_id} 在服务器 {guild_id} 的本次会话结算了 {used_seconds_this_session:.2f} 秒。")
                         # try:
                         #     # member.send 也会触发 API
                         #     await member.send(f"你在服务器 **{guild.name}** 的限时身份组因使用时长已耗尽，已自动移除。")

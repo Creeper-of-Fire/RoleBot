@@ -19,6 +19,8 @@ class DataManager:
     def __init__(self):
         self._data = {}
         self._lock = asyncio.Lock()
+        self._dirty = False  # 标记数据是否被修改
+        self._save_task = None  # 后台保存任务
         os.makedirs(DATA_DIR, exist_ok=True)
         self.load_data()
 
@@ -29,10 +31,31 @@ class DataManager:
         except (FileNotFoundError, json.JSONDecodeError):
             self._data = {"users": {}, "last_reset": datetime.min.isoformat()}
 
-    async def save_data(self):
-        async with self._lock:
-            with open(DATA_FILE, 'w', encoding='utf-8') as f:
-                json.dump(self._data, f, indent=4)
+    async def save_data(self, force=False):
+        """保存数据，支持防抖和增量更新"""
+        self._dirty = True
+        
+        # 如果强制保存或没有正在进行的保存任务
+        if force or self._save_task is None:
+            if self._save_task:
+                self._save_task.cancel()
+            
+            # 延迟1秒保存，实现防抖
+            self._save_task = asyncio.create_task(self._delayed_save())
+    
+    async def _delayed_save(self):
+        """延迟保存实现防抖"""
+        try:
+            await asyncio.sleep(1)
+            async with self._lock:
+                if self._dirty:
+                    with open(DATA_FILE, 'w', encoding='utf-8') as f:
+                        json.dump(self._data, f, indent=4)
+                    self._dirty = False
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self._save_task = None
 
     # 【核心改动】数据结构变更为 per-guild
     def _get_guild_user_data(self, user_id: int, guild_id: int):
@@ -68,7 +91,7 @@ class DataManager:
 
         user_data["current_timed_roles"] = role_ids
 
-        await self.save_data()
+        await self.save_data(force=False)
 
     # 【核心改动】方法现在需要 guild_id
     async def return_timed_roles(self, user_id: int, guild_id: int) -> float:
@@ -85,7 +108,7 @@ class DataManager:
         user_data["current_timed_roles"] = []
         user_data["last_claim_timestamp"] = None
 
-        await self.save_data()
+        await self.save_data(force=False)
         return used_this_session
 
     async def force_return_timed_roles(self, user_id: int, guild_id: int):
@@ -94,7 +117,7 @@ class DataManager:
         if user_data["current_timed_roles"]:
             user_data["current_timed_roles"] = []
             user_data["last_claim_timestamp"] = None
-            await self.save_data()
+            await self.save_data(force=False)
 
     async def daily_reset(self):
         """重置所有服务器中所有用户的每日计时。"""
@@ -120,7 +143,7 @@ class DataManager:
                     user_data["used_seconds"] = 0
 
             self._data["last_reset"] = now.isoformat()
-            await self.save_data()
+            await self.save_data(force=True)
             return True
         return False
 
