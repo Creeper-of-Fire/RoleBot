@@ -2,18 +2,17 @@
 import asyncio
 import json
 import os
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 import config
+from .helpers import timer
 
 DATA_DIR = "data"
 DATA_FILE = os.path.join(DATA_DIR, "user_data.json")
 UTC8 = timezone(timedelta(hours=8))
 
 RESET_HOUR = config.ROLE_MANAGER_CONFIG.get("reset_hour_utc8", 16)
-DAILY_LIMIT_HOURS = config.ROLE_MANAGER_CONFIG.get("daily_limit_hours", 1)
 RESET_TIME = time(RESET_HOUR, 0, 0, tzinfo=UTC8)
-DAILY_LIMIT_SECONDS = int(DAILY_LIMIT_HOURS * 3600)
 
 
 class DataManager:
@@ -55,14 +54,7 @@ class DataManager:
     def get_remaining_seconds(self, user_id: int, guild_id: int) -> int:
         """获取用户在指定服务器今天剩余的可用时长。"""
         user_data = self._get_guild_user_data(user_id, guild_id)
-
-        if user_data["current_timed_roles"] and user_data["last_claim_timestamp"]:
-            last_claim_time = datetime.fromisoformat(user_data["last_claim_timestamp"])
-            used_this_session = (datetime.now(UTC8) - last_claim_time).total_seconds()
-            total_used = user_data["used_seconds"] + used_this_session
-            return max(0, int(DAILY_LIMIT_SECONDS - total_used))
-
-        return max(0, int(DAILY_LIMIT_SECONDS - user_data["used_seconds"]))
+        return timer.get_remaining_seconds(user_data)
 
     # 【核心改动】方法现在需要 guild_id，并且接受 role_ids 列表
     async def claim_timed_roles(self, user_id: int, role_ids: list[int], guild_id: int):

@@ -2,8 +2,7 @@ config_data.py
 config.py
 .idea/*
 /data/user_data.json
-__pycache__/*
-*/__pycache__/*
+__pycache__/
 .env
 connect_rolebot.ps1
 deploy.env
