@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from typing import List, Any, TYPE_CHECKING
 
 import discord
-from discord import ui
+from discord import ui, Color
 
 if TYPE_CHECKING:
     from role_manager.cog import RoleManagerCog

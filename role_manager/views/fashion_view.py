@@ -82,7 +82,7 @@ class FashionRoleSelect(ui.Select):
             base_name = cog.role_name_cache.get(base_id, "未知基础组")
 
             if fashion_name and base_name:
-                is_unlocked = base_id in user_role_ids
+                is_unlocked = base_id in all_role_ids
                 label_prefix = "✅ " if is_unlocked else "🔒 "
                 description_text = f"由「{base_name}」解锁" if is_unlocked else f"需要拥有「{base_name}」"
 
@@ -101,7 +101,7 @@ class FashionRoleSelect(ui.Select):
         safe_fashion_map = self.cog.safe_fashion_map_cache.get(guild_id, {})
         if not page_options_data and not safe_fashion_map:
             placeholder = "本服未配置幻化系统"
-        elif not page_options_data and safe_fashion_map and not any(base_id in user_role_ids for _, base_id in page_options_data):
+        elif not page_options_data and safe_fashion_map and not any(base_id in all_role_ids for _, base_id in page_options_data):
             placeholder = "你没有可幻化的基础身份组"
         elif not options and page_options_data:
             placeholder = "幻化名称加载中..."
