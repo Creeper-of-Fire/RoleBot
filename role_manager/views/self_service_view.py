@@ -31,18 +31,14 @@ class SelfServiceManageView(PaginatedView):
 
     async def _rebuild_view(self):
         self.clear_items()
-        member = self.guild.get_member(self.user.id)
-        if not member:
-            self.cog.logger.warning(f"无法在 _rebuild_view 中找到用户 {self.user.id}。")
-            self.embed = discord.Embed(title="错误", description="无法加载您的信息，您可能已离开服务器。", color=Color.red())
-            self.add_item(ui.Button(label="错误", style=discord.ButtonStyle.danger, disabled=True))
-            self.stop()
+        member = self._try_get_safe_member()
+        if member is None:
             return
 
-        current_self_service_ids = {role.id for role in member.roles}
+        all_role_ids = {role.id for role in member.roles}
 
-        start_index, end_index = self.page * self.items_per_page, (self.page + 1) * self.items_per_page
-        page_ss_role_ids = self.all_items[start_index:end_index]
+        start, end = self.get_page_range()
+        page_ss_role_ids = self.all_items[start:end]
 
         for row_offset in range(2):
             current_processing_row = row_offset
@@ -54,7 +50,7 @@ class SelfServiceManageView(PaginatedView):
                     role_id = page_ss_role_ids[index_in_page]
                     role = self.guild.get_role(role_id)
                     if role: self.add_item(
-                        SelfServiceRoleButton(self.cog, role, role.id in current_self_service_ids, row=current_processing_row))
+                        SelfServiceRoleButton(self.cog, role, role.id in all_role_ids, row=current_processing_row))
 
         if not self.all_items and config.GUILD_CONFIGS.get(self.guild.id, {}).get("self_service_roles"): self.add_item(
             ui.Button(label="无可用自助组 (权限原因)", style=discord.ButtonStyle.secondary, disabled=True, row=0))

@@ -124,7 +124,7 @@ class ReturnTimedRoleButton(ui.Button):
 
     async def callback(self, interaction: discord.Interaction):
         """响应按钮点击，为用户移除所有限时身份组并结算使用时间。"""
-        await safe_defer(interaction)
+        await safe_defer(interaction,thinking=True)
         member, guild = interaction.user, interaction.guild
         user_guild_data = self.cog.data_manager._get_guild_user_data(member.id, guild.id)
         current_role_ids = user_guild_data.get("current_timed_roles", [])

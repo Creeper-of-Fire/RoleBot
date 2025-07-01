@@ -32,19 +32,15 @@ class TimedRoleManageView(PaginatedView):
 
     async def _rebuild_view(self):
         self.clear_items()
-        member = self.guild.get_member(self.user.id)
-        if not member:
-            self.cog.logger.warning(f"无法在 _rebuild_view 中找到用户 {self.user.id}。")
-            self.embed = discord.Embed(title="错误", description="无法加载您的信息，您可能已离开服务器。", color=Color.red())
-            self.add_item(ui.Button(label="错误", style=discord.ButtonStyle.danger, disabled=True))
-            self.stop()
+        member = self._try_get_safe_member()
+        if member is None:
             return
 
         user_guild_data = self.cog.data_manager._get_guild_user_data(self.user.id, self.guild.id)
         current_timed_role_ids = set(user_guild_data.get("current_timed_roles", []))
 
-        start_index, end_index = self.page * self.items_per_page, (self.page + 1) * self.items_per_page
-        page_timed_role_ids = self.all_items[start_index:end_index]
+        start, end = self.get_page_range()
+        page_timed_role_ids = self.all_items[start:end]
 
         self.add_item(PrivateTimedRoleSelect(self.cog, self.guild.id, page_timed_role_ids, current_timed_role_ids,
                                              page_num=self.page, total_pages=self.total_pages, row=0))

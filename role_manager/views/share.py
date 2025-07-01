@@ -24,6 +24,22 @@ class PaginatedView(ui.View, ABC):
         self.all_items: List[Any] = []
         self.embed = None
 
+    def _try_get_safe_member(self):
+        member = self.guild.get_member(self.user.id)
+        if not member:
+            self.cog.logger.warning(f"无法在 _rebuild_view 中找到用户 {self.user.id}。")
+            self.embed = discord.Embed(title="错误", description="无法加载您的信息，您可能已离开服务器。", color=Color.red())
+            self.add_item(ui.Button(label="错误", style=discord.ButtonStyle.danger, disabled=True))
+            self.stop()
+            return None
+        return member
+
+    def get_page_range(self):
+        """返回当前页的起始和结束索引"""
+        start = self.page * self.items_per_page
+        end = start + self.items_per_page
+        return start, end
+
     @abstractmethod
     async def _rebuild_view(self):
         """子类必须实现此方法来构建/重建视图内容和Embed。"""

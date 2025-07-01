@@ -41,24 +41,19 @@ class FashionManageView(PaginatedView):
 
     async def _rebuild_view(self):
         self.clear_items()
-        member = self.guild.get_member(self.user.id)
-        if not member:
-            self.cog.logger.warning(f"无法在 FashionManageView._rebuild_view 中找到用户 {self.user.id}。")
-            self.embed = discord.Embed(title="错误", description="无法加载您的信息，您可能已离开服务器。", color=Color.red())
-            self.add_item(ui.Button(label="错误", style=discord.ButtonStyle.danger, disabled=True))
-            self.stop()
+        member = self._try_get_safe_member()
+        if member is None:
             return
 
-        start_index = self.page * self.items_per_page
-        end_index = start_index + self.items_per_page
-        page_fashion_options = self.all_items[start_index:end_index]
+        start, end = self.get_page_range()
+        page_fashion_options = self.all_items[start:end]
 
-        current_worn_fashion_ids = {role.id for role in member.roles}
-        user_role_ids = {r.id for r in member.roles}
+        all_role_ids = {role.id for role in member.roles}
 
         self.add_item(FashionRoleSelect(
-            self.cog, self.guild.id, page_fashion_options, current_worn_fashion_ids,
-            user_role_ids, page_num=self.page, total_pages=self.total_pages
+            self.cog, self.guild.id, page_fashion_options, 
+            all_role_ids,
+            page_num=self.page, total_pages=self.total_pages
         ))
 
         self._add_pagination_buttons(row=1)
@@ -75,12 +70,11 @@ class FashionRoleSelect(ui.Select):
     """幻化身份组的选择菜单，会根据用户是否拥有基础组来显示锁定/解锁状态。"""
 
     def __init__(self, cog: 'RoleManagerCog', guild_id: int, page_options_data: List[tuple[int, int]],
-                 current_selection_ids: set[int], user_role_ids: set[int], page_num: int, total_pages: int):
+                 all_role_ids: set[int], page_num: int, total_pages: int):
         self.cog = cog
         self.guild_id = guild_id
 
-        # 根据用户是否拥有基础组进行排序，可佩戴的排在前面
-        sorted_page_options_data = sorted(page_options_data, key=lambda x: x[1] in user_role_ids, reverse=True)
+        sorted_page_options_data = sorted(page_options_data, key=lambda x: x[1] in all_role_ids, reverse=True)
 
         options = []
         for fashion_id, base_id in sorted_page_options_data:
@@ -97,7 +91,7 @@ class FashionRoleSelect(ui.Select):
                         label=f"{label_prefix}{fashion_name}",
                         value=str(fashion_id),
                         description=description_text,
-                        default=(fashion_id in current_selection_ids)
+                        default=(fashion_id in all_role_ids)
                     )
                 )
 
