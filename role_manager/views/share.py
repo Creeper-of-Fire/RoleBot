@@ -88,7 +88,7 @@ class PaginationButton(ui.Button):
             await self.view.pagination_callback(interaction)
 
 
-class FeatureCog(commands.Cog, ABC):
+class FeatureCog(commands.Cog, ABC, metaclass=commands.CogMeta):
     """
     功能模块Cog的基类。
 
