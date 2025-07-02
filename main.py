@@ -8,7 +8,7 @@ from discord.ext import commands
 import config
 # 导入我们的配置和模块
 import config_data
-from role_manager.cog import RoleManagerCog
+from role_manager.cog import CoreCog, TimedRolesCog, SelfServiceCog, FashionCog
 
 # ===================================================================
 # 日志设置
@@ -85,7 +85,10 @@ class CogManager:
         self.config = config_module
         # 定义一个 cog 名称到其类定义的映射，方便动态加载
         self.cog_map = {
-            "role_manager": RoleManagerCog,
+            "core": CoreCog,
+            "timed_role": TimedRolesCog,
+            "self_service": SelfServiceCog,
+            "fashion": FashionCog,
         }
 
     async def load_all_enabled(self):

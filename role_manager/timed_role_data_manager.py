@@ -1,4 +1,4 @@
-# src/role_manager/data_manager.py
+# src/role_manager/timed_role_data_manager.py
 import asyncio
 import json
 import os
@@ -15,7 +15,7 @@ RESET_HOUR = config.ROLE_MANAGER_CONFIG.get("reset_hour_utc8", 16)
 RESET_TIME = time(RESET_HOUR, 0, 0, tzinfo=UTC8)
 
 
-class DataManager:
+class TimedRoleDataManager:
     def __init__(self):
         self._data = {}
         self._lock = asyncio.Lock()

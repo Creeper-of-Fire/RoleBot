@@ -11,7 +11,7 @@ from role_manager.services.role_service import update_member_roles
 from role_manager.views.share import PaginatedView
 
 if TYPE_CHECKING:
-    from role_manager.cog import RoleManagerCog
+    from role_manager.cog import SelfServiceCog
 
 SELF_SERVICE_ROLES_PER_PAGE = 10
 
@@ -19,9 +19,10 @@ SELF_SERVICE_ROLES_PER_PAGE = 10
 class SelfServiceManageView(PaginatedView):
     """用户私有的自助身份组管理视图。"""
 
-    def __init__(self, cog: RoleManagerCog, user: discord.Member):
+    def __init__(self, cog: 'SelfServiceCog', user: discord.Member):
         timeout_minutes = config.ROLE_MANAGER_CONFIG.get("private_panel_timeout_minutes", 3)
         super().__init__(cog, user, items_per_page=SELF_SERVICE_ROLES_PER_PAGE, timeout=timeout_minutes * 60)
+        self.cog = cog
 
         all_self_service_role_ids = self.cog.safe_self_service_role_ids_cache.get(self.guild.id, [])
         self._update_page_info(all_self_service_role_ids)
@@ -66,7 +67,7 @@ class SelfServiceManageView(PaginatedView):
 class SelfServiceRoleButton(ui.Button):
     """自助身份组的切换按钮，用户点击可以领取或移除对应的身份组。"""
 
-    def __init__(self, cog: RoleManagerCog, role: discord.Role, is_selected: bool, row: int | None = None):
+    def __init__(self, cog: 'SelfServiceCog', role: discord.Role, is_selected: bool, row: int | None = None):
         self.cog = cog
         self.role = role
         super().__init__(label=role.name, style=discord.ButtonStyle.success if is_selected else discord.ButtonStyle.secondary,

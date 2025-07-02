@@ -12,7 +12,7 @@ from role_manager.services.role_service import update_member_roles
 from role_manager.views.share import PaginatedView
 
 if TYPE_CHECKING:
-    from role_manager.cog import RoleManagerCog
+    from role_manager.cog import TimedRolesCog
 
 TIMED_ROLES_PER_PAGE = 25
 
@@ -20,9 +20,10 @@ TIMED_ROLES_PER_PAGE = 25
 class TimedRoleManageView(PaginatedView):
     """用户私有的限时身份组管理视图。"""
 
-    def __init__(self, cog: RoleManagerCog, user: discord.Member):
+    def __init__(self, cog: TimedRolesCog, user: discord.Member):
         timeout_minutes = config.ROLE_MANAGER_CONFIG.get("private_panel_timeout_minutes", 3)
         super().__init__(cog, user, items_per_page=TIMED_ROLES_PER_PAGE, timeout=timeout_minutes * 60)
+        self.cog = cog
 
         all_timed_role_ids = self.cog.safe_timed_role_ids_cache.get(self.guild.id, [])
         self._update_page_info(all_timed_role_ids)
@@ -36,7 +37,7 @@ class TimedRoleManageView(PaginatedView):
         if member is None:
             return
 
-        user_guild_data = self.cog.data_manager._get_guild_user_data(self.user.id, self.guild.id)
+        user_guild_data = self.cog.timed_role_data_manager._get_guild_user_data(self.user.id, self.guild.id)
         current_timed_role_ids = set(user_guild_data.get("current_timed_roles", []))
 
         start, end = self.get_page_range()
@@ -48,7 +49,7 @@ class TimedRoleManageView(PaginatedView):
         self._add_pagination_buttons(row=1)
 
         self.embed = discord.Embed(title=f"⏳ {self.user.display_name} 的限时身份组", color=Color.blurple())
-        remaining_seconds = self.cog.data_manager.get_remaining_seconds(self.user.id, self.guild.id)
+        remaining_seconds = self.cog.timed_role_data_manager.get_remaining_seconds(self.user.id, self.guild.id)
         self.embed.add_field(name="⏱️ 今日剩余时长", value=format_duration_hms(remaining_seconds), inline=False)
         if not self.all_items:
             self.embed.description = "此服务器没有可供您管理的限时身份组。"
@@ -58,7 +59,7 @@ class TimedRoleManageView(PaginatedView):
 class PrivateTimedRoleSelect(ui.Select):
     """用户私有的限时身份组选择菜单。"""
 
-    def __init__(self, cog: RoleManagerCog, guild_id: int, page_role_ids: list[int], current_selection_ids: set[int],
+    def __init__(self, cog: TimedRolesCog, guild_id: int, page_role_ids: list[int], current_selection_ids: set[int],
                  page_num: int, total_pages: int, row: int = 0):
         self.cog = cog
         options = [discord.SelectOption(label=cog.role_name_cache.get(rid, f"未知(ID:{rid})"), value=str(rid),
@@ -81,7 +82,7 @@ class PrivateTimedRoleSelect(ui.Select):
         member, guild = interaction.user, interaction.guild
         
         # 1. 计算新的身份组选择
-        current_data = self.cog.data_manager._get_guild_user_data(member.id, guild.id)
+        current_data = self.cog.timed_role_data_manager._get_guild_user_data(member.id, guild.id)
         all_current_selection_set = set(current_data.get("current_timed_roles", []))
         new_selection_in_page = {int(v) for v in self.values if v != "_placeholder"}
         options_in_this_page_ids = {int(opt.value) for opt in self.options if opt.value != "_placeholder"}
@@ -104,7 +105,7 @@ class PrivateTimedRoleSelect(ui.Select):
             return
 
         # 3. 检查用户时长
-        if roles_to_add_ids and self.cog.data_manager.get_remaining_seconds(member.id, guild.id) <= 0:
+        if roles_to_add_ids and self.cog.timed_role_data_manager.get_remaining_seconds(member.id, guild.id) <= 0:
             await interaction.followup.send("❌ 你今天的限时身份组使用时长已用尽，无法选择新的身份组。", ephemeral=True)
             await self._refresh_view(interaction, member)
             return
@@ -114,11 +115,11 @@ class PrivateTimedRoleSelect(ui.Select):
         await update_member_roles(self.cog, member, roles_to_add_ids, roles_to_remove_ids, "自助操作限时组")
 
         if not all_current_selection_set and final_new_selection_set:
-            await self.cog.data_manager.claim_timed_roles(member.id, list(final_new_selection_set), guild.id)
+            await self.cog.timed_role_data_manager.claim_timed_roles(member.id, list(final_new_selection_set), guild.id)
         elif all_current_selection_set and not final_new_selection_set:
-            await self.cog.data_manager.return_timed_roles(member.id, guild.id)
+            await self.cog.timed_role_data_manager.return_timed_roles(member.id, guild.id)
         elif all_current_selection_set != final_new_selection_set:
-            await self.cog.data_manager.claim_timed_roles(member.id, list(final_new_selection_set), guild.id)
+            await self.cog.timed_role_data_manager.claim_timed_roles(member.id, list(final_new_selection_set), guild.id)
 
         await self._refresh_view(interaction, member)
 

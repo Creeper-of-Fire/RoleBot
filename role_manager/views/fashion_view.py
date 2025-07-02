@@ -9,7 +9,7 @@ import config
 from role_manager.helpers.auth import is_role_dangerous
 
 if typing.TYPE_CHECKING:
-    from role_manager.cog import RoleManagerCog
+    from role_manager.cog import FashionCog
 from role_manager.helpers.helpers import try_get_member, safe_defer
 from role_manager.services.role_service import update_member_roles
 from role_manager.views.share import PaginatedView
@@ -20,9 +20,10 @@ FASHION_ROLES_PER_PAGE = 25
 class FashionManageView(PaginatedView):
     """用户私有的幻化身份组管理视图，继承自 PaginatedView。"""
 
-    def __init__(self, cog: 'RoleManagerCog', user: discord.Member):
+    def __init__(self, cog: 'FashionCog', user: discord.Member):
         timeout_minutes = config.ROLE_MANAGER_CONFIG.get("private_panel_timeout_minutes", 3)
         super().__init__(cog, user, items_per_page=FASHION_ROLES_PER_PAGE, timeout=timeout_minutes * 60)
+        self.cog = cog
 
         safe_fashion_map = self.cog.safe_fashion_map_cache.get(self.guild.id, {})
         self.fashion_to_base_map: Dict[int, int] = {}
@@ -69,7 +70,7 @@ class FashionManageView(PaginatedView):
 class FashionRoleSelect(ui.Select):
     """幻化身份组的选择菜单，会根据用户是否拥有基础组来显示锁定/解锁状态。"""
 
-    def __init__(self, cog: 'RoleManagerCog', guild_id: int, page_options_data: List[tuple[int, int]],
+    def __init__(self, cog: 'FashionCog', guild_id: int, page_options_data: List[tuple[int, int]],
                  all_role_ids: set[int], page_num: int, total_pages: int):
         self.cog = cog
         self.guild_id = guild_id
