@@ -16,6 +16,7 @@ from role_sync.role_sync_data_manager import RoleSyncDataManager, create_rule_ke
 from utility.auth import is_role_dangerous
 from utility.feature_cog import FeatureCog
 from utility.helpers import create_progress_bar
+from utility.views import ConfirmationView
 
 if typing.TYPE_CHECKING:
     from main import RoleBot
@@ -329,24 +330,9 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
     @app_commands.guild_only()
     @app_commands.default_permissions(manage_roles=True)
     async def manage_sync_log(self, interaction: discord.Interaction, action: str, rule: Optional[str] = None):
-        await interaction.response.defer(ephemeral=True)
-
-        if action == "clear_rule":
-            if not rule or rule == 'all':
-                await interaction.followup.send("❌ 请使用 `rule` 参数选择一个**具体**的规则来清除。", ephemeral=True)
-                return
-            try:
-                source_id_str, target_id_str = rule.split('-')
-                source_id, target_id = int(source_id_str), int(target_id_str)
-                success = await self.data_manager.clear_rule_log(interaction.guild_id, source_id, target_id)
-                if success:
-                    await interaction.followup.send(f"✅ 已成功清除规则 `{rule}` 的同步日志。", ephemeral=True)
-                else:
-                    await interaction.followup.send(f"ℹ️ 未找到规则 `{rule}` 的日志，无需操作。", ephemeral=True)
-            except ValueError:
-                await interaction.followup.send("❌ 无效的规则格式。", ephemeral=True)
-
-        elif action == "export_log":
+        # 导出操作是安全的，直接处理
+        if action == "export_log":
+            await interaction.response.defer(ephemeral=True)
             try:
                 with open(DATA_FILE, 'r', encoding='utf-8') as f:
                     log_content = f.read()
@@ -354,13 +340,53 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
                 await interaction.followup.send("📄 这是当前的同步日志文件：", file=log_file, ephemeral=True)
             except FileNotFoundError:
                 await interaction.followup.send("ℹ️ 日志文件不存在，无需导出。", ephemeral=True)
+            return
+
+        # --- 所有删除操作都需要确认 ---
+        # 1. 准备确认消息和视图
+        view = ConfirmationView(author=interaction.user)
+        confirm_message = ""
+
+        if action == "clear_rule":
+            if not rule or rule == 'all':
+                await interaction.response.send_message("❌ 请使用 `rule` 参数选择一个**具体**的规则来清除。", ephemeral=True)
+                return
+            confirm_message = f"你确定要清除规则 `{rule}` 的同步日志吗？\n\n**这将导致该规则下的所有成员在下次扫描时被重新同步。** 此操作不可撤销。"
 
         elif action == "clear_all":
-            success = await self.data_manager.clear_all_logs()
-            if success:
-                await interaction.followup.send("🗑️ 已成功删除所有同步日志文件。", ephemeral=True)
-            else:
-                await interaction.followup.send("ℹ️ 日志文件不存在，无需操作。", ephemeral=True)
+            confirm_message = "你确定要**清除所有同步日志**吗？\n\n**这将删除 `role_sync_log.json` 文件，所有规则都将重置为初始状态。** 此操作不可撤销！"
+
+        # 2. 发送确认请求
+        await interaction.response.send_message(confirm_message, view=view, ephemeral=True)
+        view.message = await interaction.original_response()  # 存储消息以便超时后编辑
+
+        # 3. 等待用户响应
+        await view.wait()
+
+        # 4. 根据用户的选择执行操作
+        if view.value is None:  # 超时
+            await interaction.followup.send("⏰ 操作已超时，已自动取消。", ephemeral=True)
+        elif view.value:  # 用户点击了确认
+            if action == "clear_rule":
+                try:
+                    source_id_str, target_id_str = rule.split('-')
+                    source_id, target_id = int(source_id_str), int(target_id_str)
+                    success = await self.data_manager.clear_rule_log(interaction.guild_id, source_id, target_id)
+                    if success:
+                        await interaction.followup.send(f"✅ 已成功清除规则 `{rule}` 的同步日志。", ephemeral=True)
+                    else:
+                        await interaction.followup.send(f"ℹ️ 未找到规则 `{rule}` 的日志，无需操作。", ephemeral=True)
+                except ValueError:
+                    await interaction.followup.send("❌ 无效的规则格式。", ephemeral=True)
+
+            elif action == "clear_all":
+                success = await self.data_manager.clear_all_logs()
+                if success:
+                    await interaction.followup.send("🗑️ 已成功删除所有同步日志文件。", ephemeral=True)
+                else:
+                    await interaction.followup.send("ℹ️ 日志文件不存在，无需操作。", ephemeral=True)
+        else:  # 用户点击了取消
+            await interaction.followup.send("❌ 操作已取消。", ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
