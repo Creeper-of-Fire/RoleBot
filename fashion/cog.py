@@ -10,10 +10,10 @@ from discord.ext import tasks, commands
 
 import config_data
 from fashion.fashion_view import FashionManageView
-from utility.helpers import safe_defer, try_get_member
 from utility.auth import is_role_dangerous
-
 from utility.feature_cog import FeatureCog
+from utility.helpers import safe_defer, try_get_member
+
 if typing.TYPE_CHECKING:
     from main import RoleBot
     from core.cog import CoreCog
@@ -123,11 +123,6 @@ class FashionCog(FeatureCog, name="Fashion"):
         await self.bot.wait_until_ready()
 
 
-async def setup(bot: commands.Bot):
-    """Cog的入口点。"""
-    await bot.add_cog(FashionCog(bot))
-
-
 class FashionPanelButton(ui.Button):
     """打开幻化衣橱的按钮。"""
 
@@ -148,3 +143,8 @@ class FashionPanelButton(ui.Button):
         view = FashionManageView(self.cog, member)
         await view._rebuild_view()
         await interaction.followup.send(embed=view.embed, view=view, ephemeral=True)
+
+
+async def setup(bot: commands.Bot):
+    """Cog的入口点。"""
+    await bot.add_cog(FashionCog(bot))

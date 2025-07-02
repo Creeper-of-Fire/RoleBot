@@ -51,11 +51,6 @@ class SelfServiceCog(FeatureCog, name="SelfService"):
             self.safe_self_service_role_ids_cache[guild_id] = current_safe_ss_ids
         self.logger.info("SelfServiceCog: 安全自助身份组缓存更新完毕。")
 
-async def setup(bot: commands.Bot):
-    """Cog的入口点。"""
-    await bot.add_cog(SelfServiceCog(bot))
-
-
 class SelfServicePanelButton(ui.Button):
     """打开自助身份组管理面板的按钮。"""
 
@@ -73,3 +68,7 @@ class SelfServicePanelButton(ui.Button):
         view = SelfServiceManageView(self.cog, member)
         await view._rebuild_view()
         await interaction.followup.send(embed=view.embed, view=view, ephemeral=True)
+
+async def setup(bot: commands.Bot):
+    """Cog的入口点。"""
+    await bot.add_cog(SelfServiceCog(bot))
