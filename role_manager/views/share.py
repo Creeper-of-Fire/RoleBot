@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import math
-from abc import ABC, abstractmethod
+from abc import ABC, abstractmethod, ABCMeta
 from typing import List, Any, TYPE_CHECKING, Optional
 
 import discord
@@ -87,8 +87,12 @@ class PaginationButton(ui.Button):
         if isinstance(self.view, PaginatedView):
             await self.view.pagination_callback(interaction)
 
+# 1. 定义一个新的组合元类
+#    这个新元类同时继承了 CogMeta 和 ABCMeta，解决了冲突
+class CogABCMeta(commands.CogMeta, ABCMeta):
+    pass
 
-class FeatureCog(commands.Cog, ABC, metaclass=commands.CogMeta):
+class FeatureCog(commands.Cog, ABC, metaclass=CogABCMeta):
     """
     功能模块Cog的基类。
 
