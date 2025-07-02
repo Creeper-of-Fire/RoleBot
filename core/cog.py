@@ -10,6 +10,7 @@ from discord.ext import commands, tasks
 
 import config
 from core.main_panel_view import MainPanelView
+from utility.helpers import create_progress_bar
 
 if typing.TYPE_CHECKING:
     from main import RoleBot
@@ -96,6 +97,76 @@ class CoreCog(commands.Cog, name="Core"):
         # MainPanelView 的 __init__ 需要修改，以动态地从 bot 获取 cogs
         view = MainPanelView(self)
         await interaction.response.send_message(embed=embed, view=view)
+
+    @app_commands.command(name="刷新成员缓存", description="【非常耗时！注意！】手动拉取服务器所有成员信息到机器人缓存中（带进度条）。")
+    @app_commands.guilds(*[discord.Object(id=gid) for gid in config.GUILD_IDS])
+    @app_commands.default_permissions(manage_roles=True)
+    async def refresh_member_cache(self, interaction: discord.Interaction):
+        """
+        手动触发从 Discord API 拉取服务器所有成员，并显示实时进度条。
+        """
+        await interaction.response.defer(ephemeral=False, thinking=True)
+        guild = interaction.guild
+        if not guild:
+            await interaction.edit_original_response(content="❌ 无法获取服务器信息。")
+            return
+
+        total_members = guild.member_count
+        if total_members == 0:
+            await interaction.edit_original_response(content="✅ 服务器中没有成员。")
+            return
+
+        self.logger.info(f"服务器 '{guild.name}' (ID: {guild.id}) 由 {interaction.user} 手动触发了成员缓存刷新。")
+
+        # 初始进度条消息
+        embed = discord.Embed(
+            title="⏳ 正在刷新成员缓存...",
+            description=f"正在从服务器拉取 **{total_members}** 名成员的信息...",
+            color=discord.Color.blue()
+        )
+        embed.add_field(name="进度", value=create_progress_bar(0, total_members), inline=False)
+        await interaction.edit_original_response(embed=embed)
+
+        fetched_count = 0
+        last_update_count = 0
+
+        # 使用异步迭代器逐个获取成员
+        try:
+            async for member in guild.fetch_members(limit=None):
+                fetched_count += 1
+                # 为了避免过于频繁地编辑消息（API限速），我们每获取一定数量的成员或进度变化超过5%时才更新
+                if fetched_count - last_update_count >= 100 or fetched_count == total_members:
+                    last_update_count = fetched_count
+
+                    embed.description = f"正在处理成员: **{fetched_count} / {total_members}**"
+                    embed.set_field_at(
+                        index=0,  # 更新第一个字段
+                        name="进度",
+                        value=create_progress_bar(fetched_count, total_members),
+                        inline=False
+                    )
+                    await interaction.edit_original_response(embed=embed)
+                    # 稍微暂停一下，给API一点喘息空间
+                    await asyncio.sleep(0.1)
+
+        except Exception as e:
+            self.logger.error(f"刷新成员缓存时发生错误: {e}", exc_info=True)
+            error_embed = discord.Embed(
+                title="❌ 刷新中断",
+                description=f"在处理过程中发生错误。\n`{e}`",
+                color=discord.Color.red()
+            )
+            await interaction.edit_original_response(embed=error_embed)
+            return
+
+        # 任务完成后的最终消息
+        final_embed = discord.Embed(
+            title="✅ 成员缓存刷新完成",
+            description=f"成功将 **{fetched_count}** 名（共 {total_members} 名）成员的信息同步到了机器人缓存中。",
+            color=discord.Color.green()
+        )
+        final_embed.set_footer(text=f"当前缓存成员数: {len(guild.members)}")
+        await interaction.edit_original_response(embed=final_embed)
 
 
 async def setup(bot: commands.Bot):

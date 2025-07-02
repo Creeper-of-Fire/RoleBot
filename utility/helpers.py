@@ -19,6 +19,15 @@ async def try_get_member(guild: discord.Guild, member_id: int) -> discord.Member
     except discord.NotFound:
         return None
 
+def create_progress_bar(current: int, total: int, bar_length: int = 20) -> str:
+    """创建一个文本格式的进度条。"""
+    if total == 0:
+        return f"[{'░' * bar_length}] 0.0%"
+    fraction = current / total
+    filled_length = int(bar_length * fraction)
+    bar = '█' * filled_length + '░' * (bar_length - filled_length)
+    return f"[{bar}] {fraction:.1%}"
+
 
 def format_duration_hms(total_seconds: int) -> str:
     """将总秒数格式化为 'X小时 Y分钟 Z秒' 的字符串。"""
