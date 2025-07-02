@@ -225,7 +225,7 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
         """
         手动扫描服务器，处理特定的一条 A->B 同步规则，并显示实时进度。
         """
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        await interaction.response.defer(ephemeral=False, thinking=True)
         guild = interaction.guild
         sync_map = self.safe_direct_sync_map_cache.get(guild.id, {})
 
