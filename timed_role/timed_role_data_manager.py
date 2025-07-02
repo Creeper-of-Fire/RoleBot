@@ -5,7 +5,7 @@ import os
 from datetime import datetime, timedelta, timezone, time
 
 import config
-from .helpers import timer
+from timed_role import timer
 
 DATA_DIR = "data"
 DATA_FILE = os.path.join(DATA_DIR, "user_data.json")

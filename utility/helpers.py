@@ -1,4 +1,4 @@
-# src/role_manager/helpers/helpers.py
+# src/role_manager/utility/utility.py
 from __future__ import annotations
 
 import discord

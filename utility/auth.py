@@ -1,13 +1,10 @@
-# src/role_manager/helpers/auth.py
+# src/role_manager/utility/auth.py
 from __future__ import annotations
 
 import discord
 
 import config
 
-import discord
-
-import config
 
 def is_role_dangerous(role: discord.Role) -> bool:
     """检查一个身份组是否包含危险权限。"""

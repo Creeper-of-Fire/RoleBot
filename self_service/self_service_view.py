@@ -5,13 +5,13 @@ import discord
 from discord import ui, Color
 
 import config
-from role_manager.helpers.auth import is_role_dangerous
-from role_manager.helpers.helpers import try_get_member, safe_defer
-from role_manager.services.role_service import update_member_roles
-from role_manager.views.share import PaginatedView
+from utility.auth import is_role_dangerous
+from utility.helpers import try_get_member, safe_defer
+from utility.role_service import update_member_roles
+from utility.paginated_view import PaginatedView
 
 if TYPE_CHECKING:
-    from role_manager.cog import SelfServiceCog
+    from self_service.cog import SelfServiceCog
 
 SELF_SERVICE_ROLES_PER_PAGE = 10
 

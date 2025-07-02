@@ -6,13 +6,13 @@ import discord
 from discord import Color, ui
 
 import config
-from role_manager.helpers.auth import is_role_dangerous
+from utility.auth import is_role_dangerous
 
 if typing.TYPE_CHECKING:
-    from role_manager.cog import FashionCog
-from role_manager.helpers.helpers import try_get_member, safe_defer
-from role_manager.services.role_service import update_member_roles
-from role_manager.views.share import PaginatedView
+    from fashion.cog import FashionCog
+from utility.helpers import try_get_member, safe_defer
+from utility.role_service import update_member_roles
+from utility.paginated_view import PaginatedView
 
 FASHION_ROLES_PER_PAGE = 25
 

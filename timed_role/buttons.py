@@ -1,63 +1,17 @@
-# src/role_manager/views/views.py
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import typing
 
 import discord
 from discord import ui
 
 import config
-from .fashion_view import FashionManageView
-from .self_service_view import SelfServiceManageView
-from .timed_role_view import TimedRoleManageView
-from ..helpers.helpers import safe_defer, try_get_member, format_duration_hms
-from ..helpers.timer import DAILY_LIMIT_SECONDS
+from utility.helpers import safe_defer, try_get_member, format_duration_hms
+from timed_role.timer import DAILY_LIMIT_SECONDS
+from timed_role.timed_role_view import TimedRoleManageView
 
-if TYPE_CHECKING:
-    from ..cog import CoreCog, FashionCog, SelfServiceCog, TimedRolesCog
-    from .share import FeatureCog
-
-
-class MainPanelView(ui.View):
-    """
-    主控制面板的视图，包含所有主要功能的入口按钮。
-    它会自动从所有已注册的 FeatureCog 中收集入口按钮。
-    """
-
-    def __init__(self, core_cog: CoreCog):
-        super().__init__(timeout=None)
-        self.core_cog = core_cog
-
-        # 动态添加所有功能模块的按钮
-        feature_cogs: list[FeatureCog] = self.core_cog.feature_cogs
-        for cog in feature_cogs:
-            buttons = cog.get_main_panel_buttons()
-            if not buttons:
-                continue
-            for button in buttons:
-                self.add_item(button)
-
-
-class FashionPanelButton(ui.Button):
-    """打开幻化衣橱的按钮。"""
-
-    def __init__(self, cog: FashionCog):
-        super().__init__(label="幻化衣橱", style=discord.ButtonStyle.success, custom_id="open_fashion_panel", emoji="👗")
-        self.cog = cog
-
-    async def callback(self, interaction: discord.Interaction):
-        """响应按钮点击，为用户创建并发送一个幻化衣橱面板。"""
-        await safe_defer(interaction, thinking=True)
-        if not self.cog.safe_fashion_map_cache.get(interaction.guild_id):
-            await interaction.followup.send("❌ 此服务器尚未配置或未启用幻化系统。", ephemeral=True)
-            return
-        member = interaction.user if isinstance(interaction.user, discord.Member) else await try_get_member(interaction.guild, interaction.user.id)
-        if not member:
-            await interaction.followup.send("错误：无法获取您的服务器成员信息。", ephemeral=True)
-            return
-        view = FashionManageView(self.cog, member)
-        await view._rebuild_view()
-        await interaction.followup.send(embed=view.embed, view=view, ephemeral=True)
+if typing.TYPE_CHECKING:
+    from timed_role.cog import TimedRolesCog
 
 
 class TimedRolePanelButton(ui.Button):
@@ -75,25 +29,6 @@ class TimedRolePanelButton(ui.Button):
             await interaction.followup.send("错误：无法获取您的服务器成员信息。", ephemeral=True)
             return
         view = TimedRoleManageView(self.cog, member)
-        await view._rebuild_view()
-        await interaction.followup.send(embed=view.embed, view=view, ephemeral=True)
-
-
-class SelfServicePanelButton(ui.Button):
-    """打开自助身份组管理面板的按钮。"""
-
-    def __init__(self, cog: SelfServiceCog):
-        super().__init__(label="自助身份组", style=discord.ButtonStyle.primary, custom_id="open_self_service_panel", emoji="🛠️")
-        self.cog = cog
-
-    async def callback(self, interaction: discord.Interaction):
-        """响应按钮点击，为用户创建并发送一个自助身份组管理面板。"""
-        await safe_defer(interaction, thinking=True)
-        member = interaction.user if isinstance(interaction.user, discord.Member) else await try_get_member(interaction.guild, interaction.user.id)
-        if not member:
-            await interaction.followup.send("错误：无法获取您的服务器成员信息。", ephemeral=True)
-            return
-        view = SelfServiceManageView(self.cog, member)
         await view._rebuild_view()
         await interaction.followup.send(embed=view.embed, view=view, ephemeral=True)
 

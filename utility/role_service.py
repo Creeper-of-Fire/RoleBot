@@ -5,11 +5,11 @@ from typing import TYPE_CHECKING
 import discord
 
 if TYPE_CHECKING:
-    from role_manager.cog import RoleManagerCog
+    from utility.feature_cog import FeatureCog
 
 
 async def update_member_roles(
-    cog: RoleManagerCog,
+    cog: 'FeatureCog',
     member: discord.Member,
     to_add_ids: set[int],
     to_remove_ids: set[int],

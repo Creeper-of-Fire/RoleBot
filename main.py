@@ -8,7 +8,10 @@ from discord.ext import commands
 import config
 # 导入我们的配置和模块
 import config_data
-from role_manager.cog import CoreCog, TimedRolesCog, SelfServiceCog, FashionCog
+from fashion.cog import FashionCog
+from self_service.cog import SelfServiceCog
+from timed_role.cog import TimedRolesCog
+from core.cog import CoreCog
 
 # ===================================================================
 # 日志设置
