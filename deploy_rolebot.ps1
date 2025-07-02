@@ -18,6 +18,7 @@
 
 # --- 脚本配置 ---
 $ErrorActionPreference = "Stop" # 遇到任何错误就停止脚本
+$dockerContainerName = "rolebot"
 
 # --- 1. 加载配置 ---
 Write-Host "⚙️ 正在加载部署配置..." -ForegroundColor Yellow
@@ -96,6 +97,9 @@ try {
     ssh -i $sshKeyPath "$($sshUser)@$($sshHost)" "$remoteProjectDir/deploy_remote.sh"
 
     Write-Host "🎉 部署成功完成！RoleBot 已在服务器上更新并启动。" -ForegroundColor Green
+
+    # 使用 docker logs -f 命令实时查看 Docker 容器日志
+    ssh "$sshUser@$sshHost" -i "$sshKeyPath" "docker logs -f $dockerContainerName"
 }
 catch {
     Write-Host "❌ 错误: 在服务器上执行部署命令时失败。" -ForegroundColor Red
