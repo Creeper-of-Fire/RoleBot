@@ -9,6 +9,7 @@ import config
 # 导入我们的配置和模块
 import config_data
 from fashion.cog import FashionCog
+from role_sync.cog import RoleSyncCog
 from self_service.cog import SelfServiceCog
 from timed_role.cog import TimedRolesCog
 from core.cog import CoreCog
@@ -92,6 +93,7 @@ class CogManager:
             "self_service": SelfServiceCog,
             "fashion": FashionCog,
             "timed_role": TimedRolesCog,
+            "role_sync": RoleSyncCog,
         }
 
     async def load_all_enabled(self):
