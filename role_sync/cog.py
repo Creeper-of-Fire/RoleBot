@@ -327,7 +327,7 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
     ])
     @app_commands.autocomplete(rule=sync_rule_autocomplete)
     @app_commands.guild_only()
-    @app_commands.default_permissions(administrator=True)
+    @app_commands.default_permissions(manage_roles=True)
     async def manage_sync_log(self, interaction: discord.Interaction, action: str, rule: Optional[str] = None):
         await interaction.response.defer(ephemeral=True)
 
