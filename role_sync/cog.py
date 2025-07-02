@@ -187,7 +187,7 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
         """
         手动触发从 Discord API 拉取服务器所有成员，并显示实时进度条。
         """
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        await interaction.response.defer(ephemeral=False, thinking=True)
         guild = interaction.guild
         if not guild:
             await interaction.edit_original_response(content="❌ 无法获取服务器信息。")
@@ -249,6 +249,20 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
         )
         final_embed.set_footer(text=f"当前缓存成员数: {len(guild.members)}")
         await interaction.edit_original_response(embed=final_embed)
+
+    @app_commands.command(name="手动触发每日同步", description="立即执行一次每日身份组同步检查任务。")
+    @app_commands.guilds(*[discord.Object(id=gid) for gid in config_data.ROLE_SYNC_CONFIG.keys()])
+    @app_commands.default_permissions(manage_roles=True)
+    async def manual_daily_sync(self, interaction: discord.Interaction):
+        """手动触发 daily_sync_task 任务。"""
+        await interaction.response.send_message("▶️ 已手动触发每日身份组同步任务...", ephemeral=True)
+        self.logger.info(f"每日同步任务由 {interaction.user} ({interaction.user.id}) 手动触发。")
+
+        # 使用 create_task 在后台运行，防止阻塞交互响应
+        # 这样可以立即回复用户，而任务在后台执行
+        self.bot.loop.create_task(self.daily_sync_task())
+
+        await interaction.edit_original_response(content="✅ 每日身份组同步任务已在后台启动。请查看机器人日志了解进度和结果。")
 
     @app_commands.command(name="同步身份组", description="为所有拥有指定源身份组的成员，批量添加目标身份组。")
     @app_commands.describe(source_role="需要检查的源身份组", target_role="需要授予的目标身份组")
