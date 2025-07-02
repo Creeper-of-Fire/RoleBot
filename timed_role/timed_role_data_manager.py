@@ -1,4 +1,4 @@
-# src/role_manager/timed_role_data_manager.py
+# role_manager/timed_role_data_manager.py
 import asyncio
 import json
 import os
