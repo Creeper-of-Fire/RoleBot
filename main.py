@@ -86,9 +86,9 @@ class CogManager:
         # 定义一个 cog 名称到其类定义的映射，方便动态加载
         self.cog_map = {
             "core": CoreCog,
-            "timed_role": TimedRolesCog,
             "self_service": SelfServiceCog,
             "fashion": FashionCog,
+            "timed_role": TimedRolesCog,
         }
 
     async def load_all_enabled(self):
