@@ -217,17 +217,20 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
                 choices.append(app_commands.Choice(name=choice_name, value=rule_key))
         return choices[:25]
 
-    @app_commands.command(name="同步未记录成员", description="扫描缓存中的成员，为符合规则但未被记录的人执行同步。")
+    @app_commands.command(name="同步未记录成员", description="扫描缓存中的成员，为符合规则但未被记录的人执行同步（支持超时回退）。")
     @app_commands.describe(rule="[可选] 选择要扫描的特定规则，不选则扫描所有规则。")
     @app_commands.autocomplete(rule=sync_rule_autocomplete)
     @app_commands.guild_only()
     @app_commands.default_permissions(manage_roles=True)
     async def sync_unlogged_members(self, interaction: discord.Interaction, rule: Optional[str] = "all"):
-        """
-        手动扫描服务器，处理特定的一条 A->B 同步规则，并显示实时进度。
-        """
-        await interaction.response.defer(ephemeral=False, thinking=True)
+        await interaction.response.defer(ephemeral=False)
         guild = interaction.guild
+
+        # 【新增】启动时立即保存用户信息
+        user_id = interaction.user.id
+        user_mention = interaction.user.mention
+
+        # --- 1. 解析规则 ---
         sync_map = self.safe_direct_sync_map_cache.get(guild.id, {})
 
         if not sync_map:
@@ -235,6 +238,7 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
             return
 
         rules_to_scan = {}
+        scan_title = ""
         if rule == "all":
             rules_to_scan = sync_map
             scan_title = "扫描所有规则"
@@ -242,6 +246,10 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
             try:
                 source_id_str, target_id_str = rule.split('-')
                 source_id, target_id = int(source_id_str), int(target_id_str)
+                # 确认规则仍然有效
+                if sync_map.get(source_id) != target_id:
+                    await interaction.followup.send("❌ 所选规则已不存在或已失效。", ephemeral=True)
+                    return
                 rules_to_scan[source_id] = target_id
                 source_role = guild.get_role(source_id)
                 target_role = guild.get_role(target_id)
@@ -253,68 +261,103 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
                 await interaction.followup.send("❌ 无效的规则选择，请从列表中选择。", ephemeral=True)
                 return
 
-        # --- 扫描主逻辑 ---
+        # --- 2. 初始化扫描 ---
         embed = discord.Embed(title=f"⏳ {scan_title}", description="正在初始化扫描...", color=discord.Color.blue())
-        await interaction.edit_original_response(embed=embed)
-
-        total_synced, total_logged, total_failed = 0, 0, 0
-        total_members_to_scan = 0
-
-        # 先计算总人数
-        for source_id in rules_to_scan.keys():
-            source_role = guild.get_role(source_id)
-            if source_role:
-                total_members_to_scan += len(source_role.members)
-
-        if total_members_to_scan == 0:
-            await interaction.followup.send("✅ 所有相关源身份组下都没有成员，无需扫描。", ephemeral=True)
+        try:
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        except discord.NotFound:  # 如果 defer 后用户立刻关闭窗口，followup也可能失败
+            self.logger.warning(f"用户 {user_id} 在发送初始进度条前关闭了交互。")
             return
 
-        embed.description = f"准备扫描 **{len(rules_to_scan)}** 条规则，共涉及 **{total_members_to_scan}** 名成员（去重前）。"
+        progress_message = await interaction.original_response()
+        fallback_triggered = False
+
+        total_synced, total_logged, total_failed = 0, 0, 0
+
+        # 计算总扫描人数
+        total_members_to_scan = 0
+        all_source_members = set()
+        for source_id in rules_to_scan:
+            source_role = guild.get_role(source_id)
+            if source_role:
+                # 使用集合来自动去重
+                all_source_members.update(source_role.members)
+        total_members_to_scan = len(all_source_members)
+
+        if total_members_to_scan == 0:
+            await progress_message.edit(content="✅ 所有相关源身份组下都没有成员，无需扫描。", embed=None, view=None)
+            return
+
+        embed.description = f"准备扫描 **{len(rules_to_scan)}** 条规则，共涉及 **{total_members_to_scan}** 名独立成员。"
         embed.add_field(name="扫描进度", value=create_progress_bar(0, total_members_to_scan), inline=False)
-        embed.add_field(name="✅ 同步", value="0", inline=True)
-        embed.add_field(name="✍️ 补录", value="0", inline=True)
-        embed.add_field(name="❌ 失败", value="0", inline=True)
-        await interaction.edit_original_response(embed=embed)
+        embed.add_field(name="✅ 同步", value="`0`", inline=True)
+        embed.add_field(name="✍️ 补录", value="`0`", inline=True)
+        embed.add_field(name="❌ 失败", value="`0`", inline=True)
+        await progress_message.edit(embed=embed)
 
         processed_members_count = 0
-        for source_id, target_id in rules_to_scan.items():
-            source_role = guild.get_role(source_id)
-            target_role = guild.get_role(target_id)
-            if not source_role or not target_role: continue
+        # 遍历去重后的成员集合
+        for member in all_source_members:
+            processed_members_count += 1
+            if member.bot:
+                continue
 
-            # 【核心优化】只扫描拥有源身份组的成员
-            for member in source_role.members:
-                processed_members_count += 1
-                if member.bot: continue
+            # 检查此成员符合哪些待扫描的规则
+            for source_id, target_id in rules_to_scan.items():
+                member_role_ids = {r.id for r in member.roles}
+                if source_id in member_role_ids:
+                    if not self.data_manager.is_synced(guild.id, source_id, target_id, member.id):
+                        target_role = guild.get_role(target_id)
+                        if not target_role: continue
 
-                if not self.data_manager.is_synced(guild.id, source_id, target_id, member.id):
-                    if target_role in member.roles:
-                        await self.data_manager.mark_as_synced(guild.id, source_id, target_id, member.id)
-                        total_logged += 1
-                    else:
-                        try:
-                            await member.add_roles(target_role, reason="手动全量同步")
+                        if target_id in member_role_ids:
                             await self.data_manager.mark_as_synced(guild.id, source_id, target_id, member.id)
-                            total_synced += 1
-                        except (discord.Forbidden, discord.HTTPException):
-                            total_failed += 1
+                            total_logged += 1
+                        else:
+                            try:
+                                await member.add_roles(target_role, reason="手动全量同步")
+                                await self.data_manager.mark_as_synced(guild.id, source_id, target_id, member.id)
+                                total_synced += 1
+                            except (discord.Forbidden, discord.HTTPException):
+                                total_failed += 1
 
-                if processed_members_count % 10 == 0:
-                    embed.set_field_at(0, name="扫描进度", value=create_progress_bar(processed_members_count, total_members_to_scan))
-                    embed.set_field_at(1, name="✅ 同步", value=f"`{total_synced}`")
-                    embed.set_field_at(2, name="✍️ 补录", value=f"`{total_logged}`")
-                    embed.set_field_at(3, name="❌ 失败", value=f"`{total_failed}`")
-                    await interaction.edit_original_response(embed=embed)
-                    await asyncio.sleep(0.2)
+            # --- 3. 带回退的进度更新 ---
+            if processed_members_count % 25 == 0 or processed_members_count == total_members_to_scan:
+                embed.set_field_at(0, name="扫描进度", value=create_progress_bar(processed_members_count, total_members_to_scan))
+                embed.set_field_at(1, name="✅ 同步", value=f"`{total_synced}`")
+                embed.set_field_at(2, name="✍️ 补录", value=f"`{total_logged}`")
+                embed.set_field_at(3, name="❌ 失败", value=f"`{total_failed}`")
 
+                try:
+                    await progress_message.edit(embed=embed)
+                except discord.NotFound:
+                    if not fallback_triggered:
+                        fallback_triggered = True
+                        await interaction.channel.send(
+                            f"⏳ {user_mention}，交互已超时，但扫描任务仍在后台继续。\n"
+                            f"进度将在此新消息中**公开**更新。",
+                            allowed_mentions=discord.AllowedMentions(users=True)
+                        )
+                        progress_message = await interaction.channel.send(embed=embed)
+                    else:
+                        await progress_message.edit(embed=embed)
+
+                await asyncio.sleep(0.2)
+
+        # --- 4. 发送最终结果 ---
         final_embed = discord.Embed(title=f"✅ {scan_title} 完成", color=discord.Color.green())
-        final_embed.description = f"扫描了 **{processed_members_count}** 名成员。"
+        final_embed.description = f"扫描了 **{processed_members_count}** 名独立成员。"
         final_embed.add_field(name="新增同步", value=f"`{total_synced}`人", inline=True)
         final_embed.add_field(name="补录记录", value=f"`{total_logged}`人", inline=True)
         final_embed.add_field(name="同步失败", value=f"`{total_failed}`人", inline=True)
-        await interaction.edit_original_response(embed=final_embed)
+        final_embed.set_footer(text="任务已全部完成。")
 
+        try:
+            await progress_message.edit(content=None, embed=final_embed, view=None)
+        except discord.NotFound:
+            # 如果连最后一次编辑都失败了，就再发一条全新的公开消息
+            final_embed.description += "\n(原始进度条消息已失效)"
+            await interaction.channel.send(content=f"{user_mention} 你的扫描任务已完成！", embed=final_embed)
 
     @app_commands.command(name="管理同步日志", description="管理A->B同步规则的日志记录。")
     @app_commands.describe(

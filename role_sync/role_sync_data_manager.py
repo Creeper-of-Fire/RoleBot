@@ -44,7 +44,6 @@ class RoleSyncDataManager:
                     with open(DATA_FILE, 'w', encoding='utf-8') as f:
                         json.dump(self._data, f, indent=4)
                     self._dirty = False
-                    print("[RoleSyncDataManager] 同步日志已保存到文件。")
         except asyncio.CancelledError:
             pass
         finally:
