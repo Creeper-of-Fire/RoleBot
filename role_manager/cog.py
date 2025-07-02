@@ -119,7 +119,7 @@ class TimedRolesCog(FeatureCog, name="TimedRoles"):
     """
 
     def get_main_panel_buttons(self) -> Optional[List[discord.ui.Button]]:
-        return [TimedRolePanelButton(self), QueryTimeButton(self), ReturnTimedRoleButton(self)]
+        return [TimedRolePanelButton(self), ReturnTimedRoleButton(self), QueryTimeButton(self)]
 
     def __init__(self, bot: RoleBot):
         super().__init__(bot)
@@ -367,6 +367,6 @@ class FashionCog(FeatureCog, name="Fashion"):
 async def setup(bot: commands.Bot):
     """Cog的入口点，用于加载RoleManagerCog。"""
     await bot.add_cog(CoreCog(bot))
-    await bot.add_cog(TimedRolesCog(bot))
     await bot.add_cog(SelfServiceCog(bot))
     await bot.add_cog(FashionCog(bot))
+    await bot.add_cog(TimedRolesCog(bot))
