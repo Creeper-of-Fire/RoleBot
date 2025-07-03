@@ -168,13 +168,13 @@ class ActivityTrackerCog(commands.Cog, name="ActivityTracker"):
 
     # --- 指令组 ---
     activity_group = app_commands.Group(
-        name="角色活跃度",
+        name="用户活跃度",
         description="用户活动追踪相关指令",
         guild_ids=[gid for gid in config.GUILD_IDS],
         default_permissions=discord.Permissions(manage_roles=True),
     )
 
-    @activity_group.command(name="活跃度角色领取面板", description="发送一个活跃度角色申领面板。")
+    @activity_group.command(name="活跃度身份组领取面板", description="发送一个活跃度角色申领面板。")
     @app_commands.checks.has_permissions(manage_roles=True)
     async def send_activity_panel(self, interaction: discord.Interaction):
         """管理员指令，用于发送一个公共的、可交互的面板。"""
@@ -217,7 +217,8 @@ class ActivityTrackerCog(commands.Cog, name="ActivityTracker"):
         """手动回填指令（逻辑不变）"""
         guild = interaction.guild
 
-        if self.redis.sismember(ACTIVE_BACKFILLS_KEY, str(guild.id)):
+        is_running = await self.redis.sismember(ACTIVE_BACKFILLS_KEY, str(guild.id))
+        if is_running:
             await interaction.response.send_message("❌ 此服务器上已经有一个回填任务正在运行。请等待其完成后再试。", ephemeral=True)
             return
 
