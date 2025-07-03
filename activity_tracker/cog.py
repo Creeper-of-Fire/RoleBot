@@ -167,12 +167,18 @@ class ActivityTrackerCog(commands.Cog, name="ActivityTracker"):
             await pipe.execute()
 
     # --- 指令组 ---
-    activity_group = app_commands.Group(
-        name="用户活跃度",
-        description="用户活动追踪相关指令",
-        guild_ids=[gid for gid in config.GUILD_IDS],
-        default_permissions=discord.Permissions(manage_roles=True),
-    )
+    class ActivityGroup(app_commands.Group):
+        def __init__(self, *args, **kwargs):
+            super().__init__(
+                name="用户活跃度",
+                description="用户活动追踪相关指令",
+                guild_ids=[gid for gid in config.GUILD_IDS],
+                default_permissions=discord.Permissions(manage_roles=True),
+                *args,
+                **kwargs
+            )
+
+    activity_group = ActivityGroup()
 
     @activity_group.command(name="活跃度身份组领取面板", description="发送一个活跃度角色申领面板。")
     @app_commands.checks.has_permissions(manage_roles=True)
@@ -304,7 +310,8 @@ class ActivityTrackerCog(commands.Cog, name="ActivityTracker"):
         finally:
             await self.redis.srem(ACTIVE_BACKFILLS_KEY, str(guild.id))
 
-    def _create_progress_embed(self, guild, start_time, total_channels, channels_scanned, current_channel_name, processed_count, added_count):
+    @staticmethod
+    def _create_progress_embed(guild, start_time, total_channels, channels_scanned, current_channel_name, processed_count, added_count):
         """辅助函数，用于创建统一格式的进度条 Embed（逻辑不变）"""
         elapsed_time = time.time() - start_time
         embed = discord.Embed(

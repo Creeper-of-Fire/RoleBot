@@ -112,12 +112,19 @@ class CoreCog(commands.Cog, name="Core"):
         self.bot.add_view(MainPanelView(self))  # MainPanelView 现在由 CoreCog 负责
         self.logger.info("核心模块已就绪，主控制面板持久化视图已注册。")
 
-    rolebot_group = app_commands.Group(
-        name=config.COMMAND_GROUP_NAME,
-        description="机器人核心管理与状态指令",
-        guild_ids=[gid for gid in config.GUILD_IDS],
-        default_permissions=discord.Permissions(manage_roles=True),
-    )
+    class RoleBotGroup(app_commands.Group):
+        def __init__(self, *args, **kwargs):
+            super().__init__(
+                name=config.COMMAND_GROUP_NAME,
+                description="机器人核心管理与状态指令",
+                guild_ids=[gid for gid in config.GUILD_IDS],
+                default_permissions=discord.Permissions(manage_roles=True),
+                *args,
+                **kwargs
+            )
+
+
+    rolebot_group = RoleBotGroup()
 
     @rolebot_group.command(name="打开身份组自助中心面板", description="发送身份组管理面板到当前频道")
     @app_commands.checks.has_permissions(manage_roles=True)
