@@ -11,13 +11,12 @@ from discord.ext import tasks, commands
 
 import config
 from timed_role import timer
-from timed_role.timer import UTC8
-
-from utility.auth import is_role_dangerous
-from utility.helpers import try_get_member
-from timed_role.timed_role_data_manager import TimedRoleDataManager
-from utility.feature_cog import FeatureCog
 from timed_role.buttons import TimedRolePanelButton, QueryTimeButton, ReturnTimedRoleButton
+from timed_role.timed_role_data_manager import TimedRoleDataManager
+from timed_role.timer import UTC8
+from utility.auth import is_role_dangerous
+from utility.feature_cog import FeatureCog
+from utility.helpers import try_get_member
 
 if typing.TYPE_CHECKING:
     from core.cog import CoreCog
@@ -70,27 +69,17 @@ class TimedRolesCog(FeatureCog, name="TimedRoles"):
             self.safe_timed_role_ids_cache[guild_id] = current_safe_timed_ids
         self.logger.info("TimedRolesCog: 安全限时身份组缓存更新完毕。")
 
-    @app_commands.command(name="强制触发限时身份组每日重置")
+    @app_commands.command(name="强制触发限时身份组每日重置", description="在当前服务器强制触发限时身份组每日重置")
+    @app_commands.guilds(*[discord.Object(id=gid) for gid in config.GUILD_IDS])
     @app_commands.default_permissions(manage_roles=True)
     async def force_reset_timed_roles_command(self, interaction: discord.Interaction):
         """【管理员专属】强制触发所有服务器的限时身份组每日重置。"""
         self.logger.info(f"管理员 {interaction.user} 正在强制触发限时身份组每日重置...")
         await interaction.response.send_message("正在强制触发每日重置...", ephemeral=True)
 
-        # Cog 负责筛选需要重置的服务器
-        guilds_to_reset = [
-            g for g in self.bot.guilds
-            if g.id in config.GUILD_CONFIGS and not timer.is_guild_permanent(g.id)
-        ]
+        await self.timed_role_data_manager.daily_reset(self, [interaction.guild])
 
-        if not guilds_to_reset:
-            await interaction.followup.send("✅ 操作完成，没有需要重置的服务器。", ephemeral=True)
-            return
-
-        # 将筛选后的列表传递给 DataManager
-        await self.timed_role_data_manager.daily_reset(self, guilds_to_reset)
-
-        await interaction.followup.send(f"✅ 强制重置成功。已处理 {len(guilds_to_reset)} 个服务器。", ephemeral=True)
+        await interaction.followup.send(f"✅ 服务器{interaction.guild.name}强制重置成功。", ephemeral=True)
         self.logger.info("管理员强制重置成功。")
 
     @tasks.loop(minutes=1)
@@ -119,7 +108,6 @@ class TimedRolesCog(FeatureCog, name="TimedRoles"):
                 return
 
             await self.timed_role_data_manager.daily_reset(self, guilds_to_reset)
-
 
     @tasks.loop(minutes=1)
     async def check_expired_roles_task(self):
