@@ -277,7 +277,7 @@ class CoreCog(commands.Cog, name="Core"):
         await interaction.followup.send(embed=embed)
 
     @rolebot_group.command(name="获取数据备份", description="打包并发送 data 目录下的所有数据文件。")
-    @app_commands.default_permissions(manage_roles=True, view_audit_log=True)
+    @app_commands.default_permissions(manage_roles=True)
     async def backup_data(self, interaction: discord.Interaction):
         """
         创建一个包含 'data' 目录下所有文件的 zip 压缩包，并私密地发送给命令使用者。
