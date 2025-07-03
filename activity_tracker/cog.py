@@ -166,17 +166,15 @@ class ActivityTrackerCog(commands.Cog, name="ActivityTracker"):
 
             await pipe.execute()
 
-    # # --- 指令组 ---
-    # activity_group = app_commands.Group(
-    #     name="用户活跃度",
-    #     description="用户活动追踪相关指令",
-    #     guild_ids=[gid for gid in config.GUILD_IDS],
-    #     default_permissions=discord.Permissions(manage_roles=True),
-    # )
+    # --- 指令组 ---
+    activity_group = app_commands.Group(
+        name="用户活跃度",
+        description="用户活动追踪相关指令",
+        guild_only=True,
+        default_permissions=discord.Permissions(manage_roles=True),
+    )
 
-    @app_commands.command(name="用户活跃度-活跃度身份组领取面板", description="发送一个活跃度角色申领面板。")
-    @app_commands.guilds(*[discord.Object(id=gid) for gid in config.GUILD_IDS])
-    @app_commands.default_permissions(manage_roles=True)
+    @activity_group.command(name="活跃度身份组领取面板", description="发送一个活跃度角色申领面板。")
     @app_commands.checks.has_permissions(manage_roles=True)
     async def send_activity_panel(self, interaction: discord.Interaction):
         """管理员指令，用于发送一个公共的、可交互的面板。"""
@@ -212,10 +210,8 @@ class ActivityTrackerCog(commands.Cog, name="ActivityTracker"):
         view = ActivityRoleView(self)
         await interaction.followup.send(embed=embed, view=view)
 
-    @app_commands.command(name="用户活跃度-手动拉取历史消息", description="手动拉取历史消息以填充活动数据。")
+    @activity_group.command(name="手动拉取历史消息", description="手动拉取历史消息以填充活动数据。")
     @app_commands.describe(days="要拉取多少天内的历史消息（默认30天）")
-    @app_commands.guilds(*[discord.Object(id=gid) for gid in config.GUILD_IDS])
-    @app_commands.default_permissions(manage_roles=True)
     @app_commands.checks.has_permissions(manage_roles=True)
     async def backfill_history(self, interaction: discord.Interaction, days: int = 30):
         """手动回填指令（逻辑不变）"""
