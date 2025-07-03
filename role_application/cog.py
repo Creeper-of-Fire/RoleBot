@@ -131,9 +131,9 @@ class CreatorApplicationModal(ui.Modal, title="作品审核提交"):
                 return
 
             # 5b. 获取帖子的首楼消息 (Starter Message)
-            # 帖子的ID与其首楼消息的ID是相同的。我们从其父频道（论坛）抓取。
-            # 这里必须使用 fetch 来确保获取到最新的反应数据。
-            starter_message = await channel.parent.fetch_message(channel.id)
+            # 直接在 Thread 对象 (channel) 上调用 fetch_message，而不是在它的父级 (ForumChannel) 上。
+            # 帖子的ID (channel.id) 就是其起始消息的ID。
+            starter_message = await channel.fetch_message(channel.id)
 
             # 5c. 提交者必须是帖子的作者
             if starter_message.author.id != member.id:
