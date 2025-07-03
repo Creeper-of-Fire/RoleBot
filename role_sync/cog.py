@@ -69,15 +69,19 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
             for pair in direct_sync_pairs:
                 source_id = pair.get("source")
                 target_id = pair.get("target")
-                if not source_id or not target_id: continue
+                if not source_id or not target_id:
+                    continue
 
                 target_role = guild.get_role(target_id)
+                source_role = guild.get_role(source_id)
                 if target_role:
                     core_cog.role_name_cache[target_id] = target_role.name
                     if is_role_dangerous(target_role):
                         self.logger.warning(
                             f"服务器 '{guild.name}' 的直接同步目标组 '{target_role.name}'(ID:{target_id}) 含敏感权限，已排除。")
                     else:
+                        self.logger.info(
+                            f"服务器 '{guild.name}' 已添加同步规则 '{source_role.name}->{target_role.name}'。")
                         safe_direct_pairs.append(pair)
             if safe_direct_pairs:
                 self.safe_direct_sync_pairs_cache[guild_id] = safe_direct_pairs
@@ -116,7 +120,6 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
             return  # 没有新增身份组
 
         # 遍历所有新增的身份组，并为每个身份组检查所有可能的同步规则
-        # 【修改】遍历所有新增的身份组，并为每个身份组检查所有可能的同步规则
         for added_role in added_roles:
             added_role_id = added_role.id
             for pair in sync_pairs:
@@ -209,7 +212,7 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
         """当用户输入rule参数时，动态生成同步规则列表。"""
         choices = []
         guild_id = interaction.guild_id
-        # 【修改】获取同步规则列表
+        # 获取同步规则列表
         sync_pairs = self.safe_direct_sync_pairs_cache.get(guild_id, [])
         core_cog: CoreCog | None = self.bot.get_cog("Core")
         role_name_cache = core_cog.role_name_cache if core_cog else {}
@@ -353,10 +356,10 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
                 last_update_time = current_time  # 更新时间戳
 
                 embed_copy = embed.copy()
-                embed_copy.set_field_at(0, name="扫描进度", value=create_progress_bar(processed_members_count, total_members_to_scan))
-                embed_copy.set_field_at(1, name="✅ 同步", value=f"`{total_synced}`")
-                embed_copy.set_field_at(2, name="✍️ 补录", value=f"`{total_logged}`")
-                embed_copy.set_field_at(3, name="❌ 失败", value=f"`{total_failed}`")
+                embed_copy.set_field_at(0, name="扫描进度", value=create_progress_bar(processed_members_count, total_members_to_scan), inline=False)
+                embed_copy.set_field_at(1, name="✅ 同步", value=f"`{total_synced}`", inline=True)
+                embed_copy.set_field_at(2, name="✍️ 补录", value=f"`{total_logged}`", inline=True)
+                embed_copy.set_field_at(3, name="❌ 失败", value=f"`{total_failed}`", inline=True)
 
                 try:
                     # 启动后台任务，并保存对它的引用
