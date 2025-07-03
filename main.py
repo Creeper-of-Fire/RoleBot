@@ -8,7 +8,7 @@ from discord.ext import commands
 import config
 # 导入我们的配置和模块
 import config_data
-from activity_tracker.cog import ActivityTrackerCog
+from activity_tracker.cog import TrackActivityCog
 from core.cog import CoreCog
 from fashion.cog import FashionCog
 from role_application.cog import RoleApplicationCog
@@ -97,7 +97,7 @@ class CogManager:
             "timed_role": TimedRolesCog,
             "role_sync": RoleSyncCog,
             "role_application": RoleApplicationCog,
-            "activity_tracker": ActivityTrackerCog,
+            "track_activity": TrackActivityCog,
         }
 
     async def load_all_enabled(self):

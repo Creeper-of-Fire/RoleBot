@@ -32,7 +32,7 @@ class ActivityRoleView(ui.View):
     包含“检查我的活跃度”按钮的持久化视图。
     """
 
-    def __init__(self, cog: 'ActivityTrackerCog'):
+    def __init__(self, cog: 'TrackActivityCog'):
         super().__init__(timeout=None)
         self.cog = cog
 
@@ -112,7 +112,7 @@ class ActivityRoleView(ui.View):
 # 2. 主 Cog 类
 # ===================================================================
 
-class ActivityTrackerCog(commands.Cog, name="ActivityTracker"):
+class TrackActivityCog(commands.Cog, name="TrackActivity"):
     """
     通过 Redis 跟踪用户消息活动，并提供手动回填和面板申领的功能。
     """
@@ -170,7 +170,7 @@ class ActivityTrackerCog(commands.Cog, name="ActivityTracker"):
     class ActivityGroup(app_commands.Group):
         def __init__(self, *args, **kwargs):
             super().__init__(
-                name="活跃度管理",
+                name="用户活跃度模块",
                 description="用户活动追踪相关指令",
                 guild_ids=[gid for gid in config.GUILD_IDS],
                 default_permissions=discord.Permissions(manage_roles=True),
@@ -178,11 +178,11 @@ class ActivityTrackerCog(commands.Cog, name="ActivityTracker"):
                 **kwargs
             )
 
-    activity_group = ActivityGroup()
+    activity_command_group = ActivityGroup()
 
-    @activity_group.command(name="活跃度身份组领取面板", description="发送一个活跃度角色申领面板。")
+    @activity_command_group.command(name="发送活跃度身份组领取面板", description="发送一个活跃度角色申领面板。")
     @app_commands.checks.has_permissions(manage_roles=True)
-    async def send_activity_panel(self, interaction: discord.Interaction):
+    async def send_panel(self, interaction: discord.Interaction):
         """管理员指令，用于发送一个公共的、可交互的面板。"""
         await interaction.response.defer()
         guild = interaction.guild
@@ -216,7 +216,7 @@ class ActivityTrackerCog(commands.Cog, name="ActivityTracker"):
         view = ActivityRoleView(self)
         await interaction.followup.send(embed=embed, view=view)
 
-    @activity_group.command(name="手动拉取历史消息-强制解锁", description="【管理员】当回填任务卡死时，强制解锁服务器的回填状态。")
+    @activity_command_group.command(name="手动拉取历史消息-强制解锁", description="【管理员】当回填任务卡死时，强制解锁服务器的回填状态。")
     @app_commands.checks.has_permissions(manage_roles=True)
     async def force_unlock_backfill(self, interaction: discord.Interaction):
         """
@@ -241,10 +241,10 @@ class ActivityTrackerCog(commands.Cog, name="ActivityTracker"):
             # 这个情况理论上不会发生，因为前面已经检查过了，但作为保险
             await interaction.response.send_message("🤔 未能解锁，可能是因为在执行命令的瞬间任务刚好正常结束了。请重试。", ephemeral=True)
 
-    @activity_group.command(name="手动拉取历史消息", description="手动拉取历史消息以填充活动数据。")
+    @activity_command_group.command(name="手动拉取历史消息-开始", description="手动拉取历史消息以填充活动数据。")
     @app_commands.describe(days="要拉取多少天内的历史消息（默认30天）")
     @app_commands.checks.has_permissions(manage_roles=True)
-    async def backfill_history(self, interaction: discord.Interaction, days: int = 30):
+    async def manual_backfill_history(self, interaction: discord.Interaction, days: int = 30):
         """手动回填指令（逻辑不变）"""
         guild = interaction.guild
 
@@ -355,4 +355,4 @@ class ActivityTrackerCog(commands.Cog, name="ActivityTracker"):
 
 async def setup(bot: RoleBot):
     """Cog的入口点。"""
-    await bot.add_cog(ActivityTrackerCog(bot))
+    await bot.add_cog(TrackActivityCog(bot))
