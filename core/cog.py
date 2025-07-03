@@ -200,7 +200,7 @@ class CoreCog(commands.Cog, name="Core"):
     @app_commands.default_permissions(manage_roles=True)
     async def system_status(self, interaction: discord.Interaction):
         """显示一个包含详细系统信息的监控面板，采用更简洁的格式。"""
-        await interaction.response.defer(ephemeral=False, Thinking=True)
+        await interaction.response.defer(ephemeral=False, thinking=True)
 
         # --- 1. 获取进程和机器人信息 (不变) ---
         process = psutil.Process()
@@ -282,7 +282,7 @@ class CoreCog(commands.Cog, name="Core"):
         """
         创建一个包含 'data' 目录下所有文件的 zip 压缩包，并私密地发送给命令使用者。
         """
-        await interaction.response.defer(ephemeral=False, Thinking=True)
+        await interaction.response.defer(ephemeral=False, thinking=True)
 
         self.logger.info(
             f"数据备份操作触发: "
