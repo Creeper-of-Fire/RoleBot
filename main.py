@@ -67,16 +67,53 @@ class RoleBot(commands.Bot):
         """在机器人登录前执行的异步设置。"""
         await cog_manager.load_all_enabled()
         self.logger.info("开始同步应用命令...")
-        # 遍历配置中的所有服务器ID，并将命令逐个同步过去
-        # 这种方式比全局同步快得多，通常是即时生效
+
+        # ##################################################################
+        # ### 强制刷新方案：在同步前清空指定服务器的命令                ###
+        # ### !! 重要 !!: 这个过程只应运行一次。成功后请注释或删除此部分代码！ ###
+        # ##################################################################
+
+        self.logger.warning("<<<<< 正在执行一次性命令缓存强制刷新！>>>>>")
+
+        # 遍历配置中的所有服务器ID
         for guild_id in config.GUILD_IDS:
-            guild = discord.Object(id=guild_id)
-            self.tree.copy_global_to(guild=guild)
             try:
+                guild = discord.Object(id=guild_id)
+
+                # 1. 清空这个服务器上的所有旧命令
+                self.tree.clear_commands(guild=guild)
+                self.logger.info(f"已向 Discord 发送清空服务器 {guild_id} 命令的请求。")
+
+                # 2. 等待清空指令生效（可选但推荐）
+                await self.tree.sync(guild=guild)
+                self.logger.info(f"服务器 {guild_id} 的旧命令已确认清空。")
+
+                # 3. 将全局命令（即我们代码中定义的）复制并同步到这个服务器
+                self.tree.copy_global_to(guild=guild)
                 synced = await self.tree.sync(guild=guild)
-                self.logger.info(f"已同步 {len(synced)} 个命令到服务器 {guild_id}")
+
+                self.logger.info(f"已将 {len(synced)} 个新命令重新同步到服务器 {guild_id}")
+
             except discord.HTTPException as e:
-                self.logger.error(f"同步命令到服务器 {guild_id} 失败: {e}")
+                self.logger.error(f"强制刷新服务器 {guild_id} 时失败: {e}")
+            except Exception as ex:
+                self.logger.error(f"在处理服务器 {guild_id} 时发生未知错误: {ex}")
+
+        self.logger.warning("<<<<< 命令缓存强制刷新操作完成！>>>>>")
+        self.logger.warning("<<<<< 请记得在下次启动前注释掉 setup_hook 中的刷新代码！>>>>>")
+
+        # ##############################################################
+        # ### 刷新完成后，您应该删除上面的代码，并取消注释下面的原始代码 ###
+        # ##############################################################
+        #
+        # for guild_id in config.GUILD_IDS:
+        #     guild = discord.Object(id=guild_id)
+        #     self.tree.copy_global_to(guild=guild)
+        #     try:
+        #         synced = await self.tree.sync(guild=guild)
+        #         self.logger.info(f"已同步 {len(synced)} 个命令到服务器 {guild_id}")
+        #     except discord.HTTPException as e:
+        #         self.logger.error(f"同步命令到服务器 {guild_id} 失败: {e}")
 
 
 # ===================================================================
