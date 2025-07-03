@@ -315,13 +315,95 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
     通过 Redis 跟踪用户消息活动，并提供手动回填和面板申领的功能。
     """
 
-    def __init__(self, bot: RoleBot, data_manager: DataManager):
+    def __init__(self, bot: RoleBot):
         self.bot = bot
         self.logger = bot.logger
         self.config = config.ACTIVITY_TRACKER_CONFIG
-        self.data_manager = data_manager  # 使用传入的 DataManager 实例
-        # 注册持久化视图
+
+        self.data_manager = DataManager(
+            host=config.REDIS_HOST,
+            port=config.REDIS_PORT,
+            db=config.REDIS_DB,
+            logger=bot.logger
+        )
+
+        self._has_run_startup_task = False  # Cog内部的状态标志，用于确保启动任务只运行一次
+
+    # --- 【新】Cog 生命周期方法 ---
+    async def cog_load(self):
+        """Cog 加载时执行的操作"""
+        self.logger.info(f"Cog '{self.qualified_name}' 加载完成。")
         self.bot.add_view(ActivityRoleView(self))
+
+    # --- 【新】使用 Cog 内部的 on_ready 监听器来处理启动任务 ---
+    @commands.Cog.listener()
+    async def on_ready(self):
+        """
+        当 bot 准备就绪时，执行一次性的启动任务。
+        这个监听器是 Cog 的一部分，比在 setup 中定义更健壮。
+        """
+        # 等待内部缓存完全加载
+        await self.bot.wait_until_ready()
+
+        if not await self.data_manager.check_connection():
+            self.bot.logger.error("Redis 连接失败，活跃度追踪模块将无法正常工作。不加载 TrackActivityCog。")
+            self.cog_check = lambda ctx: False
+            return
+
+        if not self._has_run_startup_task:
+            self.logger.info("检测到首次启动，准备执行启动时回填任务...")
+            # 使用 create_task 在后台运行，不阻塞 on_ready
+            self.bot.loop.create_task(self._startup_backfill_task_body())
+            self._has_run_startup_task = True
+
+    async def _startup_backfill_task_body(self):
+        """
+        启动时自动回填任务的具体逻辑。
+        """
+        startup_backfill_cfg = self.config.get("startup_backfill", {})
+        if not startup_backfill_cfg.get("enabled", False):
+            self.logger.info("启动时回填任务未启用，跳过。")
+            return
+
+        guild_id = startup_backfill_cfg.get("guild_id")
+        report_channel_id = startup_backfill_cfg.get("report_channel_id")
+        duration_minutes = startup_backfill_cfg.get("duration_minutes")
+
+        if not all([guild_id, report_channel_id, duration_minutes]) or duration_minutes <= 0:
+            self.logger.error("启动时回填配置不完整或无效。请检查 'startup_backfill' 配置。")
+            return
+
+        guild = self.bot.get_guild(guild_id)
+        report_channel = None
+        if guild:
+            report_channel = guild.get_channel(report_channel_id)
+
+        if not guild or not report_channel or not isinstance(report_channel, discord.TextChannel):
+            self.logger.error(f"启动时回填：无法找到服务器 {guild_id} 或报告频道 {report_channel_id}，或其不是文本频道。跳过。")
+            return
+
+        # 检查回填任务是否已在运行 (例如，在机器人重启前手动触发了)
+        is_running = await self.data_manager.is_backfill_locked(guild.id)
+        if is_running:
+            self.logger.warning(f"服务器 '{guild.name}' 上已有一个回填任务正在运行，本次启动时自动回填将跳过。")
+            await report_channel.send(f"⚠️ **自动回填跳过！**\n检测到服务器 `{guild.name}` 上已有一个回填任务正在进行。")
+            return
+
+        self.logger.info(f"正在执行启动时自动回填任务，服务器: {guild.name}, 持续时间: {duration_minutes} 分钟, 报告频道: #{report_channel.name}")
+
+        end_datetime = datetime.now(timezone.utc)
+        start_datetime = end_datetime - timedelta(minutes=duration_minutes)
+
+        await report_channel.send(
+            f"🤖 **自动回填任务启动！**\n我将在后台开始拉取服务器 `{guild.name}` 过去 `{duration_minutes}` 分钟的历史消息。进度和结果将在此频道更新。")
+
+        # 现在调用 self._backfill_guild_history
+        await self._backfill_guild_history(
+            guild=guild,
+            target_channel=report_channel,
+            start_datetime=start_datetime,
+            end_datetime=end_datetime
+        )
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -1074,68 +1156,4 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
 
 async def setup(bot: RoleBot):
     """Cog的入口点。"""
-    # 在 setup 函数中创建 DataManager 的单例实例
-    data_manager_instance = DataManager(
-        host=config.REDIS_HOST,
-        port=config.REDIS_PORT,
-        db=config.REDIS_DB,
-        logger=bot.logger
-    )
-    # 检查 Redis 连接
-    if not await data_manager_instance.check_connection():
-        bot.logger.error("Redis 连接失败，活跃度追踪模块将无法正常工作。不加载 TrackActivityCog。")
-        return
-
-    cog = TrackActivityCog(bot, data_manager_instance)
-    await bot.add_cog(cog)
-
-    # --- 启动时回填逻辑 ---
-    @bot.event
-    async def on_ready():
-        # Make sure this runs only once per bot startup, not every time cogs reload
-        if not hasattr(bot, '_activity_cog_startup_backfill_done'):
-            bot._activity_cog_startup_backfill_done = False  # Initialize flag
-
-        if not bot._activity_cog_startup_backfill_done:
-            startup_backfill_cfg = cog.config.get("startup_backfill", {})
-            if startup_backfill_cfg.get("enabled", False):
-                guild_id = startup_backfill_cfg.get("guild_id")
-                report_channel_id = startup_backfill_cfg.get("report_channel_id")
-                duration_minutes = startup_backfill_cfg.get("duration_minutes")
-
-                if not all([guild_id, report_channel_id, duration_minutes]) or duration_minutes <= 0:
-                    cog.logger.error("启动时回填配置不完整或无效。请检查 'startup_backfill' 配置。",
-                                     extra={"guild_id": guild_id, "report_channel_id": report_channel_id, "duration_minutes": duration_minutes})
-                    # 尝试发送错误消息到控制台或日志
-                    if bot.is_ready():  # Check if bot is fully ready to send to default channel
-                        try:
-                            error_channel = bot.get_channel(report_channel_id) or bot.get_guild(guild_id).text_channels[0]
-                            await error_channel.send("⚠️ 启动时自动回填任务配置错误，无法启动。请检查日志。")
-                        except Exception as e:
-                            cog.logger.error(f"无法发送启动时回填配置错误消息: {e}")
-                    return
-
-                guild = bot.get_guild(guild_id)
-                report_channel = None
-                if guild:
-                    report_channel = guild.get_channel(report_channel_id)
-
-                if not guild or not report_channel or not isinstance(report_channel, discord.TextChannel):
-                    cog.logger.error(f"启动时回填：无法找到服务器 {guild_id} 或报告频道 {report_channel_id}，或其不是文本频道。跳过。")
-                    return
-
-                cog.logger.info(f"正在执行启动时自动回填任务，服务器: {guild.name}, 持续时间: {duration_minutes} 分钟, 报告频道: #{report_channel.name}")
-
-                end_datetime = datetime.now(timezone.utc)
-                start_datetime = end_datetime - timedelta(minutes=duration_minutes)
-
-                await report_channel.send(
-                    f"🤖 **自动回填任务启动！**\n我将在后台开始拉取服务器 `{guild.name}` 过去 `{duration_minutes}` 分钟的历史消息。进度和结果将在此频道更新。")
-
-                bot.loop.create_task(cog._backfill_guild_history(
-                    guild=guild,
-                    target_channel=report_channel,
-                    start_datetime=start_datetime,
-                    end_datetime=end_datetime
-                ))
-            bot._activity_cog_startup_backfill_done = True  # Set flag to true after execution
+    await bot.add_cog(TrackActivityCog(bot))
