@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import io
 import typing
 from typing import Dict, List, Optional
 
@@ -11,8 +10,9 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+import config
 import config_data
-from role_sync.role_sync_data_manager import RoleSyncDataManager, create_rule_key, DATA_FILE
+from role_sync.role_sync_data_manager import RoleSyncDataManager, create_rule_key
 from utility.auth import is_role_dangerous
 from utility.feature_cog import FeatureCog
 from utility.helpers import create_progress_bar
@@ -35,8 +35,8 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
         super().__init__(bot)
         self.data_manager = RoleSyncDataManager()
         # 缓存安全的同步规则
-        # {'guild_id': {source_id: target_id}}
-        self.safe_direct_sync_map_cache: Dict[int, Dict[int, int]] = {}
+        # {'guild_id': [{'source': source_id, 'target': target_id}]}
+        self.safe_direct_sync_pairs_cache: Dict[int, List[Dict[str, int]]] = {}
         # {'guild_id': [{'source': source_id, 'target': target_id}]}
         self.safe_daily_sync_pairs_cache: Dict[int, List[Dict[str, int]]] = {}
 
@@ -56,7 +56,7 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
         if not core_cog: return
 
         # 清空旧缓存
-        self.safe_direct_sync_map_cache.clear()
+        self.safe_direct_sync_pairs_cache.clear()
         self.safe_daily_sync_pairs_cache.clear()
 
         for guild_id, sync_cfg in config_data.ROLE_SYNC_CONFIG.items():
@@ -64,9 +64,13 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
             if not guild: continue
 
             # 1. 处理直接同步 (A -> B)
-            direct_sync_map = sync_cfg.get("direct_sync_map", {})
-            safe_direct_map = {}
-            for source_id, target_id in direct_sync_map.items():
+            direct_sync_pairs = sync_cfg.get("direct_sync_pairs", [])
+            safe_direct_pairs = []
+            for pair in direct_sync_pairs:
+                source_id = pair.get("source")
+                target_id = pair.get("target")
+                if not source_id or not target_id: continue
+
                 target_role = guild.get_role(target_id)
                 if target_role:
                     core_cog.role_name_cache[target_id] = target_role.name
@@ -74,9 +78,9 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
                         self.logger.warning(
                             f"服务器 '{guild.name}' 的直接同步目标组 '{target_role.name}'(ID:{target_id}) 含敏感权限，已排除。")
                     else:
-                        safe_direct_map[source_id] = target_id
-            if safe_direct_map:
-                self.safe_direct_sync_map_cache[guild_id] = safe_direct_map
+                        safe_direct_pairs.append(pair)
+            if safe_direct_pairs:
+                self.safe_direct_sync_pairs_cache[guild_id] = safe_direct_pairs
 
             # 2. 处理每日同步 (C -> D)
             daily_sync_pairs = sync_cfg.get("daily_sync_pairs", [])
@@ -103,33 +107,40 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
             return  # 身份组未变化
 
         guild_id = after.guild.id
-        sync_map = self.safe_direct_sync_map_cache.get(guild_id)
-        if not sync_map:
+        sync_pairs = self.safe_direct_sync_pairs_cache.get(guild_id)
+        if not sync_pairs:
             return  # 该服务器无配置
 
         added_roles = set(after.roles) - set(before.roles)
         if not added_roles:
             return  # 没有新增身份组
 
+        # 遍历所有新增的身份组，并为每个身份组检查所有可能的同步规则
+        # 【修改】遍历所有新增的身份组，并为每个身份组检查所有可能的同步规则
         for added_role in added_roles:
-            source_id = added_role.id
-            target_id = sync_map.get(source_id)
-            if not target_id: continue
+            added_role_id = added_role.id
+            for pair in sync_pairs:
+                source_id = pair["source"]
+                target_id = pair["target"]
 
-            if self.data_manager.is_synced(guild_id, source_id, target_id, after.id): continue
+                # 如果新增的身份组是某个规则的源
+                if added_role_id == source_id:
+                    if self.data_manager.is_synced(guild_id, source_id, target_id, after.id):
+                        continue
 
-            target_role = after.guild.get_role(target_id)
-            if not target_role: continue
+                    target_role = after.guild.get_role(target_id)
+                    if not target_role:
+                        continue
 
-            if target_role in after.roles:
-                await self.data_manager.mark_as_synced(guild_id, source_id, target_id, after.id)
-                continue
+                    if target_role in after.roles:
+                        await self.data_manager.mark_as_synced(guild_id, source_id, target_id, after.id)
+                        continue
 
-            try:
-                await after.add_roles(target_role, reason=f"自动同步: {added_role.name}")
-                await self.data_manager.mark_as_synced(guild_id, source_id, target_id, after.id)
-            except Exception as e:
-                self.logger.error(f"为 {after.display_name} 同步时出错: {e}")
+                    try:
+                        await after.add_roles(target_role, reason=f"自动同步: {added_role.name}")
+                        await self.data_manager.mark_as_synced(guild_id, source_id, target_id, after.id)
+                    except Exception as e:
+                        self.logger.error(f"为 {after.display_name} 同步时出错: {e}")
 
     @tasks.loop(hours=24)
     async def daily_sync_task(self):
@@ -181,7 +192,7 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
         await self.bot.wait_until_ready()
 
     @app_commands.command(name="手动触发每日同步", description="立即执行一次每日身份组同步检查任务。")
-    @app_commands.guilds(*[discord.Object(id=gid) for gid in config_data.ROLE_SYNC_CONFIG.keys()])
+    @app_commands.guilds(*[discord.Object(id=gid) for gid in config.GUILD_IDS])
     @app_commands.default_permissions(manage_roles=True)
     async def manual_daily_sync(self, interaction: discord.Interaction):
         """手动触发 daily_sync_task 任务。"""
@@ -198,7 +209,8 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
         """当用户输入rule参数时，动态生成同步规则列表。"""
         choices = []
         guild_id = interaction.guild_id
-        sync_map = self.safe_direct_sync_map_cache.get(guild_id, {})
+        # 【修改】获取同步规则列表
+        sync_pairs = self.safe_direct_sync_pairs_cache.get(guild_id, [])
         core_cog: CoreCog | None = self.bot.get_cog("Core")
         role_name_cache = core_cog.role_name_cache if core_cog else {}
 
@@ -207,7 +219,10 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
         if not current or "所有" in all_rules_choice.name:
             choices.append(all_rules_choice)
 
-        for source_id, target_id in sync_map.items():
+        # 【修改】遍历规则列表
+        for pair in sync_pairs:
+            source_id = pair["source"]
+            target_id = pair["target"]
             source_name = role_name_cache.get(source_id, f"ID:{source_id}")
             target_name = role_name_cache.get(target_id, f"ID:{target_id}")
             choice_name = f"{source_name} -> {target_name}"
@@ -230,36 +245,37 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
         user_id = interaction.user.id
         user_mention = interaction.user.mention
 
-        # --- 1. 解析规则 ---
-        sync_map = self.safe_direct_sync_map_cache.get(guild.id, {})
+        # --- 1. 【修改】解析规则 ---
+        sync_pairs = self.safe_direct_sync_pairs_cache.get(guild.id, [])
 
-        if not sync_map:
+        if not sync_pairs:
             await interaction.followup.send("❌ 此服务器没有配置任何 A->B 实时同步规则。", ephemeral=True)
             return
 
-        rules_to_scan = {}
+        rules_to_scan = []  # 【修改】待扫描的规则现在是一个列表
         scan_title = ""
         if rule == "all":
-            rules_to_scan = sync_map
+            rules_to_scan = sync_pairs
             scan_title = "扫描所有规则"
         else:
-            try:
-                source_id_str, target_id_str = rule.split('-')
-                source_id, target_id = int(source_id_str), int(target_id_str)
-                # 确认规则仍然有效
-                if sync_map.get(source_id) != target_id:
-                    await interaction.followup.send("❌ 所选规则已不存在或已失效。", ephemeral=True)
-                    return
-                rules_to_scan[source_id] = target_id
-                source_role = guild.get_role(source_id)
-                target_role = guild.get_role(target_id)
-                if not source_role or not target_role:
-                    await interaction.followup.send("❌ 规则中的身份组已不存在。", ephemeral=True)
-                    return
-                scan_title = f"扫描规则: {source_role.name} -> {target_role.name}"
-            except (ValueError, KeyError):
-                await interaction.followup.send("❌ 无效的规则选择，请从列表中选择。", ephemeral=True)
+            # 【修改】从列表中查找匹配的规则
+            found_pair = None
+            for pair in sync_pairs:
+                if create_rule_key(pair["source"], pair["target"]) == rule:
+                    found_pair = pair
+                    break
+
+            if not found_pair:
+                await interaction.followup.send("❌ 所选规则已不存在或已失效。", ephemeral=True)
                 return
+
+            rules_to_scan.append(found_pair)
+            source_role = guild.get_role(found_pair["source"])
+            target_role = guild.get_role(found_pair["target"])
+            if not source_role or not target_role:
+                await interaction.followup.send("❌ 规则中的身份组已不存在。", ephemeral=True)
+                return
+            scan_title = f"扫描规则: {source_role.name} -> {target_role.name}"
 
         # --- 2. 初始化扫描 ---
         embed = discord.Embed(title=f"⏳ {scan_title}", description="正在初始化扫描...", color=discord.Color.blue())
@@ -274,10 +290,11 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
 
         total_synced, total_logged, total_failed = 0, 0, 0
 
-        # 计算总扫描人数
+        # 【修改】计算总扫描人数
         total_members_to_scan = 0
         all_source_members = set()
-        for source_id in rules_to_scan:
+        for pair in rules_to_scan:
+            source_id = pair["source"]
             source_role = guild.get_role(source_id)
             if source_role:
                 # 使用集合来自动去重
@@ -308,8 +325,11 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
                 continue
 
             # 检查此成员符合哪些待扫描的规则
-            for source_id, target_id in rules_to_scan.items():
-                member_role_ids = {r.id for r in member.roles}
+            member_role_ids = {r.id for r in member.roles}
+            # 【修改】遍历待扫描的规则列表
+            for pair in rules_to_scan:
+                source_id = pair["source"]
+                target_id = pair["target"]
                 if source_id in member_role_ids:
                     if not self.data_manager.is_synced(guild.id, source_id, target_id, member.id):
                         target_role = guild.get_role(target_id)
