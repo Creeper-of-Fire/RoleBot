@@ -10,6 +10,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import discord
+import pytz
 import redis.asyncio as redis
 from discord import app_commands, ui
 from discord.ext import commands
@@ -22,7 +23,7 @@ if typing.TYPE_CHECKING:
     from main import RoleBot
 
 # --- 定义时区常量 ---
-BEIJING_TZ = timezone(timedelta(hours=8), name="Asia/Shanghai")
+BEIJING_TZ = pytz.timezone('Asia/Shanghai')
 
 # --- Redis 键名模板 ---
 CHANNEL_ACTIVITY_KEY_TEMPLATE = "activity:{guild_id}:{channel_id}:{user_id}"
@@ -738,7 +739,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
                     channels_to_scan = [single_channel]
                 else:
                     channels_to_scan = []
-                    await channel_to_report.send(f"⚠️ 我没有权限读取 {single_channel.mention} 的历史消息，任务跳过。", ephemeral=True)
+                    await channel_to_report.send(f"⚠️ 我没有权限读取 {single_channel.mention} 的历史消息，任务跳过。")
             else:
                 channels_to_scan = [
                     c for c in guild.text_channels
