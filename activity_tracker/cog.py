@@ -99,7 +99,12 @@ class ActivityReportPaginationView(ui.View):
             for channel_id, count in channels_on_page:
                 channel = self.guild.get_channel(channel_id)
                 if channel:
-                    channel_list_text.append(f"{channel.mention}: `{count}` 条")
+                    # 对于子频道，显示其父频道或所属类别
+                    if isinstance(channel, discord.Thread):
+                        parent_name = f"({channel.parent.name})" if channel.parent else ""
+                        channel_list_text.append(f"└ {channel.mention} {parent_name}: `{count}` 条")
+                    else:
+                        channel_list_text.append(f"{channel.mention}: `{count}` 条")
                 else:
                     channel_list_text.append(f"未知频道 (`{channel_id}`): `{count}` 条")
 
@@ -314,7 +319,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         self.bot = bot
         self.logger = bot.logger
         self.config = config.ACTIVITY_TRACKER_CONFIG
-        self.data_manager = data_manager # 使用传入的 DataManager 实例
+        self.data_manager = data_manager  # 使用传入的 DataManager 实例
         # 注册持久化视图
         self.bot.add_view(ActivityRoleView(self))
 
@@ -326,34 +331,116 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         guild_cfg = self.config.get("guild_configs", {}).get(message.guild.id)
         if not guild_cfg:
             return
-        ignored_channels = guild_cfg.get("ignored_channels", [])
-        ignored_categories = guild_cfg.get("ignored_categories", [])
-        if message.channel.id in ignored_channels or (message.channel.category_id and message.channel.category_id in ignored_categories):
+
+        ignored_channels = set(guild_cfg.get("ignored_channels", []))
+        ignored_categories = set(guild_cfg.get("ignored_categories", []))
+
+        # Check if the channel itself is ignored
+        if message.channel.id in ignored_channels:
+            return
+
+        # Check if the channel's category is ignored
+        # For Threads, message.channel.category_id is None, so check parent's category
+        if isinstance(message.channel, discord.Thread):
+            if message.channel.parent and message.channel.parent.category_id in ignored_categories:
+                return
+        elif message.channel.category_id and message.channel.category_id in ignored_categories:
             return
 
         retention_days = guild_cfg.get("data_retention_days", 90)
         await self.data_manager.record_message(
             guild_id=message.guild.id,
-            channel_id=message.channel.id,
+            channel_id=message.channel.id,  # This is correct, it will be the thread ID for threads
             user_id=message.author.id,
             message_id=message.id,
             created_at_timestamp=message.created_at.timestamp(),
             retention_days=retention_days
         )
 
-    # --- 【新】辅助方法：获取用户活跃度概览 ---
+    # --- 【新增辅助方法】获取所有可用于统计的频道 ---
+    def _get_relevant_channels(self, guild: discord.Guild, guild_cfg: dict,
+                               target_channel: typing.Optional[discord.abc.Messageable] = None,
+                               target_category: typing.Optional[discord.CategoryChannel] = None) -> list[
+        typing.Union[discord.TextChannel, discord.ForumChannel, discord.Thread]]:
+        """
+        获取一个服务器内所有符合条件（未被忽略、有权限）的可发送消息的频道列表。
+        可以根据 target_channel 或 target_category 进一步过滤。
+        """
+        ignored_channels = set(guild_cfg.get("ignored_channels", []))
+        ignored_categories = set(guild_cfg.get("ignored_categories", []))
+
+        all_messageable_channels: list[typing.Union[discord.TextChannel, discord.ForumChannel, discord.Thread]] = []
+
+        # 优先处理特定频道或类别
+        if target_channel:
+            if not target_channel.permissions_for(guild.me).read_message_history:
+                self.logger.warning(f"无法访问 {target_channel.name} 的历史消息，跳过。")
+                return []
+            if target_channel.id in ignored_channels:
+                self.logger.info(f"频道 {target_channel.name} 被忽略，跳过。")
+                return []
+            if isinstance(target_channel, discord.Thread):
+                if target_channel.parent and target_channel.parent.category_id in ignored_categories:
+                    self.logger.info(f"子频道 {target_channel.name} 的父频道类别被忽略，跳过。")
+                    return []
+            elif target_channel.category_id and target_channel.category_id in ignored_categories:
+                self.logger.info(f"频道 {target_channel.name} 的类别被忽略，跳过。")
+                return []
+            return [target_channel]
+
+        if target_category:
+            if target_category.id in ignored_categories:
+                self.logger.info(f"类别 {target_category.name} 被忽略，跳过。")
+                return []
+
+            # 获取类别下的所有文本和论坛频道
+            for channel in target_category.channels:
+                if isinstance(channel, (discord.TextChannel, discord.ForumChannel)):
+                    if channel.id not in ignored_channels and channel.permissions_for(guild.me).read_message_history:
+                        all_messageable_channels.append(channel)
+                        # 如果是论坛频道，其下的活跃帖子也应纳入统计
+                        if isinstance(channel, discord.ForumChannel):
+                            for thread in channel.threads:
+                                if thread.id not in ignored_channels and thread.permissions_for(guild.me).read_message_history:
+                                    all_messageable_channels.append(thread)
+            # 还需要考虑在类别下的、但不是直接在类别下的独立子频道 (虽然不常见，但可能存在)
+            # 不过通常情况下，用户期望的是直接属于该类别的频道。
+            # 如果需要更严格的包含所有线程，可以在 guild.threads 中再过滤。
+            # 这里暂时只考虑直接在category下的Text/Forum，以及Forum下的threads。
+
+            # 补充：单独处理未归类的线程，因为它们没有category_id
+            # 这一部分只在 scope == "guild" 时需要，对于 target_category 已经足够了。
+
+            # 简化：对于 target_category，我们只关心其直接子频道和这些子频道内的线程
+            # 这样处理是最符合逻辑的，因为用户选择的是一个类别，而不是整个服务器的“所有未归类线程”
+            return all_messageable_channels
+
+        # 如果没有指定特定频道或类别，则获取整个服务器所有相关的可发送消息频道
+        for channel in guild.channels:
+            if isinstance(channel, (discord.TextChannel, discord.ForumChannel)):
+                if channel.id not in ignored_channels \
+                        and (not channel.category_id or channel.category_id not in ignored_categories) \
+                        and channel.permissions_for(guild.me).read_message_history:
+                    all_messageable_channels.append(channel)
+            # ForumChannel 的 Threads 会在 guild.threads 中单独处理，防止重复
+
+        for thread in guild.threads:
+            # 检查 thread.parent 是否存在（有些旧的或特殊情况可能没有）
+            # 并检查其父频道的类别是否被忽略，或者线程本身是否被忽略
+            if thread.id not in ignored_channels \
+                    and (not thread.parent or not thread.parent.category_id or thread.parent.category_id not in ignored_categories) \
+                    and thread.permissions_for(guild.me).read_message_history:
+                all_messageable_channels.append(thread)
+
+        return all_messageable_channels
+
     async def _get_user_activity_summary(self, guild: discord.Guild, user_id: int, days_window: int, guild_cfg: dict) -> tuple[int, list[tuple[int, int]]]:
         """
         获取用户在指定天数窗口内的总消息数和分频道消息数。
         返回 (总消息数, [(channel_id, count), ...])
         """
-        ignored_channels = set(guild_cfg.get("ignored_channels", []))
-        ignored_categories = set(guild_cfg.get("ignored_categories", []))
-
-        channels_to_check_ids = [
-            c.id for c in guild.text_channels
-            if c.id not in ignored_channels and not (c.category_id and c.category_id in ignored_categories)
-        ]
+        channels_to_check = self._get_relevant_channels(guild, guild_cfg)
+        channels_to_check_ids = [c.id for c in channels_to_check]
 
         return await self.data_manager.get_user_activity_summary(
             guild_id=guild.id,
@@ -368,13 +455,8 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         获取用户在指定天数窗口内每天的消息数，用于热力图。
         返回 {'YYYY-MM-DD': count, ...}
         """
-        ignored_channels = set(guild_cfg.get("ignored_channels", []))
-        ignored_categories = set(guild_cfg.get("ignored_categories", []))
-
-        channels_to_check_ids = [
-            c.id for c in guild.text_channels
-            if c.id not in ignored_channels and not (c.category_id and c.category_id in ignored_categories)
-        ]
+        channels_to_check = self._get_relevant_channels(guild, guild_cfg)
+        channels_to_check_ids = [c.id for c in channels_to_check]
 
         return await self.data_manager.get_heatmap_data(
             guild_id=guild.id,
@@ -532,12 +614,13 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
                 await interaction.edit_original_response(content="⏳ 正在清除数据，请稍候...", view=None)
                 deleted_count = await self.data_manager.delete_guild_activity_data(guild.id)
                 if deleted_count >= 0:
-                    await interaction.edit_original_response(content=f"✅ **操作完成！**\n成功清除了 `{deleted_count}` 条与本服务器相关的用户活动数据。")
+                    await interaction.edit_original_response(content=f"✅ **操作完成！**\n成功清除了 `{deleted_count}` 条与本服务器相关的用户活动数据。",
+                                                             view=None)
                 else:
                     await interaction.edit_original_response(content=f"❌ 清除数据时发生错误，请查看日志。", view=None)
             elif view.value is False:
                 await interaction.edit_original_response(content="❌ 操作已取消。", view=None)
-            else:
+            else:  # 超时
                 await interaction.edit_original_response(content="⏰ 操作超时，已自动取消。", view=None)
 
     @staticmethod
@@ -578,7 +661,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         end_date="🔍 结束日期 (格式同上, 默认为今天, 时区: UTC+8) - 与 '回溯' 选项互斥。",
         hours_ago="⏰ 从现在开始回溯的小时数 (例如: 24, 48)。用于快速同步最新数据。与 '日期' 选项互斥。",
         minutes_ago="⏱️ 从现在开始回溯的分钟数 (例如: 60, 300)。用于快速同步最新数据。与 '日期' 选项互斥。",
-        channel="🎯 【可选】只扫描此特定频道。"
+        channel="🎯 【可选】只扫描此特定频道 (文本频道/子频道/论坛频道)。"
     )
     @app_commands.checks.has_permissions(manage_roles=True)
     async def backfill_history(
@@ -588,7 +671,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             end_date: typing.Optional[str] = None,
             hours_ago: typing.Optional[int] = None,
             minutes_ago: typing.Optional[int] = None,
-            channel: typing.Optional[discord.TextChannel] = None
+            channel: typing.Optional[typing.Union[discord.TextChannel, discord.Thread, discord.ForumChannel]] = None
     ):
         guild = interaction.guild
         now_utc = datetime.now(timezone.utc)
@@ -684,66 +767,75 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         # --- 统一的后续处理 ---
         target_description = f"服务器 **{guild.name}** 的所有可读频道"
         if channel:
-            target_description = f"频道 {channel.mention}"
+            if isinstance(channel, discord.Thread):
+                target_description = f"子频道 {channel.mention}"
+            elif isinstance(channel, discord.ForumChannel):
+                target_description = f"论坛频道 {channel.mention}"
+            else:
+                target_description = f"频道 {channel.mention}"
 
         await interaction.response.send_message(
             f"✅ **历史消息回填任务已启动！**\n\n"
-            f"我将开始拉取 {display_range_str} 之间，在 {target_description} 的历史消息。",
+            f"我将开始拉取 {display_range_str} 之间，在 {target_description} 的历史消息。请关注此频道以获取进度更新。",
             ephemeral=False
         )
 
-        self.bot.loop.create_task(self._backfill_guild_history(interaction, start_datetime, end_datetime, channel))
+        # Pass interaction.channel as the target for updates
+        self.bot.loop.create_task(self._backfill_guild_history(
+            guild=guild,
+            target_channel=interaction.channel,  # Now it's interaction.channel
+            start_datetime=start_datetime,
+            end_datetime=end_datetime,
+            single_channel=channel
+        ))
 
-    async def _backfill_guild_history(self, interaction: discord.Interaction, start_datetime: datetime, end_datetime: datetime,
-                                      single_channel: typing.Optional[discord.TextChannel] = None):
-        guild = interaction.guild
-        channel_to_report = interaction.channel
-
+    async def _backfill_guild_history(self, guild: discord.Guild, target_channel: discord.TextChannel,
+                                      start_datetime: datetime, end_datetime: datetime,
+                                      single_channel: typing.Optional[typing.Union[discord.TextChannel, discord.Thread, discord.ForumChannel]] = None):
+        """
+        负责回填指定时间范围内的历史消息。
+        现在接受一个 discord.TextChannel 对象来发送更新，而不是直接修改 interaction.response。
+        """
         await self.data_manager.lock_backfill(guild.id)
         self.logger.info(
             f"服务器 '{guild.name}' 开始历史消息回填任务。范围: "
             f"{start_datetime.strftime('%Y-%m-%d %H:%M:%S')} 至 {end_datetime.strftime('%Y-%m-%d %H:%M:%S')} (UTC)"
-            f"。由 {interaction.user} 触发。目标: {'单个频道' if single_channel else '全服'}"
+            f"。目标: {'单个频道' if single_channel else '全服'}。报告频道: #{target_channel.name}"
         )
 
         start_time = time.time()
         guild_cfg = self.config.get("guild_configs", {}).get(guild.id, {})
-        ignored_channels = set(guild_cfg.get("ignored_channels", []))
-        ignored_categories = set(guild_cfg.get("ignored_categories", []))
+
+        channels_to_scan = []
+        if single_channel:
+            channels_to_scan = self._get_relevant_channels(guild, guild_cfg, target_channel=single_channel)
+        else:
+            channels_to_scan = self._get_relevant_channels(guild, guild_cfg)
+
+        total_channels = len(channels_to_scan)
+        if total_channels == 0:
+            await target_channel.send("⚠️ 没有找到任何可扫描的频道（可能所有频道都被忽略或无权限）。任务已取消。")
+            await self.data_manager.unlock_backfill(guild.id)
+            return
 
         total_messages_processed, total_messages_added, channels_scanned = 0, 0, 0
         last_update_time, progress_message = time.time(), None
 
         try:
-            if single_channel:
-                if single_channel.permissions_for(guild.me).read_message_history:
-                    channels_to_scan = [single_channel]
-                else:
-                    channels_to_scan = []
-                    await channel_to_report.send(f"⚠️ 我没有权限读取 {single_channel.mention} 的历史消息，任务跳过。")
-            else:
-                channels_to_scan = [
-                    c for c in guild.text_channels
-                    if c.id not in ignored_channels
-                       and not (c.category_id and c.category_id in ignored_categories)
-                       and c.permissions_for(guild.me).read_message_history
-                ]
-            total_channels = len(channels_to_scan)
-
-            redis_pipe = self.data_manager.redis.pipeline() # 获取 Redis 客户端的 pipeline
+            redis_pipe = self.data_manager.redis.pipeline()  # 获取 Redis 客户端的 pipeline
             messages_in_pipe = 0
             for channel in channels_to_scan:
                 channels_scanned += 1
                 try:
                     # 使用 after 和 before 参数来精确控制时间范围
                     async for message in channel.history(limit=None, after=start_datetime, before=end_datetime, oldest_first=False):
-                        if message.author.bot: continue
+                        if message.author.bot: continue  # 过滤掉机器人消息
                         total_messages_processed += 1
 
                         await self.data_manager.add_message_to_pipeline(
                             redis_pipe,
                             guild_id=guild.id,
-                            channel_id=channel.id,
+                            channel_id=message.channel.id,  # 确保记录的是消息实际所在的频道ID (可能是thread ID)
                             user_id=message.author.id,
                             message_id=message.id,
                             created_at_timestamp=message.created_at.timestamp()
@@ -753,12 +845,12 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
 
                         if messages_in_pipe >= 500:
                             await self.data_manager.execute_pipeline(redis_pipe)
-                            redis_pipe = self.data_manager.redis.pipeline() # 重置管道
+                            redis_pipe = self.data_manager.redis.pipeline()  # 重置管道
                             messages_in_pipe = 0
-                            await asyncio.sleep(0.1) # 避免阻塞
+                            await asyncio.sleep(0.1)  # 避免阻塞
 
                         current_time = time.time()
-                        if current_time - last_update_time > 30:
+                        if current_time - last_update_time > 30:  # Update progress every 30 seconds
                             embed = self._create_progress_embed(
                                 guild, start_time, total_channels, channels_scanned,
                                 channel.name, total_messages_processed, total_messages_added,
@@ -768,9 +860,11 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
                                 try:
                                     await progress_message.edit(embed=embed)
                                 except (discord.NotFound, discord.HTTPException):
-                                    progress_message = await channel_to_report.send(embed=embed)
+                                    # If original message gone, send a new one
+                                    progress_message = await target_channel.send(embed=embed)
                             else:
-                                progress_message = await channel_to_report.send(embed=embed)
+                                # First time sending progress message
+                                progress_message = await target_channel.send(embed=embed)
                             last_update_time = current_time
                 except discord.Forbidden:
                     self.logger.warning(f"[{guild.name}] 无法访问频道 #{channel.name} 的历史记录，已跳过。")
@@ -798,11 +892,17 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             final_embed.add_field(name="扫描频道数", value=f"{channels_scanned}/{total_channels}", inline=True)
             final_embed.add_field(name="处理消息总数", value=f"{total_messages_processed}", inline=True)
             final_embed.add_field(name="有效消息写入数", value=f"{total_messages_added}", inline=True)
-            await channel_to_report.send(embed=final_embed)
+            if progress_message:
+                try:
+                    await progress_message.edit(embed=final_embed, view=None)  # Disable view if any
+                except (discord.NotFound, discord.HTTPException):
+                    await target_channel.send(embed=final_embed)
+            else:
+                await target_channel.send(embed=final_embed)
         except Exception as e:
             self.logger.critical(f"服务器 '{guild.name}' 的回填任务发生严重错误并中断: {e}", exc_info=True)
             error_embed = discord.Embed(title="❌ 回填任务异常中断", description=f"发生严重错误: `{e}`", color=discord.Color.red())
-            await channel_to_report.send(embed=error_embed)
+            await target_channel.send(embed=error_embed)
         finally:
             await self.data_manager.unlock_backfill(guild.id)
 
@@ -828,6 +928,149 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         embed.set_footer(text="请耐心等待，这可能需要很长时间...")
         return embed
 
+    # --- 统计活跃度 (重构为更通用) ---
+    @activity_group.command(name="统计活跃度", description="统计指定范围和指标的活跃度数据。")
+    @app_commands.describe(
+        scope="📊 统计范围：服务器、特定频道、或特定频道类别。",
+        metric="📈 统计指标：独立活跃用户数，或总消息数。",
+        days_window="⏱️ 回溯天数 (例如: 7, 30)。",
+        target_channel="🎯 (仅当范围为'频道'时使用) 要统计的特定频道 (文本/子频道/论坛)。",
+        target_category="📁 (仅当范围为'类别'时使用) 要统计的频道类别。"
+    )
+    @app_commands.choices(
+        scope=[
+            app_commands.Choice(name="整个服务器", value="guild"),
+            app_commands.Choice(name="特定频道", value="channel"),
+            app_commands.Choice(name="特定频道类别", value="category")
+        ],
+        metric=[
+            app_commands.Choice(name="独立活跃用户数", value="distinct_users"),
+            app_commands.Choice(name="总消息数", value="total_messages")
+        ]
+    )
+    @app_commands.checks.has_permissions(manage_roles=True)
+    async def get_activity_stats(
+            self,
+            interaction: discord.Interaction,
+            scope: str,
+            metric: str,
+            days_window: int = 7,
+            # Discord app commands automatically resolve channel/thread/forum IDs to discord.abc.Messageable
+            # The type hint is primarily for type checkers.
+            target_channel: typing.Optional[typing.Union[discord.TextChannel, discord.Thread, discord.ForumChannel]] = None,
+            target_category: typing.Optional[discord.CategoryChannel] = None
+    ):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        guild = interaction.guild
+
+        if days_window <= 0:
+            await interaction.followup.send("❌ `回溯天数` 必须是正整数。", ephemeral=True)
+            return
+
+        # 参数合法性检查
+        if scope == "channel":
+            if not target_channel:
+                await interaction.followup.send("❌ 当统计范围为 `特定频道` 时，`target_channel` 不能为空。", ephemeral=True)
+                return
+            if target_category:
+                await interaction.followup.send("❌ 当统计范围为 `特定频道` 时，`target_category` 必须为空。", ephemeral=True)
+                return
+        elif scope == "category":
+            if not target_category:
+                await interaction.followup.send("❌ 当统计范围为 `特定频道类别` 时，`target_category` 不能为空。", ephemeral=True)
+                return
+            if target_channel:
+                await interaction.followup.send("❌ 当统计范围为 `特定频道类别` 时，`target_channel` 必须为空。", ephemeral=True)
+                return
+        elif scope == "guild":
+            if target_channel or target_category:
+                await interaction.followup.send("❌ 当统计范围为 `整个服务器` 时，`target_channel` 和 `target_category` 必须为空。", ephemeral=True)
+                return
+
+        guild_cfg = self.config.get("guild_configs", {}).get(guild.id, {})
+
+        channels_to_scan: list[typing.Union[discord.TextChannel, discord.ForumChannel, discord.Thread]] = []
+        scope_description = ""
+
+        # 根据 scope 确定要扫描的频道
+        if scope == "guild":
+            channels_to_scan = self._get_relevant_channels(guild, guild_cfg)
+            scope_description = f"整个服务器的**所有**可读频道（含子频道和论坛频道）"
+        elif scope == "channel":
+            channels_to_scan = self._get_relevant_channels(guild, guild_cfg, target_channel=target_channel)
+            if not channels_to_scan:  # If the channel was ignored or bot has no permissions
+                await interaction.followup.send(f"❌ 无法统计 {target_channel.mention}，可能没有权限，或者该频道/其类别被忽略。", ephemeral=True)
+                return
+
+            if isinstance(target_channel, discord.Thread):
+                scope_description = f"子频道 {target_channel.mention}"
+            elif isinstance(target_channel, discord.ForumChannel):
+                scope_description = f"论坛频道 {target_channel.mention}"
+            else:
+                scope_description = f"频道 {target_channel.mention}"
+        elif scope == "category":
+            channels_to_scan = self._get_relevant_channels(guild, guild_cfg, target_category=target_category)
+            if not channels_to_scan:  # If the category was ignored or no channels found within
+                await interaction.followup.send(f"❌ 无法统计频道类别 **{target_category.name}**，可能其被忽略，或者该类别下没有可统计频道。", ephemeral=True)
+                return
+            scope_description = f"频道类别 **{target_category.name}** 下所有可读频道（含子频道和论坛频道）"
+
+        if not channels_to_scan:
+            await interaction.followup.send(f"❌ 在 {scope_description} 中没有找到任何可以统计的频道。请检查配置和机器人权限。", ephemeral=True)
+            return
+
+        channels_to_scan_ids = [c.id for c in channels_to_scan]
+
+        total_stat, channel_stats = await self.data_manager.get_channel_activity_summary(
+            guild_id=guild.id,
+            channels_to_check_ids=channels_to_scan_ids,
+            days_window=days_window,
+            metric=metric
+        )
+
+        embed = discord.Embed(
+            title=f"📈 活跃度统计报告 - {days_window} 天",
+            color=discord.Color.dark_green(),
+            timestamp=datetime.now(timezone.utc)
+        )
+        embed.description = f"在 {scope_description} 中，过去 **{days_window}** 天的活跃度概览："
+
+        metric_name_display = "独立活跃用户数" if metric == "distinct_users" else "总消息数"
+        total_value_display = f"`{total_stat}` 位" if metric == "distinct_users" else f"`{total_stat}` 条"
+
+        embed.add_field(name=f"**总计 {metric_name_display}**", value=total_value_display, inline=False)
+
+        # 添加分频道统计，只列出有数据的频道
+        if channel_stats:
+            channel_list_text = []
+            for channel_id, count in channel_stats:
+                channel_obj = guild.get_channel(channel_id)
+                channel_name_display = ""
+                if channel_obj:
+                    if isinstance(channel_obj, discord.Thread):
+                        parent_name = f"({channel_obj.parent.name})" if channel_obj.parent else ""
+                        channel_name_display = f"└ {channel_obj.mention} {parent_name}"
+                    else:
+                        channel_name_display = channel_obj.mention
+                else:
+                    channel_name_display = f"未知频道 (`{channel_id}`)"
+
+                channel_list_text.append(f"{channel_name_display}: `{count}` 条消息")
+
+                # 限制显示数量以避免Embed过长
+            display_limit = 10
+            if len(channel_list_text) > display_limit:
+                embed.add_field(name="分频道消息数 (前10)", value="\n".join(channel_list_text[:display_limit]), inline=False)
+                embed.set_footer(text=f"仅显示消息数最多的前 {display_limit} 个频道。总计 {len(channel_stats)} 个频道有数据。")
+            else:
+                embed.add_field(name="分频道消息数", value="\n".join(channel_list_text), inline=False)
+                embed.set_footer(text=f"统计时间: {datetime.now(BEIJING_TZ).strftime('%Y-%m-%d %H:%M:%S')} (UTC+8)")
+        else:
+            embed.add_field(name="分频道消息数", value="没有找到任何消息记录。", inline=False)
+            embed.set_footer(text=f"统计时间: {datetime.now(BEIJING_TZ).strftime('%Y-%m-%d %H:%M:%S')} (UTC+8)")
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
 
 async def setup(bot: RoleBot):
     """Cog的入口点。"""
@@ -843,5 +1086,56 @@ async def setup(bot: RoleBot):
         bot.logger.error("Redis 连接失败，活跃度追踪模块将无法正常工作。不加载 TrackActivityCog。")
         return
 
-    # 将 DataManager 实例传递给 Cog
-    await bot.add_cog(TrackActivityCog(bot, data_manager_instance))
+    cog = TrackActivityCog(bot, data_manager_instance)
+    await bot.add_cog(cog)
+
+    # --- 启动时回填逻辑 ---
+    @bot.event
+    async def on_ready():
+        # Make sure this runs only once per bot startup, not every time cogs reload
+        if not hasattr(bot, '_activity_cog_startup_backfill_done'):
+            bot._activity_cog_startup_backfill_done = False  # Initialize flag
+
+        if not bot._activity_cog_startup_backfill_done:
+            startup_backfill_cfg = cog.config.get("startup_backfill", {})
+            if startup_backfill_cfg.get("enabled", False):
+                guild_id = startup_backfill_cfg.get("guild_id")
+                report_channel_id = startup_backfill_cfg.get("report_channel_id")
+                duration_minutes = startup_backfill_cfg.get("duration_minutes")
+
+                if not all([guild_id, report_channel_id, duration_minutes]) or duration_minutes <= 0:
+                    cog.logger.error("启动时回填配置不完整或无效。请检查 'startup_backfill' 配置。",
+                                     extra={"guild_id": guild_id, "report_channel_id": report_channel_id, "duration_minutes": duration_minutes})
+                    # 尝试发送错误消息到控制台或日志
+                    if bot.is_ready():  # Check if bot is fully ready to send to default channel
+                        try:
+                            error_channel = bot.get_channel(report_channel_id) or bot.get_guild(guild_id).text_channels[0]
+                            await error_channel.send("⚠️ 启动时自动回填任务配置错误，无法启动。请检查日志。")
+                        except Exception as e:
+                            cog.logger.error(f"无法发送启动时回填配置错误消息: {e}")
+                    return
+
+                guild = bot.get_guild(guild_id)
+                report_channel = None
+                if guild:
+                    report_channel = guild.get_channel(report_channel_id)
+
+                if not guild or not report_channel or not isinstance(report_channel, discord.TextChannel):
+                    cog.logger.error(f"启动时回填：无法找到服务器 {guild_id} 或报告频道 {report_channel_id}，或其不是文本频道。跳过。")
+                    return
+
+                cog.logger.info(f"正在执行启动时自动回填任务，服务器: {guild.name}, 持续时间: {duration_minutes} 分钟, 报告频道: #{report_channel.name}")
+
+                end_datetime = datetime.now(timezone.utc)
+                start_datetime = end_datetime - timedelta(minutes=duration_minutes)
+
+                await report_channel.send(
+                    f"🤖 **自动回填任务启动！**\n我将在后台开始拉取服务器 `{guild.name}` 过去 `{duration_minutes}` 分钟的历史消息。进度和结果将在此频道更新。")
+
+                bot.loop.create_task(cog._backfill_guild_history(
+                    guild=guild,
+                    target_channel=report_channel,
+                    start_datetime=start_datetime,
+                    end_datetime=end_datetime
+                ))
+            bot._activity_cog_startup_backfill_done = True  # Set flag to true after execution
