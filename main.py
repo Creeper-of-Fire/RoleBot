@@ -8,11 +8,12 @@ from discord.ext import commands
 import config
 # 导入我们的配置和模块
 import config_data
+from core.cog import CoreCog
 from fashion.cog import FashionCog
+from role_application.cog import RoleApplicationCog
 from role_sync.cog import RoleSyncCog
 from self_service.cog import SelfServiceCog
 from timed_role.cog import TimedRolesCog
-from core.cog import CoreCog
 
 # ===================================================================
 # 日志设置
@@ -94,6 +95,7 @@ class CogManager:
             "fashion": FashionCog,
             "timed_role": TimedRolesCog,
             "role_sync": RoleSyncCog,
+            "role_application": RoleApplicationCog,
         }
 
     async def load_all_enabled(self):
