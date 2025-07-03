@@ -666,48 +666,121 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
 
     @activity_group.command(name="手动拉取历史消息", description="手动拉取指定时间范围/频道的历史消息以填充活动数据。")
     @app_commands.describe(
-        start_date="开始日期 (格式: YYYY-MM-DD, MM-DD, 或 DD, 时区: UTC+8)",
-        end_date="结束日期 (格式同上, 默认为今天, 时区: UTC+8)",
-        channel="【可选】只扫描此特定频道"
+        start_date="🔍 开始日期 (格式: YYYY-MM-DD, MM-DD, 或 DD, 时区: UTC+8) - 与 '回溯' 选项互斥。",
+        end_date="🔍 结束日期 (格式同上, 默认为今天, 时区: UTC+8) - 与 '回溯' 选项互斥。",
+        hours_ago="⏰ 从现在开始回溯的小时数 (例如: 24, 48)。用于快速同步最新数据。与 '日期' 选项互斥。",
+        minutes_ago="⏱️ 从现在开始回溯的分钟数 (例如: 60, 300)。用于快速同步最新数据。与 '日期' 选项互斥。",
+        channel="🎯 【可选】只扫描此特定频道。"
     )
     @app_commands.checks.has_permissions(manage_roles=True)
-    async def backfill_history(self, interaction: discord.Interaction, start_date: str, end_date: str = None,
-                               channel: typing.Optional[discord.TextChannel] = None):
+    async def backfill_history(
+            self,
+            interaction: discord.Interaction,
+            start_date: typing.Optional[str] = None,
+            end_date: typing.Optional[str] = None,
+            hours_ago: typing.Optional[int] = None,
+            minutes_ago: typing.Optional[int] = None,
+            channel: typing.Optional[discord.TextChannel] = None
+    ):
         guild = interaction.guild
+        now_utc = datetime.now(timezone.utc)
 
         is_running = await self.redis.sismember(ACTIVE_BACKFILLS_KEY, str(guild.id))
         if is_running:
             await interaction.response.send_message("❌ 此服务器上已经有一个回填任务正在运行。", ephemeral=True)
             return
 
-        start_datetime = self._parse_flexible_date(start_date)
-        if not start_datetime:
-            await interaction.response.send_message("❌ **开始日期格式错误！**\n请使用 `YYYY-MM-DD`, `MM-DD`, 或 `DD` 格式。", ephemeral=True)
+        # --- 【新】参数解析逻辑 ---
+        start_datetime: datetime = now_utc
+        end_datetime: datetime = now_utc
+        display_range_str = ""
+
+        # 检查参数组合的有效性
+        date_params_provided = (start_date is not None) or (end_date is not None)
+        time_ago_params_provided = (hours_ago is not None) or (minutes_ago is not None)
+
+        if date_params_provided and time_ago_params_provided:
+            await interaction.response.send_message(
+                "❌ **参数冲突！**\n您不能同时使用 `开始日期/结束日期` 组合和 `回溯时间 (hours_ago/minutes_ago)` 组合。请选择一种方式指定时间范围。",
+                ephemeral=True
+            )
             return
 
-        end_datetime = datetime.now(timezone.utc)
-        if end_date:
-            parsed_end = self._parse_flexible_date(end_date)
-            if not parsed_end:
-                await interaction.response.send_message("❌ **结束日期格式错误！**\n请使用 `YYYY-MM-DD`, `MM-DD`, 或 `DD` 格式。", ephemeral=True)
+        if not (date_params_provided or time_ago_params_provided):
+            await interaction.response.send_message(
+                "❌ **缺少时间范围参数！**\n请指定 `开始日期` (及可选的 `结束日期`)，或指定 `hours_ago` (或 `minutes_ago`) 来定义回填范围。",
+                ephemeral=True
+            )
+            return
+
+        # 处理 "回溯" 方式
+        if time_ago_params_provided:
+            if hours_ago is not None and minutes_ago is not None:
+                await interaction.response.send_message(
+                    "❌ **参数冲突！**\n您不能同时指定 `hours_ago` 和 `minutes_ago`。请选择一个更精细的粒度。",
+                    ephemeral=True
+                )
                 return
-            # 结束日期需要到当天的最后一秒
-            end_datetime = parsed_end + timedelta(days=1, microseconds=-1)
 
-        if start_datetime >= end_datetime:
-            await interaction.response.send_message("❌ **错误**：开始日期必须在结束日期之前。", ephemeral=True)
-            return
+            if hours_ago is not None:
+                if hours_ago <= 0:
+                    await interaction.response.send_message("❌ `hours_ago` 必须是正整数。", ephemeral=True)
+                    return
+                delta = timedelta(hours=hours_ago)
+            elif minutes_ago is not None:
+                if minutes_ago <= 0:
+                    await interaction.response.send_message("❌ `minutes_ago` 必须是正整数。", ephemeral=True)
+                    return
+                delta = timedelta(minutes=minutes_ago)
+            else:  # 这段理论上不会触发，因为 time_ago_params_provided 已检查
+                await interaction.response.send_message("❌ 请指定 `hours_ago` 或 `minutes_ago`。", ephemeral=True)
+                return
 
-        # 为用户显示 UTC+8 格式的日期
-        start_display = start_datetime.astimezone(BEIJING_TZ).strftime('%Y-%m-%d')
-        end_display = end_datetime.astimezone(BEIJING_TZ).strftime('%Y-%m-%d')
+            end_datetime = now_utc
+            start_datetime = now_utc - delta
+
+            # 为了显示，我们将它们转换到北京时间进行格式化
+            start_display = start_datetime.astimezone(BEIJING_TZ).strftime('%Y-%m-%d %H:%M:%S')
+            end_display = end_datetime.astimezone(BEIJING_TZ).strftime('%Y-%m-%d %H:%M:%S')
+            display_range_str = f"从 **{start_display}** 到 **{end_display}**"
+
+        # 处理 "日期范围" 方式
+        elif date_params_provided:
+            if start_date is None:
+                await interaction.response.send_message("❌ 使用日期范围模式时，`start_date` 是必需的。", ephemeral=True)
+                return
+
+            start_datetime = self._parse_flexible_date(start_date)
+            if not start_datetime:
+                await interaction.response.send_message("❌ **开始日期格式错误！**\n请使用 `YYYY-MM-DD`, `MM-DD`, 或 `DD` 格式。", ephemeral=True)
+                return
+
+            if end_date:
+                parsed_end = self._parse_flexible_date(end_date)
+                if not parsed_end:
+                    await interaction.response.send_message("❌ **结束日期格式错误！**\n请使用 `YYYY-MM-DD`, `MM-DD`, 或 `DD` 格式。", ephemeral=True)
+                    return
+                end_datetime = parsed_end + timedelta(days=1, microseconds=-1)  # 结束于当天的 23:59:59.999999 (UTC)
+            else:
+                end_datetime = now_utc  # 如果没有指定结束日期，默认为当前 UTC 时间
+
+            if start_datetime >= end_datetime:
+                await interaction.response.send_message("❌ **错误**：开始日期必须在结束日期之前。", ephemeral=True)
+                return
+
+            # 为用户显示 UTC+8 格式的日期
+            start_display = start_datetime.astimezone(BEIJING_TZ).strftime('%Y-%m-%d')
+            end_display = end_datetime.astimezone(BEIJING_TZ).strftime('%Y-%m-%d')
+            display_range_str = f"从 **{start_display}** 到 **{end_display}**"
+
+        # --- 统一的后续处理 ---
         target_description = f"服务器 **{guild.name}** 的所有可读频道"
         if channel:
             target_description = f"频道 {channel.mention}"
 
         await interaction.response.send_message(
             f"✅ **历史消息回填任务已启动！**\n\n"
-            f"我将开始拉取从 **{start_display}** 到 **{end_display}** 之间，在 {target_description} 的历史消息。",
+            f"我将开始拉取 {display_range_str} 之间，在 {target_description} 的历史消息。",
             ephemeral=False
         )
 
@@ -721,7 +794,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         await self.redis.sadd(ACTIVE_BACKFILLS_KEY, str(guild.id))
         self.logger.info(
             f"服务器 '{guild.name}' 开始历史消息回填任务。范围: "
-            f"{start_datetime.strftime('%Y-%m-%d')} 至 {end_datetime.strftime('%Y-%m-%d')} (UTC)"
+            f"{start_datetime.strftime('%Y-%m-%d %H:%M:%S')} 至 {end_datetime.strftime('%Y-%m-%d %H:%M:%S')} (UTC)"
             f"。由 {interaction.user} 触发。目标: {'单个频道' if single_channel else '全服'}"
         )
 
@@ -754,6 +827,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
                 for channel in channels_to_scan:
                     channels_scanned += 1
                     try:
+                        # 使用 after 和 before 参数来精确控制时间范围
                         async for message in channel.history(limit=None, after=start_datetime, before=end_datetime, oldest_first=False):
                             if message.author.bot: continue
                             total_messages_processed += 1
@@ -777,11 +851,10 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
                                     channel.name, total_messages_processed, total_messages_added,
                                     start_datetime, end_datetime, bool(single_channel)
                                 )
-                                # 尝试编辑已有消息，如果消息不存在或超时，则发送新消息
                                 if progress_message:
                                     try:
                                         await progress_message.edit(embed=embed)
-                                    except (discord.NotFound, discord.HTTPException):  # HTTPEx, 消息可能太老
+                                    except (discord.NotFound, discord.HTTPException):
                                         progress_message = await channel_to_report.send(embed=embed)
                                 else:
                                     progress_message = await channel_to_report.send(embed=embed)
@@ -798,8 +871,9 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             duration = end_time - start_time
             self.logger.info(f"服务器 '{guild.name}' 的历史消息回填任务完成。耗时: {duration:.2f}秒")
 
-            start_display = start_datetime.astimezone(BEIJING_TZ).strftime('%Y-%m-%d')
-            end_display = end_datetime.astimezone(BEIJING_TZ).strftime('%Y-%m-%d')
+            # 最终报告也显示 UTC+8 日期和时间
+            start_display = start_datetime.astimezone(BEIJING_TZ).strftime('%Y-%m-%d %H:%M:%S')
+            end_display = end_datetime.astimezone(BEIJING_TZ).strftime('%Y-%m-%d %H:%M:%S')
 
             final_embed = discord.Embed(
                 title="✅ 历史消息回填完成",
@@ -823,8 +897,8 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
     def _create_progress_embed(guild, start_time, total_channels, channels_scanned, current_channel_name, processed_count, added_count, start_dt, end_dt,
                                is_single_channel: bool):
         elapsed_time = time.time() - start_time
-        start_display = start_dt.astimezone(BEIJING_TZ).strftime('%Y-%m-%d')
-        end_display = end_dt.astimezone(BEIJING_TZ).strftime('%Y-%m-%d')
+        start_display = start_dt.astimezone(BEIJING_TZ).strftime('%Y-%m-%d %H:%M:%S')
+        end_display = end_dt.astimezone(BEIJING_TZ).strftime('%Y-%m-%d %H:%M:%S')
 
         scan_target_text = f"({channels_scanned}/{total_channels})" if not is_single_channel else ""
 
