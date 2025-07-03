@@ -3,31 +3,20 @@
 from __future__ import annotations
 
 import asyncio
-import collections
 import time
 import typing
-import uuid
 from datetime import datetime, timedelta, timezone
 
 import discord
-import pytz
-import redis.asyncio as redis
 from discord import app_commands, ui
 from discord.ext import commands
-from redis import exceptions
 
 import config
 from utility.views import ConfirmationView
+from activity_tracker.data_manager import DataManager, BEIJING_TZ
 
 if typing.TYPE_CHECKING:
     from main import RoleBot
-
-# --- 定义时区常量 ---
-BEIJING_TZ = pytz.timezone('Asia/Shanghai')
-
-# --- Redis 键名模板 ---
-CHANNEL_ACTIVITY_KEY_TEMPLATE = "activity:{guild_id}:{channel_id}:{user_id}"
-ACTIVE_BACKFILLS_KEY = "active_backfills"
 
 # --- 【新】热力图表情符号定义 ---
 # 0条: ⬜, 1-5条: 🟨, 6-15条: 🟩, 16-30条: 🟦, 31+条: 🟥
@@ -187,7 +176,7 @@ class ActivityRoleView(ui.View):
         # --- 从 Redis 聚合数据 ---
         # 优化：使用新的辅助方法来获取总消息数
         total_message_count, _ = await self.cog._get_user_activity_summary(
-            guild.id, member.id, days_window, guild_cfg
+            guild, member.id, days_window, guild_cfg
         )
 
         has_role = target_role in member.roles
@@ -252,10 +241,10 @@ class ActivityRoleView(ui.View):
             return
 
         total_messages, channel_data = await self.cog._get_user_activity_summary(
-            guild.id, member.id, days_window, guild_cfg
+            guild, member.id, days_window, guild_cfg
         )
         heatmap_data = await self.cog._generate_heatmap_data(
-            guild.id, member.id, days_window, guild_cfg
+            guild, member.id, days_window, guild_cfg
         )
 
         view = ActivityReportPaginationView(self.cog, member, guild, total_messages, channel_data, heatmap_data, days_window)
@@ -321,23 +310,13 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
     通过 Redis 跟踪用户消息活动，并提供手动回填和面板申领的功能。
     """
 
-    def __init__(self, bot: RoleBot):
+    def __init__(self, bot: RoleBot, data_manager: DataManager):
         self.bot = bot
         self.logger = bot.logger
         self.config = config.ACTIVITY_TRACKER_CONFIG
-        self.redis = redis.Redis(host=config.REDIS_HOST, port=config.REDIS_PORT, db=config.REDIS_DB, decode_responses=True)
-        self.bot.loop.create_task(self.check_redis_connection())
+        self.data_manager = data_manager # 使用传入的 DataManager 实例
         # 注册持久化视图
         self.bot.add_view(ActivityRoleView(self))
-
-    async def check_redis_connection(self):
-        """在启动时异步检查 Redis 连接。"""
-        try:
-            await self.redis.ping()
-            self.logger.info("成功连接到 Redis 服务器 (异步客户端)。")
-        except exceptions.ConnectionError as e:
-            self.logger.critical(f"无法连接到 Redis，活动追踪模块将无法工作！错误: {e}")
-            self.cog_check = lambda ctx: False  # 禁用整个 cog
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -352,21 +331,18 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         if message.channel.id in ignored_channels or (message.channel.category_id and message.channel.category_id in ignored_categories):
             return
 
-        key = CHANNEL_ACTIVITY_KEY_TEMPLATE.format(
+        retention_days = guild_cfg.get("data_retention_days", 90)
+        await self.data_manager.record_message(
             guild_id=message.guild.id,
             channel_id=message.channel.id,
-            user_id=message.author.id
+            user_id=message.author.id,
+            message_id=message.id,
+            created_at_timestamp=message.created_at.timestamp(),
+            retention_days=retention_days
         )
 
-        async with self.redis.pipeline() as pipe:
-            await pipe.zadd(key, {str(message.id): message.created_at.timestamp()})
-            retention_days = guild_cfg.get("data_retention_days", 90)
-            cutoff_timestamp = (datetime.now(timezone.utc) - timedelta(days=retention_days)).timestamp()
-            await pipe.zremrangebyscore(key, '-inf', cutoff_timestamp)
-            await pipe.execute()
-
     # --- 【新】辅助方法：获取用户活跃度概览 ---
-    async def _get_user_activity_summary(self, guild_id: int, user_id: int, days_window: int, guild_cfg: dict) -> tuple[int, list[tuple[int, int]]]:
+    async def _get_user_activity_summary(self, guild: discord.Guild, user_id: int, days_window: int, guild_cfg: dict) -> tuple[int, list[tuple[int, int]]]:
         """
         获取用户在指定天数窗口内的总消息数和分频道消息数。
         返回 (总消息数, [(channel_id, count), ...])
@@ -374,78 +350,38 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         ignored_channels = set(guild_cfg.get("ignored_channels", []))
         ignored_categories = set(guild_cfg.get("ignored_categories", []))
 
-        guild = self.bot.get_guild(guild_id)
-        if not guild: return 0, []
-
-        channels_to_check = [
-            c for c in guild.text_channels
+        channels_to_check_ids = [
+            c.id for c in guild.text_channels
             if c.id not in ignored_channels and not (c.category_id and c.category_id in ignored_categories)
         ]
 
-        total_message_count = 0
-        channel_counts: list[tuple[int, int]] = []
-        cutoff_timestamp = (datetime.now(timezone.utc) - timedelta(days=days_window)).timestamp()
-
-        # 批处理每个频道的 ZCOUNT 请求
-        pipe = self.redis.pipeline()
-        key_channel_map = {}
-        for channel in channels_to_check:
-            key = CHANNEL_ACTIVITY_KEY_TEMPLATE.format(guild_id=guild_id, channel_id=channel.id, user_id=user_id)
-            await pipe.zcount(key, cutoff_timestamp, '+inf')
-            key_channel_map[key] = channel.id
-
-        results = await pipe.execute()
-
-        for i, count in enumerate(results):
-            channel_id = channels_to_check[i].id  # 保持顺序一致
-            if count > 0:
-                channel_counts.append((channel_id, count))
-                total_message_count += count
-
-        # 按消息数降序排列
-        channel_counts.sort(key=lambda x: x[1], reverse=True)
-
-        return total_message_count, channel_counts
+        return await self.data_manager.get_user_activity_summary(
+            guild_id=guild.id,
+            user_id=user_id,
+            days_window=days_window,
+            channel_ids_to_check=channels_to_check_ids
+        )
 
     # --- 【新】辅助方法：生成热力图数据 ---
-    async def _generate_heatmap_data(self, guild_id: int, user_id: int, days_window: int, guild_cfg: dict) -> dict[str, int]:
+    async def _generate_heatmap_data(self, guild: discord.Guild, user_id: int, days_window: int, guild_cfg: dict) -> dict[str, int]:
         """
         获取用户在指定天数窗口内每天的消息数，用于热力图。
         返回 {'YYYY-MM-DD': count, ...}
         """
-        heatmap_counts = collections.defaultdict(int)
-
-        # 计算 UTC 时间范围
-        end_utc = datetime.now(timezone.utc)
-        start_utc = end_utc - timedelta(days=days_window)
-
         ignored_channels = set(guild_cfg.get("ignored_channels", []))
         ignored_categories = set(guild_cfg.get("ignored_categories", []))
 
-        guild = self.bot.get_guild(guild_id)
-        if not guild: return {}
-
-        channels_to_check = [
-            c for c in guild.text_channels
+        channels_to_check_ids = [
+            c.id for c in guild.text_channels
             if c.id not in ignored_channels and not (c.category_id and c.category_id in ignored_categories)
         ]
 
-        # 批处理每个频道的 ZRANGEBYSCORE 请求
-        pipe = self.redis.pipeline()
-        for channel in channels_to_check:
-            key = CHANNEL_ACTIVITY_KEY_TEMPLATE.format(guild_id=guild_id, channel_id=channel.id, user_id=user_id)
-            await pipe.zrangebyscore(key, start_utc.timestamp(), end_utc.timestamp(), withscores=True)
-
-        results = await pipe.execute()
-
-        for channel_messages in results:
-            for _, timestamp in channel_messages:
-                # 将 UTC 时间戳转换为 UTC+8 时区的日期
-                dt_utc8 = datetime.fromtimestamp(float(timestamp), tz=timezone.utc).astimezone(BEIJING_TZ)
-                date_str = dt_utc8.strftime('%Y-%m-%d')
-                heatmap_counts[date_str] += 1
-
-        return heatmap_counts
+        return await self.data_manager.get_heatmap_data(
+            guild_id=guild.id,
+            user_id=user_id,
+            days_window=days_window,
+            channel_ids_to_check=channels_to_check_ids
+        )
 
     # --- 【新】辅助方法：渲染热力图文本 ---
     @staticmethod
@@ -456,13 +392,6 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         # 从今天开始回溯 days_window 天
         today_utc8 = datetime.now(BEIJING_TZ)
         heatmap_lines = []
-
-        # 定义星期几标签
-        # Monday=0, Sunday=6
-        day_labels = ["一", "二", "三", "四", "五", "六", "日"]
-
-        # 创建一个空的热力图网格 (7行，每行 days_window/7 列)
-        # 为了简单，直接按天显示，不严格按周对齐，但会显示星期几。
 
         current_date = today_utc8 - timedelta(days=days_window - 1)  # 从最早的日期开始
 
@@ -486,11 +415,6 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         for i in range(0, len(daily_emojis), 14):
             rows.append("".join(daily_emojis[i:i + 14]))
 
-        # 添加星期几标签 (从最早的日期开始，并确保长度匹配)
-        # 这里为了简化，我们只在热力图下方加一个提示，不严格对齐周几网格。
-        # 如果需要严格对齐，需要更复杂的逻辑来计算每个月的起始星期几和补白。
-
-        # 简化版：直接列出每天的方块，并在前面加日期
         heatmap_output = []
         current_date_display = today_utc8 - timedelta(days=days_window - 1)
 
@@ -583,12 +507,12 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         guild = interaction.guild
 
         if action == "force_unlock":
-            is_locked = await self.redis.sismember(ACTIVE_BACKFILLS_KEY, str(guild.id))
+            is_locked = await self.data_manager.is_backfill_locked(guild.id)
             if not is_locked:
                 await interaction.response.send_message("ℹ️ 本服务器的回填任务当前未被锁定，无需解锁。", ephemeral=True)
                 return
 
-            await self.redis.srem(ACTIVE_BACKFILLS_KEY, str(guild.id))
+            await self.data_manager.unlock_backfill(guild.id)
             self.logger.warning(f"服务器 '{guild.name}' 的回填任务被 {interaction.user} 强制解锁。")
             await interaction.response.send_message("✅ **强制解锁成功！**\n现在可以重新运行 `手动拉取` 指令了。", ephemeral=True)
 
@@ -606,31 +530,15 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
 
             if view.value is True:
                 await interaction.edit_original_response(content="⏳ 正在清除数据，请稍候...", view=None)
-                deleted_count = await self._delete_guild_activity_data(guild.id)
-                await interaction.edit_original_response(content=f"✅ **操作完成！**\n成功清除了 `{deleted_count}` 条与本服务器相关的用户活动数据。")
+                deleted_count = await self.data_manager.delete_guild_activity_data(guild.id)
+                if deleted_count >= 0:
+                    await interaction.edit_original_response(content=f"✅ **操作完成！**\n成功清除了 `{deleted_count}` 条与本服务器相关的用户活动数据。")
+                else:
+                    await interaction.edit_original_response(content=f"❌ 清除数据时发生错误，请查看日志。", view=None)
             elif view.value is False:
                 await interaction.edit_original_response(content="❌ 操作已取消。", view=None)
             else:
                 await interaction.edit_original_response(content="⏰ 操作超时，已自动取消。", view=None)
-
-    async def _delete_guild_activity_data(self, guild_id: int) -> int:
-        """
-        使用 SCAN_ITER 安全地查找并删除一个服务器的所有活动数据键。
-        返回被删除的键的数量。
-        """
-        pattern = f"activity:{guild_id}:*"
-        self.logger.warning(f"开始为服务器 {guild_id} 清除活动数据，匹配模式: {pattern}")
-
-        keys_to_delete = [key async for key in self.redis.scan_iter(pattern)]
-
-        if not keys_to_delete:
-            self.logger.info(f"服务器 {guild_id} 没有找到需要清除的活动数据。")
-            return 0
-
-        await self.redis.delete(*keys_to_delete)
-
-        self.logger.warning(f"成功为服务器 {guild_id} 清除了 {len(keys_to_delete)} 个键。")
-        return len(keys_to_delete)
 
     @staticmethod
     def _parse_flexible_date(date_str: str) -> typing.Optional[datetime]:
@@ -685,7 +593,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         guild = interaction.guild
         now_utc = datetime.now(timezone.utc)
 
-        is_running = await self.redis.sismember(ACTIVE_BACKFILLS_KEY, str(guild.id))
+        is_running = await self.data_manager.is_backfill_locked(guild.id)
         if is_running:
             await interaction.response.send_message("❌ 此服务器上已经有一个回填任务正在运行。", ephemeral=True)
             return
@@ -791,7 +699,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         guild = interaction.guild
         channel_to_report = interaction.channel
 
-        await self.redis.sadd(ACTIVE_BACKFILLS_KEY, str(guild.id))
+        await self.data_manager.lock_backfill(guild.id)
         self.logger.info(
             f"服务器 '{guild.name}' 开始历史消息回填任务。范围: "
             f"{start_datetime.strftime('%Y-%m-%d %H:%M:%S')} 至 {end_datetime.strftime('%Y-%m-%d %H:%M:%S')} (UTC)"
@@ -822,50 +730,55 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
                 ]
             total_channels = len(channels_to_scan)
 
-            async with self.redis.pipeline() as pipe:
-                messages_in_pipe = 0
-                for channel in channels_to_scan:
-                    channels_scanned += 1
-                    try:
-                        # 使用 after 和 before 参数来精确控制时间范围
-                        async for message in channel.history(limit=None, after=start_datetime, before=end_datetime, oldest_first=False):
-                            if message.author.bot: continue
-                            total_messages_processed += 1
-                            key = CHANNEL_ACTIVITY_KEY_TEMPLATE.format(
-                                guild_id=guild.id,
-                                channel_id=channel.id,
-                                user_id=message.author.id
+            redis_pipe = self.data_manager.redis.pipeline() # 获取 Redis 客户端的 pipeline
+            messages_in_pipe = 0
+            for channel in channels_to_scan:
+                channels_scanned += 1
+                try:
+                    # 使用 after 和 before 参数来精确控制时间范围
+                    async for message in channel.history(limit=None, after=start_datetime, before=end_datetime, oldest_first=False):
+                        if message.author.bot: continue
+                        total_messages_processed += 1
+
+                        await self.data_manager.add_message_to_pipeline(
+                            redis_pipe,
+                            guild_id=guild.id,
+                            channel_id=channel.id,
+                            user_id=message.author.id,
+                            message_id=message.id,
+                            created_at_timestamp=message.created_at.timestamp()
+                        )
+                        messages_in_pipe += 1
+                        total_messages_added += 1
+
+                        if messages_in_pipe >= 500:
+                            await self.data_manager.execute_pipeline(redis_pipe)
+                            redis_pipe = self.data_manager.redis.pipeline() # 重置管道
+                            messages_in_pipe = 0
+                            await asyncio.sleep(0.1) # 避免阻塞
+
+                        current_time = time.time()
+                        if current_time - last_update_time > 30:
+                            embed = self._create_progress_embed(
+                                guild, start_time, total_channels, channels_scanned,
+                                channel.name, total_messages_processed, total_messages_added,
+                                start_datetime, end_datetime, bool(single_channel)
                             )
-                            await pipe.zadd(key, {str(message.id): message.created_at.timestamp()})
-                            messages_in_pipe += 1
-                            total_messages_added += 1
-                            if messages_in_pipe >= 500:
-                                await pipe.execute()
-                                messages_in_pipe = 0
-                                await asyncio.sleep(0.1)
-
-                            current_time = time.time()
-                            if current_time - last_update_time > 30:
-                                embed = self._create_progress_embed(
-                                    guild, start_time, total_channels, channels_scanned,
-                                    channel.name, total_messages_processed, total_messages_added,
-                                    start_datetime, end_datetime, bool(single_channel)
-                                )
-                                if progress_message:
-                                    try:
-                                        await progress_message.edit(embed=embed)
-                                    except (discord.NotFound, discord.HTTPException):
-                                        progress_message = await channel_to_report.send(embed=embed)
-                                else:
+                            if progress_message:
+                                try:
+                                    await progress_message.edit(embed=embed)
+                                except (discord.NotFound, discord.HTTPException):
                                     progress_message = await channel_to_report.send(embed=embed)
-                                last_update_time = current_time
-                    except discord.Forbidden:
-                        self.logger.warning(f"[{guild.name}] 无法访问频道 #{channel.name} 的历史记录，已跳过。")
-                    except Exception as e:
-                        self.logger.error(f"[{guild.name}] 扫描频道 #{channel.name} 时发生错误: {e}", exc_info=True)
+                            else:
+                                progress_message = await channel_to_report.send(embed=embed)
+                            last_update_time = current_time
+                except discord.Forbidden:
+                    self.logger.warning(f"[{guild.name}] 无法访问频道 #{channel.name} 的历史记录，已跳过。")
+                except Exception as e:
+                    self.logger.error(f"[{guild.name}] 扫描频道 #{channel.name} 时发生错误: {e}", exc_info=True)
 
-                if messages_in_pipe > 0:
-                    await pipe.execute()
+            if messages_in_pipe > 0:
+                await self.data_manager.execute_pipeline(redis_pipe)
 
             end_time = time.time()
             duration = end_time - start_time
@@ -891,7 +804,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             error_embed = discord.Embed(title="❌ 回填任务异常中断", description=f"发生严重错误: `{e}`", color=discord.Color.red())
             await channel_to_report.send(embed=error_embed)
         finally:
-            await self.redis.srem(ACTIVE_BACKFILLS_KEY, str(guild.id))
+            await self.data_manager.unlock_backfill(guild.id)
 
     @staticmethod
     def _create_progress_embed(guild, start_time, total_channels, channels_scanned, current_channel_name, processed_count, added_count, start_dt, end_dt,
@@ -918,4 +831,17 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
 
 async def setup(bot: RoleBot):
     """Cog的入口点。"""
-    await bot.add_cog(TrackActivityCog(bot))
+    # 在 setup 函数中创建 DataManager 的单例实例
+    data_manager_instance = DataManager(
+        host=config.REDIS_HOST,
+        port=config.REDIS_PORT,
+        db=config.REDIS_DB,
+        logger=bot.logger
+    )
+    # 检查 Redis 连接
+    if not await data_manager_instance.check_connection():
+        bot.logger.error("Redis 连接失败，活跃度追踪模块将无法正常工作。不加载 TrackActivityCog。")
+        return
+
+    # 将 DataManager 实例传递给 Cog
+    await bot.add_cog(TrackActivityCog(bot, data_manager_instance))
