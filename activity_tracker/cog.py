@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import time
 import typing
 from datetime import datetime, timedelta, timezone
@@ -40,84 +41,117 @@ MAX_CHANNELS_PER_PAGE = 10
 class ActivityReportPaginationView(ui.View):
     """
     用于活跃度报告的翻页视图。
+    【已优化】现在支持层级排序，将子频道显示在父频道下方。
     """
 
     def __init__(self, cog: 'TrackActivityCog', user: discord.Member, guild: discord.Guild,
                  total_messages: int, all_channel_data: list[tuple[int, int]], heatmap_data: dict[str, int],
                  days_window: int):
-        super().__init__(timeout=300)  # 报告视图可以有超时
-        self.cog = cog  # 【重要】需要cog来访问bot
+        super().__init__(timeout=300)
+        self.cog = cog
         self.user = user
         self.guild = guild
         self.total_messages = total_messages
-        self.all_channel_data = all_channel_data  # 格式: [(channel_id, count), ...]
-        self.heatmap_data = heatmap_data  # 格式: {'YYYY-MM-DD': count, ...}
+        self.all_channel_data = all_channel_data  # 原始数据
+        self.heatmap_data = heatmap_data
         self.days_window = days_window
         self.current_page = 0
-
         self.channels_per_page = MAX_CHANNELS_PER_PAGE
-        self.total_pages = (len(self.all_channel_data) + self.channels_per_page - 1) // self.channels_per_page
-        if self.total_pages == 0:  # 至少有一页，即使没有频道数据
-            self.total_pages = 1
 
+        # 将总页数和按钮的初始化推迟到数据排序后进行
+        self.sorted_display_data: typing.Optional[list[tuple[discord.abc.GuildChannel, int]]] = None
+        self.total_pages = 1
+
+    async def _build_and_sort_data_if_needed(self):
+        """
+        如果需要，则构建一个按层级（父频道 -> 子频道）排序的数据列表。
+        这个方法只在第一次生成Embed时运行一次。
+        """
+        if self.sorted_display_data is not None:
+            return
+
+        top_level_channels = {}  # {channel_obj: count}
+        threads_by_parent = collections.defaultdict(list)  # {parent_id: [(thread_obj, count), ...]}
+
+        # 1. 异步获取所有频道对象并进行分组
+        for channel_id, count in self.all_channel_data:
+            channel = self.guild.get_channel(channel_id)
+            if not channel:
+                try:
+                    channel = await self.cog.bot.fetch_channel(channel_id)
+                except (discord.NotFound, discord.Forbidden):
+                    continue  # 跳过无法获取的频道
+
+            if isinstance(channel, discord.Thread) and channel.parent:
+                threads_by_parent[channel.parent.id].append((channel, count))
+            else:  # 文本频道, 论坛频道, 或无父级信息的孤立子频道
+                top_level_channels[channel] = count
+
+        # 2. 按消息数对顶级频道进行排序
+        sorted_top_level = sorted(top_level_channels.items(), key=lambda item: item[1], reverse=True)
+
+        # 3. 构建最终的、扁平化的、有序的显示列表
+        final_list = []
+        for channel, count in sorted_top_level:
+            final_list.append((channel, count))
+            # 检查此顶级频道下是否有子频道
+            if channel.id in threads_by_parent:
+                # 对其下的子频道按消息数排序
+                sorted_threads = sorted(threads_by_parent[channel.id], key=lambda item: item[1], reverse=True)
+                final_list.extend(sorted_threads)
+
+        self.sorted_display_data = final_list
+
+        # 4. 基于排序后的列表长度，更新分页信息
+        self.total_pages = (len(self.sorted_display_data) + self.channels_per_page - 1) // self.channels_per_page
+        if self.total_pages == 0:
+            self.total_pages = 1
         self._update_buttons()
 
     def _update_buttons(self):
         """根据当前页更新按钮状态。"""
+        # 确保按钮已经被添加到视图中
+        if not hasattr(self, 'previous_page'):
+            return
+
         self.previous_page.disabled = self.current_page == 0
         self.next_page.disabled = self.current_page >= self.total_pages - 1
 
-        # 如果只有一页，禁用所有翻页按钮
         if self.total_pages <= 1:
             self.previous_page.disabled = True
             self.next_page.disabled = True
 
-    # --- 【代码修复】将此方法改为异步，以支持 fetch_channel ---
     async def _create_embed(self) -> discord.Embed:
         """生成当前页的活跃度报告 Embed。"""
+        # 在首次调用时，异步构建和排序数据
+        await self._build_and_sort_data_if_needed()
+
         embed = discord.Embed(
             title=f"📊 {self.user.display_name} 的活跃度报告",
             description=f"这是你在过去 **{self.days_window}** 天内的活跃概览。",
             color=discord.Color.blue(),
             timestamp=datetime.now(timezone.utc)
         )
-
         embed.add_field(name="总消息数", value=f"`{self.total_messages}` 条", inline=False)
 
-        # --- 添加热力图 ---
         heatmap_text = self.cog._render_heatmap_text(self.heatmap_data, self.days_window)
         if heatmap_text:
             embed.add_field(name="近况热力图 (消息数/天)", value=heatmap_text, inline=False)
 
-        # --- 添加分页频道列表 ---
+        # --- 使用排序和分组后的数据进行分页 ---
         start_index = self.current_page * self.channels_per_page
-        end_index = min(start_index + self.channels_per_page, len(self.all_channel_data))
+        end_index = min(start_index + self.channels_per_page, len(self.sorted_display_data))
 
-        channels_on_page = self.all_channel_data[start_index:end_index]
+        channels_on_page = self.sorted_display_data[start_index:end_index]
 
         if channels_on_page:
             channel_list_text = []
-            for channel_id, count in channels_on_page:
-                # --- 【代码修复】增加 fetch_channel 作为后备方案 ---
-                channel = self.guild.get_channel(channel_id)
-                if not channel:  # 如果在缓存中找不到
-                    try:
-                        # 尝试从 API 获取，这可以找到已归档的帖子
-                        channel = await self.cog.bot.fetch_channel(channel_id)
-                    except (discord.NotFound, discord.Forbidden):
-                        # 如果真的被删了或无权访问，则保持为 None
-                        channel = None
-                # --- 【修复结束】---
-
-                if channel:
-                    # 对于子频道，显示其父频道或所属类别
-                    if isinstance(channel, discord.Thread):
-                        parent_name = f"({channel.parent.name})" if channel.parent else ""
-                        channel_list_text.append(f"└ {channel.mention} {parent_name}: `{count}` 条")
-                    else:
-                        channel_list_text.append(f"{channel.mention}: `{count}` 条")
+            for channel, count in channels_on_page:
+                if isinstance(channel, discord.Thread):
+                    parent_name = f"({channel.parent.name})" if channel.parent else ""
+                    channel_list_text.append(f"└ {channel.mention} {parent_name}: `{count}` 条")
                 else:
-                    channel_list_text.append(f"未知频道 (`{channel_id}`): `{count}` 条")
+                    channel_list_text.append(f"{channel.mention}: `{count}` 条")
 
             embed.add_field(
                 name=f"分频道消息数 (第 {self.current_page + 1}/{self.total_pages} 页)",
@@ -136,7 +170,6 @@ class ActivityReportPaginationView(ui.View):
         if self.current_page > 0:
             self.current_page -= 1
             self._update_buttons()
-            # --- 【代码修复】增加 await ---
             await interaction.edit_original_response(embed=await self._create_embed(), view=self)
 
     @ui.button(label="下一页", style=discord.ButtonStyle.secondary, custom_id="activity_report_next")
@@ -145,21 +178,153 @@ class ActivityReportPaginationView(ui.View):
         if self.current_page < self.total_pages - 1:
             self.current_page += 1
             self._update_buttons()
-            # --- 【代码修复】增加 await ---
             await interaction.edit_original_response(embed=await self._create_embed(), view=self)
 
     async def on_timeout(self):
-        # 禁用所有按钮
         for item in self.children:
             if isinstance(item, ui.Button):
                 item.disabled = True
         try:
-            # 确保 self.message 存在
             if hasattr(self, 'message') and self.message:
                 await self.message.edit(view=self)
         except discord.NotFound:
             pass
 
+
+class StatsPaginationView(ui.View):
+    """
+    用于 get_activity_stats 命令的翻页视图。
+    支持层级排序和分页。
+    """
+
+    def __init__(self, cog: 'TrackActivityCog', guild: discord.Guild, total_stat: int,
+                 metric_name_display: str, all_channel_data: list[tuple[int, int]],
+                 days_window: int, scope_description: str):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.guild = guild
+        self.total_stat = total_stat
+        self.metric_name_display = metric_name_display
+        self.total_value_display = f"`{total_stat}` 位" if "用户" in metric_name_display else f"`{total_stat}` 条"
+        self.all_channel_data = all_channel_data
+        self.days_window = days_window
+        self.scope_description = scope_description
+
+        self.current_page = 0
+        self.channels_per_page = MAX_CHANNELS_PER_PAGE
+        self.sorted_display_data: typing.Optional[list[tuple[discord.abc.GuildChannel, int]]] = None
+        self.total_pages = 1
+
+    async def _build_and_sort_data_if_needed(self):
+        """如果需要，则构建一个按层级排序的数据列表。仅运行一次。"""
+        if self.sorted_display_data is not None:
+            return
+
+        top_level_channels = {}
+        threads_by_parent = collections.defaultdict(list)
+
+        for channel_id, count in self.all_channel_data:
+            channel = self.guild.get_channel(channel_id)
+            if not channel:
+                try:
+                    channel = await self.cog.bot.fetch_channel(channel_id)
+                except (discord.NotFound, discord.Forbidden):
+                    continue
+
+            if isinstance(channel, discord.Thread) and channel.parent:
+                threads_by_parent[channel.parent.id].append((channel, count))
+            else:
+                top_level_channels[channel] = count
+
+        sorted_top_level = sorted(top_level_channels.items(), key=lambda item: item[1], reverse=True)
+
+        final_list = []
+        for channel, count in sorted_top_level:
+            final_list.append((channel, count))
+            if channel.id in threads_by_parent:
+                sorted_threads = sorted(threads_by_parent[channel.id], key=lambda item: item[1], reverse=True)
+                final_list.extend(sorted_threads)
+
+        self.sorted_display_data = final_list
+
+        self.total_pages = (len(self.sorted_display_data) + self.channels_per_page - 1) // self.channels_per_page
+        if self.total_pages == 0:
+            self.total_pages = 1
+        self._update_buttons()
+
+    def _update_buttons(self):
+        """更新按钮状态。"""
+        if not hasattr(self, 'previous_page'):
+            return
+
+        self.previous_page.disabled = self.current_page == 0
+        self.next_page.disabled = self.current_page >= self.total_pages - 1
+
+        if self.total_pages <= 1:
+            self.previous_page.disabled = True
+            self.next_page.disabled = True
+
+    async def _create_embed(self) -> discord.Embed:
+        """生成当前页的统计报告 Embed。"""
+        await self._build_and_sort_data_if_needed()
+
+        embed = discord.Embed(
+            title=f"📈 活跃度统计报告 - {self.days_window} 天",
+            color=discord.Color.dark_green(),
+            timestamp=datetime.now(timezone.utc)
+        )
+        embed.description = f"在 {self.scope_description} 中，过去 **{self.days_window}** 天的活跃度概览："
+        embed.add_field(name=f"**总计 {self.metric_name_display}**", value=self.total_value_display, inline=False)
+
+        start_index = self.current_page * self.channels_per_page
+        end_index = min(start_index + self.channels_per_page, len(self.sorted_display_data))
+        channels_on_page = self.sorted_display_data[start_index:end_index]
+
+        if channels_on_page:
+            channel_list_text = []
+            for channel, count in channels_on_page:
+                if isinstance(channel, discord.Thread):
+                    parent_name = f"({channel.parent.name})" if channel.parent else ""
+                    channel_list_text.append(f"└ {channel.mention} {parent_name}: `{count}` 条消息")
+                else:
+                    channel_list_text.append(f"{channel.mention}: `{count}` 条消息")
+
+            embed.add_field(
+                name=f"分频道消息数 (第 {self.current_page + 1}/{self.total_pages} 页)",
+                value="\n".join(channel_list_text),
+                inline=False
+            )
+        else:
+            embed.add_field(name="分频道消息数", value="没有找到任何消息记录。", inline=False)
+
+        embed.set_footer(text=f"统计时间: {datetime.now(BEIJING_TZ).strftime('%Y-%m-%d %H:%M:%S')} (UTC+8)")
+        return embed
+
+    @ui.button(label="上一页", style=discord.ButtonStyle.secondary, custom_id="stats_report_prev")
+    async def previous_page(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.defer()
+        if self.current_page > 0:
+            self.current_page -= 1
+            self._update_buttons()
+            await interaction.edit_original_response(embed=await self._create_embed(), view=self)
+
+    @ui.button(label="下一页", style=discord.ButtonStyle.secondary, custom_id="stats_report_next")
+    async def next_page(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.defer()
+        if self.current_page < self.total_pages - 1:
+            self.current_page += 1
+            self._update_buttons()
+            await interaction.edit_original_response(embed=await self._create_embed(), view=self)
+
+    async def on_timeout(self):
+        for item in self.children:
+            if isinstance(item, ui.Button):
+                item.disabled = True
+        try:
+            if hasattr(self, 'message') and self.message:
+                await self.message.edit(view=self)
+        except discord.NotFound:
+            pass
 
 class ActivityRoleView(ui.View):
     """
@@ -1068,8 +1233,6 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             scope: str,
             metric: str,
             days_window: int = 7,
-            # Discord app commands automatically resolve channel/thread/forum IDs to discord.abc.Messageable
-            # The type hint is primarily for type checkers.
             target_channel: typing.Optional[typing.Union[discord.TextChannel, discord.Thread, discord.ForumChannel]] = None,
             target_category: typing.Optional[discord.CategoryChannel] = None
     ):
@@ -1081,49 +1244,30 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             return
 
         # 参数合法性检查
-        if scope == "channel":
-            if not target_channel:
-                await interaction.followup.send("❌ 当统计范围为 `特定频道` 时，`target_channel` 不能为空。", ephemeral=True)
-                return
-            if target_category:
-                await interaction.followup.send("❌ 当统计范围为 `特定频道` 时，`target_category` 必须为空。", ephemeral=True)
-                return
-        elif scope == "category":
-            if not target_category:
-                await interaction.followup.send("❌ 当统计范围为 `特定频道类别` 时，`target_category` 不能为空。", ephemeral=True)
-                return
-            if target_channel:
-                await interaction.followup.send("❌ 当统计范围为 `特定频道类别` 时，`target_channel` 必须为空。", ephemeral=True)
-                return
-        elif scope == "guild":
-            if target_channel or target_category:
-                await interaction.followup.send("❌ 当统计范围为 `整个服务器` 时，`target_channel` 和 `target_category` 必须为空。", ephemeral=True)
-                return
+        if scope == "channel" and not target_channel:
+            await interaction.followup.send("❌ 当统计范围为 `特定频道` 时，`target_channel` 不能为空。", ephemeral=True)
+            return
+        if scope == "category" and not target_category:
+            await interaction.followup.send("❌ 当统计范围为 `特定频道类别` 时，`target_category` 不能为空。", ephemeral=True)
+            return
 
         guild_cfg = self.config.get("guild_configs", {}).get(guild.id, {})
-
         channels_to_scan: list[typing.Union[discord.TextChannel, discord.ForumChannel, discord.Thread]] = []
         scope_description = ""
 
         # 根据 scope 确定要扫描的频道
         if scope == "guild":
-            channels_to_scan = await self._get_relevant_channels(guild, guild_cfg)
+            channels_to_scan = self._get_relevant_channels(guild, guild_cfg)
             scope_description = f"整个服务器的**所有**可读频道（含子频道和论坛频道）"
         elif scope == "channel":
-            channels_to_scan = await self._get_relevant_channels(guild, guild_cfg, target_channel=target_channel)
-            if not channels_to_scan:  # If the channel was ignored or bot has no permissions
+            channels_to_scan = self._get_relevant_channels(guild, guild_cfg, target_channel=target_channel)
+            if not channels_to_scan:
                 await interaction.followup.send(f"❌ 无法统计 {target_channel.mention}，可能没有权限，或者该频道/其类别被忽略。", ephemeral=True)
                 return
-
-            if isinstance(target_channel, discord.Thread):
-                scope_description = f"子频道 {target_channel.mention}"
-            elif isinstance(target_channel, discord.ForumChannel):
-                scope_description = f"论坛频道 {target_channel.mention}"
-            else:
-                scope_description = f"频道 {target_channel.mention}"
+            scope_description = f"频道/子频道 {target_channel.mention}"
         elif scope == "category":
-            channels_to_scan = await self._get_relevant_channels(guild, guild_cfg, target_category=target_category)
-            if not channels_to_scan:  # If the category was ignored or no channels found within
+            channels_to_scan = self._get_relevant_channels(guild, guild_cfg, target_category=target_category)
+            if not channels_to_scan:
                 await interaction.followup.send(f"❌ 无法统计频道类别 **{target_category.name}**，可能其被忽略，或者该类别下没有可统计频道。", ephemeral=True)
                 return
             scope_description = f"频道类别 **{target_category.name}** 下所有可读频道（含子频道和论坛频道）"
@@ -1132,66 +1276,31 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             await interaction.followup.send(f"❌ 在 {scope_description} 中没有找到任何可以统计的频道。请检查配置和机器人权限。", ephemeral=True)
             return
 
-        channels_to_scan_ids = [c.id for c in channels_to_scan]
-
         total_stat, channel_stats = await self.data_manager.get_channel_activity_summary(
             guild_id=guild.id,
-            channels_to_check_ids=channels_to_scan_ids,
+            channels_to_check_ids=[c.id for c in channels_to_scan],
             days_window=days_window,
             metric=metric
         )
 
-        embed = discord.Embed(
-            title=f"📈 活跃度统计报告 - {days_window} 天",
-            color=discord.Color.dark_green(),
-            timestamp=datetime.now(timezone.utc)
-        )
-        embed.description = f"在 {scope_description} 中，过去 **{days_window}** 天的活跃度概览："
-
         metric_name_display = "独立活跃用户数" if metric == "distinct_users" else "总消息数"
-        total_value_display = f"`{total_stat}` 位" if metric == "distinct_users" else f"`{total_stat}` 条"
 
-        embed.add_field(name=f"**总计 {metric_name_display}**", value=total_value_display, inline=False)
+        # --- 使用新的翻页视图 ---
+        view = StatsPaginationView(
+            cog=self,
+            guild=guild,
+            total_stat=total_stat,
+            metric_name_display=metric_name_display,
+            all_channel_data=channel_stats,
+            days_window=days_window,
+            scope_description=scope_description
+        )
 
-        # 添加分频道统计，只列出有数据的频道
-        if channel_stats:
-            channel_list_text = []
-            for channel_id, count in channel_stats:
-                # --- 【代码修复】增加 fetch_channel 作为后备方案 ---
-                channel_obj = guild.get_channel(channel_id)
-                if not channel_obj:  # 如果在缓存中找不到
-                    try:
-                        # 尝试从 API 获取
-                        channel_obj = await self.bot.fetch_channel(channel_id)
-                    except (discord.NotFound, discord.Forbidden):
-                        channel_obj = None  # 获取失败
-                # --- 【修复结束】---
+        # 异步创建初始 Embed
+        initial_embed = await view._create_embed()
 
-                channel_name_display = ""
-                if channel_obj:
-                    if isinstance(channel_obj, discord.Thread):
-                        parent_name = f"({channel_obj.parent.name})" if channel_obj.parent else ""
-                        channel_name_display = f"└ {channel_obj.mention} {parent_name}"
-                    else:
-                        channel_name_display = channel_obj.mention
-                else:
-                    channel_name_display = f"未知频道 (`{channel_id}`)"
-
-                channel_list_text.append(f"{channel_name_display}: `{count}` 条消息")
-
-            # 限制显示数量以避免Embed过长
-            display_limit = 10
-            if len(channel_list_text) > display_limit:
-                embed.add_field(name="分频道消息数 (前10)", value="\n".join(channel_list_text[:display_limit]), inline=False)
-                embed.set_footer(text=f"仅显示消息数最多的前 {display_limit} 个频道。总计 {len(channel_stats)} 个频道有数据。")
-            else:
-                embed.add_field(name="分频道消息数", value="\n".join(channel_list_text), inline=False)
-                embed.set_footer(text=f"统计时间: {datetime.now(BEIJING_TZ).strftime('%Y-%m-%d %H:%M:%S')} (UTC+8)")
-        else:
-            embed.add_field(name="分频道消息数", value="没有找到任何消息记录。", inline=False)
-            embed.set_footer(text=f"统计时间: {datetime.now(BEIJING_TZ).strftime('%Y-%m-%d %H:%M:%S')} (UTC+8)")
-
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        # 发送带视图的响应
+        view.message = await interaction.followup.send(embed=initial_embed, view=view, ephemeral=True)
 
 
 async def setup(bot: RoleBot):
