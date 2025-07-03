@@ -157,7 +157,7 @@ class TimedRoleDataManager:
                         if guild_id not in exclusion_map:
                             exclusion_map[guild_id] = {}
                         # 记录需要重新同步的身份组
-                        exclusion_map[guild_id][user_id] = user_data["current_timed_roles"]
+                        exclusion_map[guild_id][user_id] = {"add": user_data["current_timed_roles"], "remove": []}
 
                         # 新的一天开始，重置使用时长
                         user_data["used_seconds"] = 0
