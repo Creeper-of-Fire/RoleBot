@@ -103,10 +103,9 @@ class CoreCog(commands.Cog, name="Core"):
         self.bot.add_view(MainPanelView(self))  # MainPanelView 现在由 CoreCog 负责
         self.logger.info("核心模块已就绪，主控制面板持久化视图已注册。")
 
-    rolebot_group = app_commands.Group(name=config.COMMAND_GROUP_NAME, description="机器人核心管理与状态指令")
+    rolebot_group = app_commands.Group(name=config.COMMAND_GROUP_NAME, description="机器人核心管理与状态指令",guild_ids=[gid for gid in config.GUILD_IDS])
 
     @rolebot_group.command(name="打开身份组自助中心面板", description="发送身份组管理面板到当前频道")
-    @app_commands.guilds(*[discord.Object(id=gid) for gid in config.GUILD_IDS])
     @app_commands.default_permissions(manage_roles=True)
     async def send_panel(self, interaction: discord.Interaction):
         """发送一个公共的身份组管理入口面板。"""
@@ -120,7 +119,6 @@ class CoreCog(commands.Cog, name="Core"):
         await interaction.response.send_message(embed=embed, view=view)
 
     @rolebot_group.command(name="刷新成员缓存", description="【非常耗时！注意！】手动拉取服务器所有成员信息到机器人缓存中（带进度条）。")
-    @app_commands.guilds(*[discord.Object(id=gid) for gid in config.GUILD_IDS])
     @app_commands.default_permissions(manage_roles=True)
     async def refresh_member_cache(self, interaction: discord.Interaction):
         """
@@ -190,7 +188,6 @@ class CoreCog(commands.Cog, name="Core"):
         await interaction.edit_original_response(embed=final_embed)
 
     @rolebot_group.command(name="系统状态", description="显示机器人和服务器的实时系统信息。")
-    @app_commands.guilds(*[discord.Object(id=gid) for gid in config.GUILD_IDS])
     @app_commands.default_permissions(manage_roles=True)
     async def system_status(self, interaction: discord.Interaction):
         """显示一个包含详细系统信息的监控面板。"""
