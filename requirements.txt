@@ -8,7 +8,7 @@ aiohttp
 
 
 python-dotenv
-redis
+redis[asyncio]
 
 # 系统监测
 psutil

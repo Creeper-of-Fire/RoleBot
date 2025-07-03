@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 import typing
 
 import discord
-import redis
+import redis.asyncio as redis
 from discord import app_commands, ui
 from discord.ext import commands
 
