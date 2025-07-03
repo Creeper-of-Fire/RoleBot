@@ -359,6 +359,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
     async def _startup_backfill_task_body(self):
         """
         启动时自动回填任务的具体逻辑。
+        【已修复】现在会自动处理因上次异常关闭而残留的"僵尸锁"。
         """
         startup_backfill_cfg = self.config.get("startup_backfill", {})
         if not startup_backfill_cfg.get("enabled", False):
@@ -382,12 +383,14 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             self.logger.error(f"启动时回填：无法找到服务器 {guild_id} 或报告频道 {report_channel_id}，或其不是文本频道。跳过。")
             return
 
-        # 检查回填任务是否已在运行 (例如，在机器人重启前手动触发了)
+        # --- 【代码修复】---
+        # 检查回填任务是否已在运行。如果是，假定它是陈旧的锁并强制解锁。
         is_running = await self.data_manager.is_backfill_locked(guild.id)
         if is_running:
-            self.logger.warning(f"服务器 '{guild.name}' 上已有一个回填任务正在运行，本次启动时自动回填将跳过。")
-            await report_channel.send(f"⚠️ **自动回填跳过！**\n检测到服务器 `{guild.name}` 上已有一个回填任务正在进行。")
-            return
+            self.logger.warning(f"服务器 '{guild.name}' 上检测到一个可能由上次异常关闭导致的回填锁。将强制解锁并继续执行启动任务。")
+            await report_channel.send(f"⚠️ **回填锁重置！**\n检测到可能由先前异常中断导致的回填锁。系统将自动重置该锁并开始本次启动回填任务。")
+            await self.data_manager.unlock_backfill(guild.id)
+        # --- 【修复结束】---
 
         self.logger.info(f"正在执行启动时自动回填任务，服务器: {guild.name}, 持续时间: {duration_minutes} 分钟, 报告频道: #{report_channel.name}")
 
