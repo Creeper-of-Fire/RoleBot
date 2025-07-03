@@ -909,6 +909,14 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             for channel in channels_to_scan:
                 channels_scanned += 1
                 try:
+                    # --- 【代码修复】---
+                    # 检查当前频道是否为论坛频道。如果是，则跳过。
+                    # 因为论坛频道本身没有消息历史，它的帖子(Thread)已经被 _get_relevant_channels 单独收集并会在此循环中被处理。
+                    if isinstance(channel, discord.ForumChannel):
+                        self.logger.info(f"[{guild.name}] 跳过论坛频道容器 #{channel.name}，其帖子将作为独立子频道进行扫描。")
+                        continue
+                    # --- 【修复结束】---
+
                     # 使用 after 和 before 参数来精确控制时间范围
                     async for message in channel.history(limit=None, after=start_datetime, before=end_datetime, oldest_first=False):
                         if message.author.bot: continue  # 过滤掉机器人消息
