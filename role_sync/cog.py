@@ -296,6 +296,11 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
         await progress_message.edit(embed=embed)
 
         processed_members_count = 0
+
+        # 用于节流和解决竞态条件的状态变量
+        last_update_time = asyncio.get_event_loop().time()
+        last_edit_task: asyncio.Task | None = None
+
         # 遍历去重后的成员集合
         for member in all_source_members:
             processed_members_count += 1
@@ -321,9 +326,12 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
                             except (discord.Forbidden, discord.HTTPException):
                                 total_failed += 1
 
-            # --- 3. 非阻塞带回退的进度更新 ---
-            if processed_members_count % 25 == 0 or processed_members_count == total_members_to_scan:
-                # 复制 embed，防止并发修改问题
+            # --- 3. 非阻塞节流带回退的进度更新 ---
+            current_time = asyncio.get_event_loop().time()
+            # 条件：1. 处理了一定数量，且距离上次更新超过一定时间；2. 或者扫描已完成
+            if ((processed_members_count % 5 == 0) and (current_time - last_update_time > 0.2)) or (processed_members_count == total_members_to_scan):
+                last_update_time = current_time  # 更新时间戳
+
                 embed_copy = embed.copy()
                 embed_copy.set_field_at(0, name="扫描进度", value=create_progress_bar(processed_members_count, total_members_to_scan))
                 embed_copy.set_field_at(1, name="✅ 同步", value=f"`{total_synced}`")
@@ -331,26 +339,25 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
                 embed_copy.set_field_at(3, name="❌ 失败", value=f"`{total_failed}`")
 
                 try:
-                    # 将 edit 操作作为一个后台任务启动，主循环不等待它完成
-                    asyncio.create_task(progress_message.edit(embed=embed_copy))
-                except discord.HTTPException:
+                    # 启动后台任务，并保存对它的引用
+                    last_edit_task = asyncio.create_task(progress_message.edit(embed=embed_copy))
+                except discord.NotFound:
                     if not fallback_triggered:
                         fallback_triggered = True
-                        # 发送回退提示是重要操作，需要 await
-                        await interaction.channel.send(
-                            f"⏳ {user_mention}，交互已超时或失败，但扫描任务仍在后台继续。\n"
-                            f"进度将在此新消息中**公开**更新。",
-                            allowed_mentions=discord.AllowedMentions(users=True)
-                        )
-                        # 创建新的公开消息也需要 await
+                        await interaction.channel.send(f"⏳ {user_mention}，交互已超时...", allowed_mentions=discord.AllowedMentions(users=True))
                         progress_message = await interaction.channel.send(embed=embed_copy)
                     else:
-                        # 回退后，继续非阻塞地更新
-                        asyncio.create_task(progress_message.edit(embed=embed_copy))
-                # 移除 sleep，因为主循环不再被阻塞
-                # await asyncio.sleep(0.2)
+                        last_edit_task = asyncio.create_task(progress_message.edit(embed=embed_copy))
 
-        # --- 4. 发送最终结果 ---
+        # --- 4. 【核心优化】发送最终结果，并解决竞态条件 ---
+        # 在发送最终结果前，等待最后一个进度更新任务完成
+        if last_edit_task:
+            try:
+                await last_edit_task
+            except Exception as e:
+                # 即使最后一个任务失败也无所谓，最终结果会覆盖它
+                self.logger.warning(f"等待最后一个进度更新任务时发生错误: {e}")
+
         final_embed = discord.Embed(title=f"✅ {scan_title} 完成", color=discord.Color.green())
         final_embed.description = f"扫描了 **{processed_members_count}** 名独立成员。"
         final_embed.add_field(name="新增同步", value=f"`{total_synced}`人", inline=True)
