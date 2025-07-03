@@ -379,25 +379,12 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
     )
     @app_commands.choices(action=[
         app_commands.Choice(name="清除特定规则的日志", value="clear_rule"),
-        app_commands.Choice(name="导出日志文件", value="export_log"),
         app_commands.Choice(name="清除所有日志（删除文件）", value="clear_all"),
     ])
     @app_commands.autocomplete(rule=sync_rule_autocomplete)
     @app_commands.guild_only()
     @app_commands.default_permissions(manage_roles=True)
     async def manage_sync_log(self, interaction: discord.Interaction, action: str, rule: Optional[str] = None):
-        # 导出操作是安全的，直接处理
-        if action == "export_log":
-            await interaction.response.defer(ephemeral=True)
-            try:
-                with open(DATA_FILE, 'r', encoding='utf-8') as f:
-                    log_content = f.read()
-                log_file = discord.File(io.StringIO(log_content), filename="role_sync_log.json")
-                await interaction.followup.send("📄 这是当前的同步日志文件：", file=log_file, ephemeral=True)
-            except FileNotFoundError:
-                await interaction.followup.send("ℹ️ 日志文件不存在，无需导出。", ephemeral=True)
-            return
-
         # --- 所有删除操作都需要确认 ---
         # 1. 准备确认消息和视图
         view = ConfirmationView(author=interaction.user)

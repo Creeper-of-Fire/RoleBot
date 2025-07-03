@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import os
 import platform
+import zipfile
+
 try:
     import distro
+
     IS_LINUX = True
 except ImportError:
     IS_LINUX = False
@@ -108,7 +112,7 @@ class CoreCog(commands.Cog, name="Core"):
         self.bot.add_view(MainPanelView(self))  # MainPanelView 现在由 CoreCog 负责
         self.logger.info("核心模块已就绪，主控制面板持久化视图已注册。")
 
-    rolebot_group = app_commands.Group(name=config.COMMAND_GROUP_NAME, description="机器人核心管理与状态指令",guild_ids=[gid for gid in config.GUILD_IDS])
+    rolebot_group = app_commands.Group(name=config.COMMAND_GROUP_NAME, description="机器人核心管理与状态指令", guild_ids=[gid for gid in config.GUILD_IDS])
 
     @rolebot_group.command(name="打开身份组自助中心面板", description="发送身份组管理面板到当前频道")
     @app_commands.default_permissions(manage_roles=True)
@@ -196,7 +200,7 @@ class CoreCog(commands.Cog, name="Core"):
     @app_commands.default_permissions(manage_roles=True)
     async def system_status(self, interaction: discord.Interaction):
         """显示一个包含详细系统信息的监控面板，采用更简洁的格式。"""
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=False, Thinking=True)
 
         # --- 1. 获取进程和机器人信息 (不变) ---
         process = psutil.Process()
@@ -271,6 +275,58 @@ class CoreCog(commands.Cog, name="Core"):
         embed.set_footer(text=f"{self.bot.user.name} 系统监控")
 
         await interaction.followup.send(embed=embed)
+
+    @rolebot_group.command(name="获取数据备份", description="打包并发送 data 目录下的所有数据文件。")
+    @app_commands.default_permissions(manage_roles=True, view_audit_log=True)
+    async def backup_data(self, interaction: discord.Interaction):
+        """
+        创建一个包含 'data' 目录下所有文件的 zip 压缩包，并私密地发送给命令使用者。
+        """
+        await interaction.response.defer(ephemeral=False, Thinking=True)
+
+        self.logger.info(
+            f"数据备份操作触发: "
+            f"用户: {interaction.user} ({interaction.user.id}), "
+            f"服务器: {interaction.guild.name} ({interaction.guild.id})"
+        )
+
+        data_dir = "data"
+
+        # 检查 data 目录是否存在且不为空
+        if not os.path.isdir(data_dir) or not os.listdir(data_dir):
+            await interaction.followup.send(f"ℹ️ `{data_dir}` 目录不存在或为空，无需备份。", ephemeral=True)
+            return
+
+        # 在内存中创建一个二进制文件对象
+        memory_file = io.BytesIO()
+
+        # 创建一个指向内存文件的 ZipFile 对象
+        try:
+            with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
+                # 遍历 data 目录下的所有文件和子目录
+                for root, dirs, files in os.walk(data_dir):
+                    for file in files:
+                        # 获取文件的完整路径
+                        file_path = os.path.join(root, file)
+                        # 计算文件在 zip 包内的相对路径，以保持目录结构
+                        arcname = os.path.relpath(file_path, data_dir)
+                        # 将文件写入 zip 包
+                        zf.write(file_path, arcname)
+        except Exception as e:
+            self.logger.error(f"创建数据备份时发生错误: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ 创建备份失败: `{e}`", ephemeral=True)
+            return
+
+        # 在写入完成后，将内存文件的指针移回开头，以便读取
+        memory_file.seek(0)
+
+        # 创建一个带时间戳的文件名
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{self.bot.user.name}的数据备份_{timestamp}.zip"
+
+        # 创建 discord.File 对象并发送
+        backup_file = discord.File(memory_file, filename=filename)
+        await interaction.followup.send(content=f"📦 {interaction.user.mention}，这是您请求的数据备份文件：", file=backup_file, ephemeral=False)
 
 
 async def setup(bot: commands.Bot):
