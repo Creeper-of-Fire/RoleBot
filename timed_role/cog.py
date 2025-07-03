@@ -71,14 +71,14 @@ class TimedRolesCog(FeatureCog, name="TimedRoles"):
 
     @app_commands.command(name="强制触发限时身份组每日重置")
     @app_commands.default_permissions(manage_roles=True)
-    async def force_reset_timed_roles_command(self, ctx: commands.Context):
+    async def force_reset_timed_roles_command(self, interaction: discord.Interaction):
         """【管理员专属】强制触发所有服务器的限时身份组每日重置。"""
-        self.logger.info(f"管理员 {ctx.author} 正在强制触发限时身份组每日重置...")
-        await ctx.send("正在强制触发每日重置...", ephemeral=True)
+        self.logger.info(f"管理员 {interaction.user} 正在强制触发限时身份组每日重置...")
+        await interaction.response.send_message("正在强制触发每日重置...", ephemeral=True)
 
         await self.timed_role_data_manager.daily_reset(self, force=True)
 
-        await ctx.send("✅ 强制重置成功。", ephemeral=True)
+        await interaction.followup.send("✅ 强制重置成功。", ephemeral=True)
         self.logger.info("管理员强制重置成功。")
 
     @tasks.loop(minutes=1)
