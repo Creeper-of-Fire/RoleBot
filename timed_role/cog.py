@@ -69,9 +69,10 @@ class TimedRolesCog(FeatureCog, name="TimedRoles"):
     @tasks.loop(minutes=1)
     async def daily_reset_task(self):
         """每日定时任务，用于重置用户的限时身份组使用时间。"""
-        if await self.timed_role_data_manager.daily_reset():
+        if await self.timed_role_data_manager.daily_reset(self):
             self.logger.info(f"每日计时器已在 UTC+8 {config.ROLE_MANAGER_CONFIG.get('reset_hour_utc8', 16)} 点重置。")
 
+    @daily_reset_task.before_loop
     @tasks.loop(minutes=1)
     async def check_expired_roles_task(self):
         """每分钟检查并移除所有用户已过期的限时身份组。"""
