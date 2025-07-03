@@ -1,18 +1,19 @@
 # activity_tracker/cog.py
 
 from __future__ import annotations
+
 import asyncio
 import time
-from datetime import datetime, timedelta, timezone
 import typing
+from datetime import datetime, timedelta, timezone
 
 import discord
 import redis.asyncio as redis
 from discord import app_commands, ui
 from discord.ext import commands
+from redis import exceptions
 
 import config
-import config_data
 
 if typing.TYPE_CHECKING:
     from main import RoleBot
@@ -62,7 +63,7 @@ class ActivityRoleView(ui.View):
         # --- 查询 Redis ---
         key = ACTIVITY_KEY_TEMPLATE.format(guild_id=guild.id, user_id=member.id)
         cutoff_timestamp = (datetime.now(timezone.utc) - timedelta(days=days_window)).timestamp()
-        message_count = self.cog.redis.zcount(key, cutoff_timestamp, '+inf')
+        message_count = await self.cog.redis.zcount(key, cutoff_timestamp, '+inf')
 
         has_role = target_role in member.roles
         is_eligible = message_count >= message_threshold
@@ -121,16 +122,24 @@ class ActivityTrackerCog(commands.Cog, name="ActivityTracker"):
         self.logger = bot.logger
         self.config = config.ACTIVITY_TRACKER_CONFIG
 
-        try:
-            self.redis = redis.Redis(host=config.REDIS_HOST, port=config.REDIS_PORT, db=config.REDIS_DB, decode_responses=True)
-            self.redis.ping()
-            self.logger.info("成功连接到 Redis 服务器。")
-        except redis.exceptions.ConnectionError as e:
-            self.logger.critical(f"无法连接到 Redis，活动追踪模块将无法工作！错误: {e}")
-            self.cog_check = lambda ctx: False
+        # 实例化的是异步客户端
+        # 注意这里的 redis 是我们导入的 redis.asyncio
+        self.redis = redis.Redis(host=config.REDIS_HOST, port=config.REDIS_PORT, db=config.REDIS_DB, decode_responses=True)
+        self.bot.loop.create_task(self.check_redis_connection())
 
         # 注册持久化视图
         self.bot.add_view(ActivityRoleView(self))
+
+    async def check_redis_connection(self):
+        """在启动时异步检查 Redis 连接。"""
+        try:
+            # 所有 Redis 调用都需要 await
+            await self.redis.ping()
+            self.logger.info("成功连接到 Redis 服务器 (异步客户端)。")
+        except exceptions.ConnectionError as e:
+            self.logger.critical(f"无法连接到 Redis，活动追踪模块将无法工作！错误: {e}")
+            # 让整个 cog 失效
+            self.cog_check = lambda ctx: False
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -147,11 +156,15 @@ class ActivityTrackerCog(commands.Cog, name="ActivityTracker"):
         user_id = message.author.id
         timestamp = message.created_at.timestamp()
         key = ACTIVITY_KEY_TEMPLATE.format(guild_id=guild_id, user_id=user_id)
-        await self.redis.zadd(key, {str(message.id): timestamp})
 
-        retention_days = guild_cfg.get("data_retention_days", 90)
-        cutoff_timestamp = (datetime.now(timezone.utc) - timedelta(days=retention_days)).timestamp()
-        await self.redis.zremrangebyscore(key, '-inf', cutoff_timestamp)
+        async with self.redis.pipeline() as pipe:
+            await pipe.zadd(key, {str(message.id): timestamp})
+
+            retention_days = guild_cfg.get("data_retention_days", 90)
+            cutoff_timestamp = (datetime.now(timezone.utc) - timedelta(days=retention_days)).timestamp()
+            await pipe.zremrangebyscore(key, '-inf', cutoff_timestamp)
+
+            await pipe.execute()
 
     # --- 指令组 ---
     activity_group = app_commands.Group(
@@ -213,7 +226,6 @@ class ActivityTrackerCog(commands.Cog, name="ActivityTracker"):
         self.bot.loop.create_task(self._backfill_guild_history(interaction, days))
 
     async def _backfill_guild_history(self, interaction: discord.Interaction, days: int):
-        """实际执行历史消息抓取的后台任务（逻辑不变）"""
         guild = interaction.guild
         channel_to_report = interaction.channel
 
@@ -225,57 +237,49 @@ class ActivityTrackerCog(commands.Cog, name="ActivityTracker"):
         guild_cfg = self.config.get("guild_configs", {}).get(guild.id, {})
         ignored_channels = set(guild_cfg.get("ignored_channels", []))
 
-        total_messages_processed = 0
-        total_messages_added = 0
-        channels_scanned = 0
-        last_update_time = time.time()
-        progress_message = None
+        total_messages_processed, total_messages_added, channels_scanned = 0, 0, 0
+        last_update_time, progress_message = time.time(), None
 
         try:
             channels_to_scan = [c for c in guild.text_channels if c.id not in ignored_channels and c.permissions_for(guild.me).read_message_history]
             total_channels = len(channels_to_scan)
 
-            for channel in channels_to_scan:
-                channels_scanned += 1
-                self.logger.info(f"[{guild.name}] 正在扫描频道: #{channel.name} ({channels_scanned}/{total_channels})")
-
-                pipe = self.redis.pipeline()
+            async with self.redis.pipeline() as pipe:
                 messages_in_pipe = 0
+                for channel in channels_to_scan:
+                    channels_scanned += 1
+                    try:
+                        async for message in channel.history(limit=None, after=after_timestamp, oldest_first=False):
+                            if message.author.bot: continue
+                            total_messages_processed += 1
+                            key = ACTIVITY_KEY_TEMPLATE.format(guild_id=guild.id, user_id=message.author.id)
+                            await pipe.zadd(key, {str(message.id): message.created_at.timestamp()})
+                            messages_in_pipe += 1
+                            total_messages_added += 1
+                            if messages_in_pipe >= 500:
+                                await pipe.execute()
+                                messages_in_pipe = 0
+                                await asyncio.sleep(0.1)
 
-                try:
-                    async for message in channel.history(limit=None, after=after_timestamp, oldest_first=False):
-                        if message.author.bot:
-                            continue
-                        total_messages_processed += 1
-                        key = ACTIVITY_KEY_TEMPLATE.format(guild_id=guild.id, user_id=message.author.id)
-                        await pipe.zadd(key, {str(message.id): message.created_at.timestamp()})
-                        messages_in_pipe += 1
-                        total_messages_added += 1
-                        if messages_in_pipe >= 500:
-                            await self.bot.loop.run_in_executor(None, pipe.execute)
-                            pipe = self.redis.pipeline()
-                            messages_in_pipe = 0
-                            await asyncio.sleep(0.1)
-
-                        current_time = time.time()
-                        if current_time - last_update_time > 30:
-                            embed = self._create_progress_embed(guild, start_time, total_channels, channels_scanned, channel.name, total_messages_processed,
-                                                                total_messages_added)
-                            if progress_message and (current_time - progress_message.created_at.timestamp() < 600):
-                                try:
-                                    await progress_message.edit(embed=embed)
-                                except discord.NotFound:
+                            current_time = time.time()
+                            if current_time - last_update_time > 30:
+                                embed = self._create_progress_embed(guild, start_time, total_channels, channels_scanned, channel.name, total_messages_processed,
+                                                                    total_messages_added)
+                                if progress_message and (current_time - progress_message.created_at.timestamp() < 600):
+                                    try:
+                                        await progress_message.edit(embed=embed)
+                                    except discord.NotFound:
+                                        progress_message = await channel_to_report.send(embed=embed)
+                                else:
                                     progress_message = await channel_to_report.send(embed=embed)
-                            else:
-                                progress_message = await channel_to_report.send(embed=embed)
-                            last_update_time = current_time
+                                last_update_time = current_time
+                    except discord.Forbidden:
+                        self.logger.warning(f"[{guild.name}] 无法访问频道 #{channel.name} 的历史记录，已跳过。")
+                    except Exception as e:
+                        self.logger.error(f"[{guild.name}] 扫描频道 #{channel.name} 时发生错误: {e}", exc_info=True)
 
-                    if messages_in_pipe > 0:
-                        await self.bot.loop.run_in_executor(None, pipe.execute)
-                except discord.Forbidden:
-                    self.logger.warning(f"[{guild.name}] 无法访问频道 #{channel.name} 的历史记录，已跳过。")
-                except Exception as e:
-                    self.logger.error(f"[{guild.name}] 扫描频道 #{channel.name} 时发生错误: {e}", exc_info=True)
+                if messages_in_pipe > 0:
+                    await pipe.execute()
 
             end_time = time.time()
             duration = end_time - start_time
