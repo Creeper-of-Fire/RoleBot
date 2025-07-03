@@ -1,11 +1,12 @@
 # role_manager/timed_role_data_manager.py
+from __future__ import annotations
+
 import asyncio
 import json
 import os
 from datetime import datetime, timedelta, timezone, time
 
 import config
-from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
