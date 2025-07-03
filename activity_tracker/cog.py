@@ -171,7 +171,7 @@ class ActivityTrackerCog(commands.Cog, name="ActivityTracker"):
         name="用户活跃度",
         description="用户活动追踪相关指令",
         guild_only=True,
-        default_permissions=discord.Permissions(manage_roles=True),
+        default_permissions=discord.Permissions(),
     )
 
     @activity_group.command(name="活跃度身份组领取面板", description="发送一个活跃度角色申领面板。")
