@@ -69,7 +69,7 @@ class TimedRolesCog(FeatureCog, name="TimedRoles"):
             self.safe_timed_role_ids_cache[guild_id] = current_safe_timed_ids
         self.logger.info("TimedRolesCog: 安全限时身份组缓存更新完毕。")
 
-    @commands.command(name="强制触发限时身份组每日重置")
+    @app_commands.command(name="强制触发限时身份组每日重置")
     @app_commands.default_permissions(manage_roles=True)
     async def force_reset_timed_roles_command(self, ctx: commands.Context):
         """【管理员专属】强制触发所有服务器的限时身份组每日重置。"""
