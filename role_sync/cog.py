@@ -397,9 +397,9 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
             final_embed.description += "\n(原始进度条消息已失效)"
             await interaction.channel.send(content=f"{user_mention} 你的扫描任务已完成！", embed=final_embed)
 
-    @app_commands.command(name="管理同步日志", description="管理A->B同步规则的日志记录。")
+    @app_commands.command(name="清理同步日志", description="清理A->B同步规则的日志记录。")
     @app_commands.describe(
-        action="要执行的操作：清除特定规则日志，清除所有日志，或导出日志。",
+        action="要执行的操作：清除特定规则日志，清除所有日志。",
         rule="[仅清除特定规则时需要] 选择要清除日志的规则。"
     )
     @app_commands.choices(action=[

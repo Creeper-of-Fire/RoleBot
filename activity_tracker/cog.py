@@ -14,6 +14,7 @@ from discord.ext import commands
 from redis import exceptions
 
 import config
+from utility.views import ConfirmationView
 
 if typing.TYPE_CHECKING:
     from main import RoleBot
@@ -170,7 +171,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
     class ActivityGroup(app_commands.Group):
         def __init__(self, *args, **kwargs):
             super().__init__(
-                name="用户活跃度模块",
+                name="用户活跃度",
                 description="用户活动追踪相关指令",
                 guild_ids=[gid for gid in config.GUILD_IDS],
                 default_permissions=discord.Permissions(manage_roles=True),
@@ -178,9 +179,9 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
                 **kwargs
             )
 
-    activity_command_group = ActivityGroup()
+    activity_group = ActivityGroup()
 
-    @activity_command_group.command(name="发送活跃度身份组领取面板", description="发送一个活跃度角色申领面板。")
+    @activity_group.command(name="发送活跃度身份组领取面板", description="发送一个活跃度角色申领面板。")
     @app_commands.checks.has_permissions(manage_roles=True)
     async def send_panel(self, interaction: discord.Interaction):
         """管理员指令，用于发送一个公共的、可交互的面板。"""
@@ -216,65 +217,167 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         view = ActivityRoleView(self)
         await interaction.followup.send(embed=embed, view=view)
 
-    @activity_command_group.command(name="手动拉取历史消息-强制解锁", description="【管理员】当回填任务卡死时，强制解锁服务器的回填状态。")
+    @activity_group.command(name="管理活动数据", description="【管理员】管理本服务器的活动数据。")
+    @app_commands.describe(action="要执行的操作。")
+    @app_commands.choices(action=[
+        app_commands.Choice(name="强制解锁回填任务", value="force_unlock"),
+        app_commands.Choice(name="清除本服所有活动数据", value="clear_guild_data")
+    ])
     @app_commands.checks.has_permissions(manage_roles=True)
-    async def force_unlock_backfill(self, interaction: discord.Interaction):
-        """
-        强制从 Redis 中移除服务器的回填任务锁定标志。
-        """
+    async def manage_activity_data(self, interaction: discord.Interaction, action: str):
         guild = interaction.guild
 
-        # 检查当前是否真的被锁定了
-        is_locked = await self.redis.sismember(ACTIVE_BACKFILLS_KEY, str(guild.id))
+        if action == "force_unlock":
+            is_locked = await self.redis.sismember(ACTIVE_BACKFILLS_KEY, str(guild.id))
+            if not is_locked:
+                await interaction.response.send_message("ℹ️ 本服务器的回填任务当前未被锁定，无需解锁。", ephemeral=True)
+                return
 
-        if not is_locked:
-            await interaction.response.send_message("ℹ️ 本服务器的回填任务当前未被锁定，无需解锁。", ephemeral=True)
-            return
-
-        # 执行解锁
-        removed_count = await self.redis.srem(ACTIVE_BACKFILLS_KEY, str(guild.id))
-
-        if removed_count > 0:
+            await self.redis.srem(ACTIVE_BACKFILLS_KEY, str(guild.id))
             self.logger.warning(f"服务器 '{guild.name}' 的回填任务被 {interaction.user} 强制解锁。")
-            await interaction.response.send_message("✅ **强制解锁成功！**\n现在可以重新运行 `/activity backfill` 指令了。", ephemeral=True)
-        else:
-            # 这个情况理论上不会发生，因为前面已经检查过了，但作为保险
-            await interaction.response.send_message("🤔 未能解锁，可能是因为在执行命令的瞬间任务刚好正常结束了。请重试。", ephemeral=True)
+            await interaction.response.send_message("✅ **强制解锁成功！**\n现在可以重新运行 `手动拉取` 指令了。", ephemeral=True)
 
-    @activity_command_group.command(name="手动拉取历史消息-开始", description="手动拉取历史消息以填充活动数据。")
-    @app_commands.describe(days="要拉取多少天内的历史消息（默认30天）")
+        elif action == "clear_guild_data":
+            view = ConfirmationView(author=interaction.user)
+            await interaction.response.send_message(
+                "⚠️ **警告！** 您确定要清除本服务器**所有**用户的活动数据吗？\n\n"
+                "此操作将删除所有已记录的消息时间戳，**且不可撤销**。\n"
+                "（但可以通过重新运行回填任务来恢复）",
+                view=view,
+                ephemeral=True
+            )
+
+            # 等待用户点击按钮
+            await view.wait()
+
+            if view.value is True:  # 用户点击了确认
+                await interaction.edit_original_response(content="⏳ 正在清除数据，请稍候...", view=None)
+                deleted_count = await self._delete_guild_activity_data(guild.id)
+                await interaction.edit_original_response(content=f"✅ **操作完成！**\n成功清除了 `{deleted_count}` 条与本服务器相关的用户活动数据。")
+            elif view.value is False:  # 用户点击了取消
+                await interaction.edit_original_response(content="❌ 操作已取消。", view=None)
+            else:  # 超时
+                await interaction.edit_original_response(content="⏰ 操作超时，已自动取消。", view=None)
+
+    async def _delete_guild_activity_data(self, guild_id: int) -> int:
+        """
+        使用 SCAN_ITER 安全地查找并删除一个服务器的所有活动数据键。
+        返回被删除的键的数量。
+        """
+        pattern = f"activity:{guild_id}:*"
+        self.logger.warning(f"开始为服务器 {guild_id} 清除活动数据，匹配模式: {pattern}")
+
+        # 异步迭代器获取所有匹配的键
+        keys_to_delete = [key async for key in self.redis.scan_iter(pattern)]
+
+        if not keys_to_delete:
+            self.logger.info(f"服务器 {guild_id} 没有找到需要清除的活动数据。")
+            return 0
+
+        # 使用 pipeline 批量删除，效率更高
+        await self.redis.delete(*keys_to_delete)
+
+        self.logger.warning(f"成功为服务器 {guild_id} 清除了 {len(keys_to_delete)} 个键。")
+        return len(keys_to_delete)
+
+    @staticmethod
+    def _parse_flexible_date(date_str: str) -> typing.Optional[datetime]:
+        """
+        尝试以多种格式解析日期字符串 (YYYY-MM-DD, MM-DD, DD)。
+        返回一个 timezone-aware 的 datetime 对象，如果所有格式都失败则返回 None。
+        """
+        now = datetime.now(timezone.utc)
+
+        # 尝试 YYYY-MM-DD
+        try:
+            return datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+
+        # 尝试 MM-DD (使用当前年份)
+        try:
+            dt = datetime.strptime(date_str, "%m-%d")
+            return dt.replace(year=now.year, tzinfo=timezone.utc)
+        except ValueError:
+            pass
+
+        # 尝试 DD (使用当前年份和月份)
+        try:
+            dt = datetime.strptime(date_str, "%d")
+            return dt.replace(year=now.year, month=now.month, tzinfo=timezone.utc)
+        except ValueError:
+            pass
+
+        return None
+
+    @activity_group.command(name="手动拉取历史消息-开始", description="手动拉取指定时间范围内的历史消息以填充活动数据。")
+    @app_commands.describe(
+        start_date="开始日期 (格式: YYYY-MM-DD, MM-DD, 或 DD)",
+        end_date="结束日期 (格式同上, 默认为今天)"
+    )
     @app_commands.checks.has_permissions(manage_roles=True)
-    async def manual_backfill_history(self, interaction: discord.Interaction, days: int = 30):
-        """手动回填指令（逻辑不变）"""
+    async def backfill_history(self, interaction: discord.Interaction, start_date: str, end_date: str = None):
         guild = interaction.guild
 
         is_running = await self.redis.sismember(ACTIVE_BACKFILLS_KEY, str(guild.id))
         if is_running:
-            await interaction.response.send_message("❌ 此服务器上已经有一个回填任务正在运行。请等待其完成后再试。", ephemeral=True)
+            await interaction.response.send_message("❌ 此服务器上已经有一个回填任务正在运行。", ephemeral=True)
             return
 
-        await interaction.response.send_message("✅ **历史消息回填任务已启动！**\n\n我将在后台努力工作，并将进度持续发送到本频道。这可能需要很长时间，请耐心等待。",
-                                                ephemeral=False)
+        start_datetime = self._parse_flexible_date(start_date)
+        if not start_datetime:
+            await interaction.response.send_message("❌ **开始日期格式错误！**\n请使用 `YYYY-MM-DD`, `MM-DD`, 或 `DD` 格式。", ephemeral=True)
+            return
 
-        self.bot.loop.create_task(self._backfill_guild_history(interaction, days))
+        end_datetime = datetime.now(timezone.utc)
+        if end_date:
+            parsed_end = self._parse_flexible_date(end_date)
+            if not parsed_end:
+                await interaction.response.send_message("❌ **结束日期格式错误！**\n请使用 `YYYY-MM-DD`, `MM-DD`, 或 `DD` 格式。", ephemeral=True)
+                return
+            # 结束日期需要到当天的最后一秒
+            end_datetime = parsed_end + timedelta(days=1)
 
-    async def _backfill_guild_history(self, interaction: discord.Interaction, days: int):
+        if start_datetime >= end_datetime:
+            await interaction.response.send_message("❌ **错误**：开始日期必须在结束日期之前。", ephemeral=True)
+            return
+
+        await interaction.response.send_message(
+            f"✅ **历史消息回填任务已启动！**\n\n"
+            f"我将开始拉取从 **{start_datetime.strftime('%Y-%m-%d')}** 到 **{end_datetime.strftime('%Y-%m-%d')}** 的历史消息。",
+            ephemeral=False
+        )
+
+        self.bot.loop.create_task(self._backfill_guild_history(interaction, start_datetime, end_datetime))
+
+    async def _backfill_guild_history(self, interaction: discord.Interaction, start_datetime: datetime, end_datetime: datetime):
         guild = interaction.guild
         channel_to_report = interaction.channel
 
         await self.redis.sadd(ACTIVE_BACKFILLS_KEY, str(guild.id))
-        self.logger.info(f"服务器 '{guild.name}' 开始历史消息回填任务，范围: {days}天。由 {interaction.user} 触发。")
+        self.logger.info(
+            f"服务器 '{guild.name}' 开始历史消息回填任务。范围: "
+            f"{start_datetime.strftime('%Y-%m-%d')} 至 {end_datetime.strftime('%Y-%m-%d')}"
+            f"。由 {interaction.user} 触发。"
+        )
 
         start_time = time.time()
-        after_timestamp = datetime.now(timezone.utc) - timedelta(days=days)
         guild_cfg = self.config.get("guild_configs", {}).get(guild.id, {})
+        # 【改动】获取忽略类别配置
         ignored_channels = set(guild_cfg.get("ignored_channels", []))
+        ignored_categories = set(guild_cfg.get("ignored_categories", []))
 
         total_messages_processed, total_messages_added, channels_scanned = 0, 0, 0
         last_update_time, progress_message = time.time(), None
 
         try:
-            channels_to_scan = [c for c in guild.text_channels if c.id not in ignored_channels and c.permissions_for(guild.me).read_message_history]
+            # 【改动】在筛选频道时，同时检查类别ID
+            channels_to_scan = [
+                c for c in guild.text_channels
+                if c.id not in ignored_channels
+                   and not (c.category_id and c.category_id in ignored_categories)
+                   and c.permissions_for(guild.me).read_message_history
+            ]
             total_channels = len(channels_to_scan)
 
             async with self.redis.pipeline() as pipe:
@@ -282,7 +385,8 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
                 for channel in channels_to_scan:
                     channels_scanned += 1
                     try:
-                        async for message in channel.history(limit=None, after=after_timestamp, oldest_first=False):
+                        # 【改动】使用 after 和 before 参数来精确控制时间范围
+                        async for message in channel.history(limit=None, after=start_datetime, before=end_datetime, oldest_first=False):
                             if message.author.bot: continue
                             total_messages_processed += 1
                             key = ACTIVITY_KEY_TEMPLATE.format(guild_id=guild.id, user_id=message.author.id)
@@ -296,8 +400,11 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
 
                             current_time = time.time()
                             if current_time - last_update_time > 30:
-                                embed = self._create_progress_embed(guild, start_time, total_channels, channels_scanned, channel.name, total_messages_processed,
-                                                                    total_messages_added)
+                                embed = self._create_progress_embed(
+                                    guild, start_time, total_channels, channels_scanned,
+                                    channel.name, total_messages_processed, total_messages_added,
+                                    start_datetime, end_datetime
+                                )
                                 if progress_message and (current_time - progress_message.created_at.timestamp() < 600):
                                     try:
                                         await progress_message.edit(embed=embed)
@@ -317,9 +424,10 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             end_time = time.time()
             duration = end_time - start_time
             self.logger.info(f"服务器 '{guild.name}' 的历史消息回填任务完成。耗时: {duration:.2f}秒")
+
             final_embed = discord.Embed(
                 title="✅ 历史消息回填完成",
-                description=f"成功为服务器 **{guild.name}** 拉取了过去 **{days}** 天的历史消息。",
+                description=f"成功为服务器 **{guild.name}** 拉取了从 **{start_datetime.strftime('%Y-%m-%d')}** 到 **{end_datetime.strftime('%Y-%m-%d')}** 的历史消息。",
                 color=discord.Color.green(),
                 timestamp=datetime.now(timezone.utc)
             )
@@ -336,12 +444,11 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             await self.redis.srem(ACTIVE_BACKFILLS_KEY, str(guild.id))
 
     @staticmethod
-    def _create_progress_embed(guild, start_time, total_channels, channels_scanned, current_channel_name, processed_count, added_count):
-        """辅助函数，用于创建统一格式的进度条 Embed（逻辑不变）"""
+    def _create_progress_embed(guild, start_time, total_channels, channels_scanned, current_channel_name, processed_count, added_count, start_dt, end_dt):
         elapsed_time = time.time() - start_time
         embed = discord.Embed(
             title="⏳ 正在回填历史消息...",
-            description=f"服务器 **{guild.name}** 的回填任务正在进行中。",
+            description=f"服务器 **{guild.name}** 的回填任务正在进行中。\n**时间范围:** `{start_dt.strftime('%Y-%m-%d')}` 至 `{end_dt.strftime('%Y-%m-%d')}`",
             color=discord.Color.blue(),
             timestamp=datetime.now(timezone.utc)
         )
