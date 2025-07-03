@@ -160,9 +160,11 @@ class CreatorApplicationModal(ui.Modal, title="作品审核提交"):
             )
             self.cog.logger.info(f"用户 {member} ({member.id}) 通过审核获得创作者身份组，作品链接: {link}")
 
-        except discord.NotFound:
+        except discord.NotFound as e:
+            self.cog.logger.error(f"创作者审核时发生错误: {e}", exc_info=True)
             await interaction.followup.send("❌ 找不到你链接的帖子或频道，请检查链接是否正确或帖子是否已被删除。", ephemeral=True)
-        except discord.Forbidden:
+        except discord.Forbidden as e:
+            self.cog.logger.error(f"创作者审核时发生错误: {e}", exc_info=True)
             await interaction.followup.send("❌ 我没有权限访问该论坛或帖子，无法进行审核。", ephemeral=True)
         except Exception as e:
             self.cog.logger.error(f"创作者审核时发生未知错误: {e}", exc_info=True)
