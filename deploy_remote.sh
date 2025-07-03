@@ -30,23 +30,21 @@ else
     # git pull origin "$MAIN_BRANCH" || { echo "Error: Git pull failed."; exit 1; }
 fi
 
-echo "--- [Remote] 正在使用 Docker Compose 部署... ---"
+echo "--- [Remote] 正在使用 Docker Compose 进行最小化停机部署... ---"
 
-# 停止并移除旧容器、网络 (如果存在)
-if docker-compose ps -q "$CONTAINER_NAME" | grep -q .; then
-    echo "--- [Remote] 发现正在运行的旧容器，正在停止并移除... ---"
-    docker-compose down || { echo "Error: Docker Compose down failed."; exit 1; }
-else
-    echo "--- [Remote] 未发现正在运行的旧容器，跳过停止步骤。 ---"
-fi
-
-echo "--- [Remote] 正在强制重新构建镜像 (无缓存)... ---"
+# --- 核心优化点 ---
+# 1. 先构建新镜像 (如果需要)。--no-cache 确保我们总是从最新代码构建。
+#    这一步在旧容器仍在运行时执行，不影响服务。
+echo "--- [Remote] 正在后台构建新镜像 (无缓存)... ---"
 docker-compose build --no-cache || { echo "Error: Docker Compose build failed."; exit 1; }
 
-echo "--- [Remote] 正在启动新容器... ---"
+# 2. 然后用 'up' 命令来完成切换。
+#    'up -d' 会自动停止并替换同名旧容器，这个切换过程非常快。
+echo "--- [Remote] 正在启动新容器并替换旧容器... ---"
 docker-compose up -d || { echo "Error: Docker Compose up failed."; exit 1; }
 
 echo "--- [Remote] 正在清理无用的 Docker 镜像... ---"
+# prune 命令现在可以安全地清理掉被新镜像替换下来的旧镜像
 docker image prune -a -f || { echo "Error: Docker image prune failed."; exit 1; }
 
 echo "--- [Remote] 部署完成！---"
