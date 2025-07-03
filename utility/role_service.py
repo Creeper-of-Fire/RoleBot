@@ -8,6 +8,25 @@ if TYPE_CHECKING:
     from utility.feature_cog import FeatureCog
 
 
+async def batch_update_member_roles(
+    cog: 'FeatureCog',
+    guild: discord.Guild,
+    members_to_update: dict[int, dict[str, list[int]]],
+    reason: str
+) -> None:
+    """批量更新多个成员的身份组。"""
+    for member_id, roles in members_to_update.items():
+        member = guild.get_member(member_id)
+        if not member:
+            continue
+        await update_member_roles(
+            cog,
+            member,
+            to_add_ids=set(roles.get("add", [])),
+            to_remove_ids=set(roles.get("remove", [])),
+            reason=reason
+        )
+
 async def update_member_roles(
     cog: 'FeatureCog',
     member: discord.Member,

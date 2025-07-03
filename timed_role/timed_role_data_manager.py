@@ -11,7 +11,7 @@ import config
 from typing import TYPE_CHECKING
 
 from timed_role import timer
-from utility.role_service import update_member_roles
+from utility.role_service import batch_update_member_roles
 
 if TYPE_CHECKING:
     from utility.feature_cog import FeatureCog
@@ -129,85 +129,105 @@ class TimedRoleDataManager:
             user_data["last_claim_timestamp"] = None
             await self.save_data(force=False)
 
-    async def daily_reset(self, cog: 'FeatureCog'):
-        """重置所有服务器中所有用户的每日计时。"""
-        async with self._lock:  # 添加锁机制防止并发问题
-            now = datetime.now(UTC8)
+    async def get_last_reset_time(self) -> datetime:
+        """获取上次重置的时间。"""
+        async with self._lock:
             last_reset_iso_str = self._data.get("last_reset", datetime.min.isoformat())
             last_reset_time = datetime.fromisoformat(last_reset_iso_str)
             if last_reset_time.tzinfo is None:
                 last_reset_time = last_reset_time.replace(tzinfo=UTC8)
+            return last_reset_time
 
-            today_reset_time = now.replace(hour=RESET_TIME.hour, minute=RESET_TIME.minute, second=RESET_TIME.second, microsecond=0)
+    async def daily_reset(self, cog: 'FeatureCog', force: bool = False):
+        """重置所有服务器中所有用户的每日计时。"""
+        now = datetime.now(UTC8)
+        async with self._lock:  # 添加锁机制防止并发问题
+            # 1. 识别所有管理的限时身份组和需要保留身份组的用户（豁免名单）
+            all_managed_role_ids = set()
+            for guild_config in config.GUILD_CONFIGS.values():
+                all_managed_role_ids.update(guild_config.get('timed_roles', []))
 
-            if now >= today_reset_time > last_reset_time:
-                # 1. 识别所有由本功能管理的限时身份组ID
-                all_timed_role_ids = set()
-                for guild_id, guild_config in config.GUILD_CONFIGS.items():
-                    for role_id in guild_config.get('timed_roles', []):
-                        all_timed_role_ids.add(role_id)
+            exclusion_map = {}
+            # 遍历数据库，处理正在计时的用户
+            for user_id_str, guilds_data in self._data["users"].items():
+                user_id = int(user_id_str)
+                for guild_id_str, user_data in guilds_data.items():
+                    guild_id = int(guild_id_str)
+                    if user_data.get("current_timed_roles") and user_data.get("last_claim_timestamp"):
+                        if guild_id not in exclusion_map:
+                            exclusion_map[guild_id] = {}
+                        # 记录需要重新同步的身份组
+                        exclusion_map[guild_id][user_id] = user_data["current_timed_roles"]
 
-                # 2. 识别出不应移除身份组的用户（正在正常计时的）
-                excluded_user_ids = set()
-                for user_id_str, guilds_data in self._data["users"].items():
-                    for guild_id_str, user_data in guilds_data.items():
-                        if user_data.get("current_timed_roles"):
-                            excluded_user_ids.add(int(user_id_str))
-
-                # 3. 遍历所有服务器，统一移除所有过期的身份组
-                for guild in cog.bot.guilds:
-                    members_to_check = set()
-                    # 从拥有身份组的成员中收集
-                    for role_id in all_timed_role_ids:
-                        role = guild.get_role(role_id)
-                        if role:
-                            members_to_check.update(role.members)
-
-                    # 移除被豁免的用户
-                    members_to_process = {m for m in members_to_check if m.id not in excluded_user_ids}
-
-                    # 批量移除
-                    for member in members_to_process:
-                        await update_member_roles(
-                            cog=cog,
-                            member=member,
-                            to_add_ids=set(),
-                            to_remove_ids=all_timed_role_ids,
-                            reason="每日限时身份组重置"
-                        )
-
-                # 4. 重置数据（原逻辑）
-                for user_id_str, guilds_data in self._data["users"].items():
-                    for guild_id_str, user_data in guilds_data.items():
-                        # 结算仍在计时的人
-                        if user_data["current_timed_roles"] and user_data["last_claim_timestamp"]:
-                            last_claim_time = datetime.fromisoformat(user_data["last_claim_timestamp"])
-                            used_this_session = (now - last_claim_time).total_seconds()
-                            user_data["used_seconds"] += used_this_session
-                            user_data["current_timed_roles"] = []
-                            user_data["last_claim_timestamp"] = None
-                        # 重置时长
+                        # 新的一天开始，重置使用时长
+                        user_data["used_seconds"] = 0
+                        # 重新开始计时
+                        user_data["last_claim_timestamp"] = now.isoformat()
+                    else:
+                        # 对于没有在计时的用户，直接重置其使用时间
                         user_data["used_seconds"] = 0
 
-                # 清理不活跃的用户数据
-                users_to_delete = []
-                for user_id_str, guilds_data in self._data["users"].items():
-                    all_guilds_inactive = True
-                    for guild_id_str, user_data in guilds_data.items():
-                        if user_data["used_seconds"] != 0 or user_data["current_timed_roles"] or user_data["last_claim_timestamp"] is not None:
-                            all_guilds_inactive = False
-                            break
-                    if all_guilds_inactive:
-                        users_to_delete.append(user_id_str)
+            # 2. 结合服务器上的实际情况，构建一个完整的、拥有身份组的成员列表
+            bot = cog.bot
+            all_members_with_timed_roles = {}
+            for guild in bot.guilds:
+                if guild.id not in config.GUILD_CONFIGS:
+                    continue
+                
+                all_members_with_timed_roles[guild.id] = {}
+                guild_timed_roles = set(config.GUILD_CONFIGS[guild.id].get('timed_roles', []))
 
-                for user_id_str in users_to_delete:
+                for role_id in guild_timed_roles:
+                    role = guild.get_role(role_id)
+                    if role:
+                        for member in role.members:
+                            if member.id not in all_members_with_timed_roles[guild.id]:
+                                all_members_with_timed_roles[guild.id][member.id] = set()
+                            all_members_with_timed_roles[guild.id][member.id].add(role.id)
+
+
+            # 3. 同步和清理身份组
+            cog.logger.info(f"每日重置：开始处理 {len(all_members_with_timed_roles)} 个服务器的身份组同步...")
+            for guild_id, members_map in all_members_with_timed_roles.items():
+                guild = bot.get_guild(guild_id)
+                if not guild:
+                    continue
+                
+                guild_exclusion_user_ids = set(exclusion_map.get(guild_id, {}).keys())
+
+                members_to_update = {}
+                for member_id, role_ids_on_server in members_map.items():
+                    if member_id not in guild_exclusion_user_ids:
+                        # 不在豁免名单内，移除所有限时身份组
+                        members_to_update[member_id] = {"add": [], "remove": list(role_ids_on_server)}
+
+                # 3.1. 对于豁免名单内的用户，重新上号，确保他们的身份组是最新的
+                guild_exclusion_map = exclusion_map.get(guild_id, {})
+                if guild_exclusion_map:
+                    cog.logger.info(f"服务器 {guild.name}：开始为 {len(guild_exclusion_map)} 个豁免用户重新同步身份组...")
+                    await batch_update_member_roles(cog, guild, guild_exclusion_map, reason="每日重置豁免用户身份组同步")
+
+                # 3.2. 移除需要清理的成员的身份组
+                if members_to_update:
+                    cog.logger.info(f"服务器 {guild.name}：开始为 {len(members_to_update)} 个非豁免用户移除身份组...")
+                    await batch_update_member_roles(cog, guild, members_to_update, reason="每日重置自动移除")
+
+            # 4. 清理数据库
+            # 仅移除那些不在任何豁免名单中的用户的数据
+            all_exclusion_user_ids = set()
+            for guild_exclusion in exclusion_map.values():
+                all_exclusion_user_ids.update(guild_exclusion.keys())
+
+            users_to_clear = [uid for uid in self._data["users"].keys() if int(uid) not in all_exclusion_user_ids]
+            for user_id_str in users_to_clear:
+                if user_id_str in self._data["users"]:
                     del self._data["users"][user_id_str]
 
-                self._data["last_reset"] = now.isoformat()
-                await self.save_data(force=True)
-                cog.logger.info("每日重置完成，所有非豁免用户的限时身份组已被移除。")
-                return True
-            return False
+            # 更新重置时间戳
+            self._data["last_reset"] = now.isoformat()
+            await self.save_data(force=True)
+            cog.logger.info("所有服务器的每日重置任务已成功完成。")
+            return True
 
     # 【核心改动】返回的结构也变了
     def get_users_with_active_timed_role(self) -> list[tuple[int, int, list[int]]]:

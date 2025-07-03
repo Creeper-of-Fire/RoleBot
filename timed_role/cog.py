@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import typing
+from datetime import datetime
 from typing import Optional, List, Dict
 
 import discord
@@ -66,11 +67,33 @@ class TimedRolesCog(FeatureCog, name="TimedRoles"):
             self.safe_timed_role_ids_cache[guild_id] = current_safe_timed_ids
         self.logger.info("TimedRolesCog: 安全限时身份组缓存更新完毕。")
 
+    @commands.command(name="强制触发限时身份组每日重置")
+    @app_commands.default_permissions(manage_roles=True)
+    async def force_reset_timed_roles_command(self, ctx: commands.Context):
+        """【管理员专属】强制触发所有服务器的限时身份组每日重置。"""
+        self.logger.info(f"管理员 {ctx.author} 正在强制触发限时身份组每日重置...")
+        await ctx.send("正在强制触发每日重置...", ephemeral=True)
+
+        await self.timed_role_data_manager.daily_reset(self, force=True)
+
+        await ctx.send("✅ 强制重置成功。", ephemeral=True)
+        self.logger.info("管理员强制重置成功。")
+
     @tasks.loop(minutes=1)
     async def daily_reset_task(self):
         """每日定时任务，用于重置用户的限时身份组使用时间。"""
-        if await self.timed_role_data_manager.daily_reset(self):
-            self.logger.info(f"每日计时器已在 UTC+8 {config.ROLE_MANAGER_CONFIG.get('reset_hour_utc8', 16)} 点重置。")
+        now = datetime.now(config.UTC8)
+        reset_time = config.RESET_TIME
+
+        # 检查是否到达每日重置时间
+        # 为了防止重复触发，我们需要检查上一次重置的时间戳
+        last_reset = await self.timed_role_data_manager.get_last_reset_time()
+        today_reset_time = now.replace(hour=reset_time.hour, minute=reset_time.minute, second=reset_time.second, microsecond=0)
+
+        if now >= today_reset_time and last_reset < today_reset_time:
+            self.logger.info(f"已到达每日重置时间 (UTC+8 {reset_time.hour}点)，正在启动重置...")
+            await self.timed_role_data_manager.daily_reset(self)
+
 
     @tasks.loop(minutes=1)
     async def check_expired_roles_task(self):
