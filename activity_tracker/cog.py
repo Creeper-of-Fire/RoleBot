@@ -170,7 +170,8 @@ class ActivityTrackerCog(commands.Cog, name="ActivityTracker"):
     activity_group = app_commands.Group(
         name="角色活跃度",
         description="用户活动追踪相关指令",
-        guild_ids=[gid for gid in config.GUILD_IDS]
+        guild_ids=[gid for gid in config.GUILD_IDS],
+        default_permissions=discord.Permissions(manage_roles=True),
     )
 
     @activity_group.command(name="活跃度角色领取面板", description="发送一个活跃度角色申领面板。")
