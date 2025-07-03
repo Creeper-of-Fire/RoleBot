@@ -76,7 +76,9 @@ class TimedRolesCog(FeatureCog, name="TimedRoles"):
         """【管理员专属】强制触发所有服务器的限时身份组每日重置。"""
         self.logger.info(f"管理员 {interaction.user} 正在强制触发限时身份组每日重置...")
         await interaction.response.send_message("正在强制触发每日重置...", ephemeral=True)
-
+        if timer.is_guild_permanent(interaction.guild_id):
+            await interaction.followup.send(f"❌ 服务器{interaction.guild.name}为永久服务器，不支持强制重置。", ephemeral=True)
+            return
         await self.timed_role_data_manager.daily_reset(self, [interaction.guild])
 
         await interaction.followup.send(f"✅ 服务器{interaction.guild.name}强制重置成功。", ephemeral=True)
