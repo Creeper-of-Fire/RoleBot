@@ -6,9 +6,11 @@ from datetime import datetime
 from typing import Optional, List, Dict
 
 import discord
+from discord import app_commands
 from discord.ext import tasks, commands
 
 import config
+from timed_role.timer import UTC8
 
 from utility.auth import is_role_dangerous
 from utility.helpers import try_get_member
@@ -82,16 +84,16 @@ class TimedRolesCog(FeatureCog, name="TimedRoles"):
     @tasks.loop(minutes=1)
     async def daily_reset_task(self):
         """每日定时任务，用于重置用户的限时身份组使用时间。"""
-        now = datetime.now(config.UTC8)
-        reset_time = config.RESET_TIME
+        now = datetime.now(UTC8)
+        reset_hour = config.ROLE_MANAGER_CONFIG['reset_hour_utc8']
 
         # 检查是否到达每日重置时间
         # 为了防止重复触发，我们需要检查上一次重置的时间戳
         last_reset = await self.timed_role_data_manager.get_last_reset_time()
-        today_reset_time = now.replace(hour=reset_time.hour, minute=reset_time.minute, second=reset_time.second, microsecond=0)
+        today_reset_time = now.replace(hour=reset_hour, minute=0, second=0, microsecond=0)
 
-        if now >= today_reset_time and last_reset < today_reset_time:
-            self.logger.info(f"已到达每日重置时间 (UTC+8 {reset_time.hour}点)，正在启动重置...")
+        if now >= today_reset_time > last_reset:
+            self.logger.info(f"已到达每日重置时间 (UTC+8 {reset_hour}点)，正在启动重置...")
             await self.timed_role_data_manager.daily_reset(self)
 
 
