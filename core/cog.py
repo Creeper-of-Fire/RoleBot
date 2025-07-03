@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import platform
 import typing
+from datetime import datetime, timezone
 from typing import Dict, List
 
 import discord
+import psutil
 from discord import app_commands
 from discord.ext import commands, tasks
 
@@ -15,6 +19,18 @@ from utility.helpers import create_progress_bar
 if typing.TYPE_CHECKING:
     from main import RoleBot
     from utility.feature_cog import FeatureCog
+
+
+def _format_bytes(size: int) -> str:
+    """将字节大小格式化为 KB, MB, GB 等。"""
+    if size < 1024:
+        return f"{size} B"
+    for unit in ["", "K", "M", "G", "T", "P"]:
+        if size < 1024.0:
+            # 返回带有两位小数的字符串，例如 "956.00 MB"
+            return f"{size:.2f} {unit}B"
+        size /= 1024.0
+    return f"{size:.2f} PB"
 
 
 class CoreCog(commands.Cog, name="Core"):
@@ -29,6 +45,9 @@ class CoreCog(commands.Cog, name="Core"):
     def __init__(self, bot: RoleBot):
         self.bot = bot
         self.logger = bot.logger
+
+        self.start_time = datetime.now(timezone.utc)
+
         self.role_name_cache: Dict[int, str] = {}
         self.feature_cogs: List[FeatureCog] = []
         self._update_all_caches_task.start()
@@ -84,7 +103,9 @@ class CoreCog(commands.Cog, name="Core"):
         self.bot.add_view(MainPanelView(self))  # MainPanelView 现在由 CoreCog 负责
         self.logger.info("核心模块已就绪，主控制面板持久化视图已注册。")
 
-    @app_commands.command(name="打开身份组自助中心面板", description="发送身份组管理面板到当前频道")
+    rolebot_group = app_commands.Group(name=config.COMMAND_GROUP_NAME, description="机器人核心管理与状态指令")
+
+    @rolebot_group.command(name="打开身份组自助中心面板", description="发送身份组管理面板到当前频道")
     @app_commands.guilds(*[discord.Object(id=gid) for gid in config.GUILD_IDS])
     @app_commands.default_permissions(manage_roles=True)
     async def send_panel(self, interaction: discord.Interaction):
@@ -98,7 +119,7 @@ class CoreCog(commands.Cog, name="Core"):
         view = MainPanelView(self)
         await interaction.response.send_message(embed=embed, view=view)
 
-    @app_commands.command(name="刷新成员缓存", description="【非常耗时！注意！】手动拉取服务器所有成员信息到机器人缓存中（带进度条）。")
+    @rolebot_group.command(name="刷新成员缓存", description="【非常耗时！注意！】手动拉取服务器所有成员信息到机器人缓存中（带进度条）。")
     @app_commands.guilds(*[discord.Object(id=gid) for gid in config.GUILD_IDS])
     @app_commands.default_permissions(manage_roles=True)
     async def refresh_member_cache(self, interaction: discord.Interaction):
@@ -167,6 +188,87 @@ class CoreCog(commands.Cog, name="Core"):
         )
         final_embed.set_footer(text=f"当前缓存成员数: {len(guild.members)}")
         await interaction.edit_original_response(embed=final_embed)
+
+    @rolebot_group.command(name="系统状态", description="显示机器人和服务器的实时系统信息。")
+    @app_commands.guilds(*[discord.Object(id=gid) for gid in config.GUILD_IDS])
+    @app_commands.default_permissions(manage_roles=True)
+    async def system_status(self, interaction: discord.Interaction):
+        """显示一个包含详细系统信息的监控面板。"""
+        await interaction.response.defer(ephemeral=False, thinking=True)
+
+        # --- 1. 获取进程和机器人信息 ---
+        process = psutil.Process()
+        # memory_full_info() 在某些系统上比 memory_info() 提供更多信息
+        # 它在 Linux 和 Windows 上都可用
+        try:
+            mem_info = process.memory_full_info()
+            bot_mem_rss = mem_info.rss  # 常驻内存
+            bot_mem_uss = mem_info.uss  # 独占内存（作为“已分配”的代表）
+        except AttributeError:  # 在某些权限受限或不支持的系统上回退
+            mem_info = process.memory_info()
+            bot_mem_rss = mem_info.rss
+            bot_mem_uss = bot_mem_rss  # 如果无法获取uss, 就让两个值相等
+
+        # --- 2. 获取系统信息 ---
+        cpu_usage = psutil.cpu_percent(interval=1)
+        ram_info = psutil.virtual_memory()
+
+        # --- 3. 获取操作系统信息 ---
+        # os.uname() 在 Windows 上不可用，所以我们做个兼容处理
+        if hasattr(os, "uname"):
+            uname = os.uname()
+            os_name = f"{uname.sysname}"
+            kernel_ver = f"{uname.release}"
+            os_ver = f"{uname.version}"
+        else:  # For Windows
+            os_name = platform.system()
+            kernel_ver = platform.release()
+            os_ver = platform.version()
+
+        # --- 4. 构建 Embed ---
+        embed = discord.Embed(
+            title="💻 系统信息",
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow()
+        )
+        if self.bot.user.display_avatar:
+            embed.set_thumbnail(url=self.bot.user.display_avatar.url)
+
+        # 匹配您截图的布局
+        embed.add_field(name="🖥️ 系统名称", value=f"`{os_name}`", inline=True)
+        embed.add_field(name="🔧 内核版本", value=f"`{kernel_ver}`", inline=True)
+        # 为了更美观地显示，可以截断过长的 os_ver
+        os_ver_short = (os_ver[:45] + '...') if len(os_ver) > 45 else os_ver
+        embed.add_field(name=" OS 版本", value=f"`{os_ver_short}`", inline=True)
+
+        # 您的截图是Rust, 但项目是Python, 所以显示Python版本
+        embed.add_field(name="🐍 Python 版本", value=f"`{platform.python_version()}`", inline=True)
+        embed.add_field(name="🔥 CPU 使用率", value=f"`{cpu_usage}%`", inline=True)
+        embed.add_field(
+            name="🧠 系统内存",
+            value=f"`{ram_info.percent}%` ({_format_bytes(ram_info.used)} / {_format_bytes(ram_info.total)})",
+            inline=True
+        )
+
+        # 添加一个空行字段来强制换行，以实现更好的布局
+        embed.add_field(name="\u200b", value="\u200b", inline=False)
+
+        embed.add_field(name="📊 Bot 内存 (独占)", value=f"`{_format_bytes(bot_mem_uss)}`", inline=True)
+        embed.add_field(name="📈 Bot 内存 (常驻)", value=f"`{_format_bytes(bot_mem_rss)}`", inline=True)
+
+        embed.add_field(name="👥 缓存用户数", value=f"`{len(self.bot.users)}`", inline=True)
+
+        # 计算运行时间
+        uptime = datetime.now(timezone.utc) - self.start_time
+        days, remainder = divmod(int(uptime.total_seconds()), 86400)
+        hours, remainder = divmod(remainder, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        uptime_str = f"{days}天 {hours}时 {minutes}分"
+        embed.add_field(name="⏱️ 机器人运行时长", value=f"`{uptime_str}`", inline=True)
+
+        embed.set_footer(text="机器人系统监控")
+
+        await interaction.followup.send(embed=embed)
 
 
 async def setup(bot: commands.Bot):

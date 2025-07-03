@@ -330,11 +330,11 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
 
                 try:
                     await progress_message.edit(embed=embed)
-                except discord.NotFound:
+                except discord.HTTPException:
                     if not fallback_triggered:
                         fallback_triggered = True
                         await interaction.channel.send(
-                            f"⏳ {user_mention}，交互已超时，但扫描任务仍在后台继续。\n"
+                            f"⏳ {user_mention}，交互已超时或失败，但扫描任务仍在后台继续。\n"
                             f"进度将在此新消息中**公开**更新。",
                             allowed_mentions=discord.AllowedMentions(users=True)
                         )

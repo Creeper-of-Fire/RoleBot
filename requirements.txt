@@ -6,3 +6,6 @@ discord.py
 # discord.py 的一个重要依赖，通常会自动安装，但明确列出是好习惯
 aiohttp
 python-dotenv
+
+# 系统监测
+psutil
