@@ -321,28 +321,34 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
                             except (discord.Forbidden, discord.HTTPException):
                                 total_failed += 1
 
-            # --- 3. 带回退的进度更新 ---
+            # --- 3. 非阻塞带回退的进度更新 ---
             if processed_members_count % 25 == 0 or processed_members_count == total_members_to_scan:
-                embed.set_field_at(0, name="扫描进度", value=create_progress_bar(processed_members_count, total_members_to_scan))
-                embed.set_field_at(1, name="✅ 同步", value=f"`{total_synced}`")
-                embed.set_field_at(2, name="✍️ 补录", value=f"`{total_logged}`")
-                embed.set_field_at(3, name="❌ 失败", value=f"`{total_failed}`")
+                # 复制 embed，防止并发修改问题
+                embed_copy = embed.copy()
+                embed_copy.set_field_at(0, name="扫描进度", value=create_progress_bar(processed_members_count, total_members_to_scan))
+                embed_copy.set_field_at(1, name="✅ 同步", value=f"`{total_synced}`")
+                embed_copy.set_field_at(2, name="✍️ 补录", value=f"`{total_logged}`")
+                embed_copy.set_field_at(3, name="❌ 失败", value=f"`{total_failed}`")
 
                 try:
-                    await progress_message.edit(embed=embed)
+                    # 将 edit 操作作为一个后台任务启动，主循环不等待它完成
+                    asyncio.create_task(progress_message.edit(embed=embed_copy))
                 except discord.HTTPException:
                     if not fallback_triggered:
                         fallback_triggered = True
+                        # 发送回退提示是重要操作，需要 await
                         await interaction.channel.send(
                             f"⏳ {user_mention}，交互已超时或失败，但扫描任务仍在后台继续。\n"
                             f"进度将在此新消息中**公开**更新。",
                             allowed_mentions=discord.AllowedMentions(users=True)
                         )
-                        progress_message = await interaction.channel.send(embed=embed)
+                        # 创建新的公开消息也需要 await
+                        progress_message = await interaction.channel.send(embed=embed_copy)
                     else:
-                        await progress_message.edit(embed=embed)
-
-                await asyncio.sleep(0.2)
+                        # 回退后，继续非阻塞地更新
+                        asyncio.create_task(progress_message.edit(embed=embed_copy))
+                # 移除 sleep，因为主循环不再被阻塞
+                # await asyncio.sleep(0.2)
 
         # --- 4. 发送最终结果 ---
         final_embed = discord.Embed(title=f"✅ {scan_title} 完成", color=discord.Color.green())

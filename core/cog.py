@@ -239,33 +239,34 @@ class CoreCog(commands.Cog, name="Core"):
             embed.set_thumbnail(url=self.bot.user.display_avatar.url)
 
         # 布局完全匹配新截图
-        embed.add_field(name="🖥️ 系统名称", value=f"`{os_display_name}`", inline=True)
-        embed.add_field(name="🔧 内核版本", value=f"`{kernel_display}`", inline=True)
+        embed.add_field(name="🖥️ 系统名称", value=f"{os_display_name}", inline=True)
+        embed.add_field(name="🔧 内核版本", value=f"{kernel_display}", inline=True)
         # 为了匹配截图，我们让 OS 版本占用更多空间
-        embed.add_field(name="💻 操作系统版本", value=f"`{os_ver_display}`", inline=True)
+        embed.add_field(name="💻 操作系统版本", value=f"{os_ver_display}", inline=True)
 
         # 您的原始截图是Rust, 但项目是Python, 所以显示Python版本
-        embed.add_field(name="🐍 Python 版本", value=f"`{platform.python_version()}`", inline=True)
-        embed.add_field(name="🔥 CPU 使用率", value=f"`{cpu_usage}%`", inline=True)
+        embed.add_field(name="🐍 Python 版本", value=f"{platform.python_version()}", inline=True)
+        embed.add_field(name="🔥 CPU 使用率", value=f"{cpu_usage}%", inline=True)
         embed.add_field(
             name="🧠 系统内存",
-            value=f"`{ram_info.percent}%` ({_format_bytes(ram_info.used)} / {_format_bytes(ram_info.total)})",
+            value=f"{ram_info.percent}%\n"
+                  f"({_format_bytes(ram_info.used)} / {_format_bytes(ram_info.total)})",
             inline=True
         )
 
         # 添加一个空行字段来创建新的一行布局
         embed.add_field(name="\u200b", value="\u200b", inline=False)
 
-        embed.add_field(name="📊 Bot 内存 (独占)", value=f"`{_format_bytes(bot_mem_uss)}`", inline=True)
-        embed.add_field(name="📈 Bot 内存 (常驻)", value=f"`{_format_bytes(bot_mem_rss)}`", inline=True)
-        embed.add_field(name="👥 缓存用户数", value=f"`{len(self.bot.users)}`", inline=True)
+        embed.add_field(name="📊 Bot 内存 (独占)", value=f"{_format_bytes(bot_mem_uss)}", inline=True)
+        embed.add_field(name="📈 Bot 内存 (常驻)", value=f"{_format_bytes(bot_mem_rss)}", inline=True)
+        embed.add_field(name="👥 缓存用户数", value=f"{len(self.bot.users)}", inline=True)
 
         uptime = datetime.now(timezone.utc) - self.start_time
         days, remainder = divmod(int(uptime.total_seconds()), 86400)
         hours, remainder = divmod(remainder, 3600)
         minutes, seconds = divmod(remainder, 60)
         uptime_str = f"{days}天 {hours}时 {minutes}分"
-        embed.add_field(name="⏱️ 机器人运行时长", value=f"`{uptime_str}`", inline=True)
+        embed.add_field(name="⏱️ 机器人运行时长", value=f"{uptime_str}", inline=False)
 
         embed.set_footer(text=f"{self.bot.user.name} 系统监控")
 
