@@ -72,6 +72,7 @@ class TimedRolesCog(FeatureCog, name="TimedRoles"):
     @app_commands.command(name="强制触发限时身份组每日重置", description="在当前服务器强制触发限时身份组每日重置")
     @app_commands.guilds(*[discord.Object(id=gid) for gid in config.GUILD_IDS])
     @app_commands.default_permissions(manage_roles=True)
+    @app_commands.checks.has_permissions(manage_roles=True)
     async def force_reset_timed_roles_command(self, interaction: discord.Interaction):
         """【管理员专属】强制触发所有服务器的限时身份组每日重置。"""
         self.logger.info(f"管理员 {interaction.user} 正在强制触发限时身份组每日重置...")

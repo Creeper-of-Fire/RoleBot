@@ -197,6 +197,7 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
     @app_commands.command(name="手动触发每日同步", description="立即执行一次每日身份组同步检查任务。")
     @app_commands.guilds(*[discord.Object(id=gid) for gid in config.GUILD_IDS])
     @app_commands.default_permissions(manage_roles=True)
+    @app_commands.checks.has_permissions(manage_roles=True)
     async def manual_daily_sync(self, interaction: discord.Interaction):
         """手动触发 daily_sync_task 任务。"""
         await interaction.response.send_message("▶️ 已手动触发每日身份组同步任务...", ephemeral=True)
@@ -240,6 +241,7 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
     @app_commands.autocomplete(rule=sync_rule_autocomplete)
     @app_commands.guild_only()
     @app_commands.default_permissions(manage_roles=True)
+    @app_commands.checks.has_permissions(manage_roles=True)
     async def sync_unlogged_members(self, interaction: discord.Interaction, rule: Optional[str] = "all"):
         await interaction.response.defer(ephemeral=False)
         guild = interaction.guild
@@ -407,6 +409,7 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
     @app_commands.autocomplete(rule=sync_rule_autocomplete)
     @app_commands.guild_only()
     @app_commands.default_permissions(manage_roles=True)
+    @app_commands.checks.has_permissions(manage_roles=True)
     async def manage_sync_log(self, interaction: discord.Interaction, action: str, rule: Optional[str] = None):
         # --- 所有删除操作都需要确认 ---
         # 1. 准备确认消息和视图
