@@ -87,7 +87,7 @@ class TimedRoleDataManager:
     def get_remaining_seconds(self, user_id: int, guild_id: int) -> int:
         """获取用户在指定服务器今天剩余的可用时长。"""
         user_data = self._get_guild_user_data(user_id, guild_id)
-        return timer.get_remaining_seconds(user_data)
+        return timer.get_remaining_seconds(user_data,guild_id)
 
     # 【核心改动】方法现在需要 guild_id，并且接受 role_ids 列表
     async def claim_timed_roles(self, user_id: int, role_ids: list[int], guild_id: int):
@@ -138,7 +138,7 @@ class TimedRoleDataManager:
                 last_reset_time = last_reset_time.replace(tzinfo=UTC8)
             return last_reset_time
 
-    async def daily_reset(self, cog: 'FeatureCog', force: bool = False):
+    async def daily_reset(self, cog: 'FeatureCog'):
         """重置所有服务器中所有用户的每日计时。"""
         now = datetime.now(UTC8)
         async with self._lock:  # 添加锁机制防止并发问题

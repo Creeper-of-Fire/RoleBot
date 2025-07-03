@@ -76,7 +76,7 @@ class TimedRolesCog(FeatureCog, name="TimedRoles"):
         self.logger.info(f"管理员 {interaction.user} 正在强制触发限时身份组每日重置...")
         await interaction.response.send_message("正在强制触发每日重置...", ephemeral=True)
 
-        await self.timed_role_data_manager.daily_reset(self, force=True)
+        await self.timed_role_data_manager.daily_reset(self)
 
         await interaction.followup.send("✅ 强制重置成功。", ephemeral=True)
         self.logger.info("管理员强制重置成功。")

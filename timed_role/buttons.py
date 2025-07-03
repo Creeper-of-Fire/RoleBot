@@ -6,9 +6,9 @@ import discord
 from discord import ui
 
 import config
-from utility.helpers import safe_defer, try_get_member, format_duration_hms
-from timed_role.timer import DAILY_LIMIT_SECONDS
 from timed_role.timed_role_view import TimedRoleManageView
+from timed_role.timer import get_daily_limit_seconds
+from utility.helpers import safe_defer, try_get_member, format_duration_hms
 
 if typing.TYPE_CHECKING:
     from timed_role.cog import TimedRolesCog
@@ -44,18 +44,27 @@ class QueryTimeButton(ui.Button):
         """响应按钮点击，查询并显示用户的限时身份组使用情况。"""
         await safe_defer(interaction, thinking=True)
         member, guild = interaction.user, interaction.guild
+
+        # 动态获取服务器的总时长和剩余时长
         remaining_seconds = self.cog.timed_role_data_manager.get_remaining_seconds(member.id, guild.id)
-        used_seconds = DAILY_LIMIT_SECONDS - remaining_seconds
+        daily_limit_seconds = get_daily_limit_seconds(guild.id)
+        used_seconds = daily_limit_seconds - remaining_seconds
+
         user_guild_data = self.cog.timed_role_data_manager._get_guild_user_data(member.id, guild.id)
         current_role_ids = user_guild_data.get("current_timed_roles", [])
+
         embed = discord.Embed(title=f"⏱️ 你在「{guild.name}」的时间使用情况", color=discord.Color.blue())
+        # 在embed中显示总时长，让用户更清晰
+        embed.add_field(name="今日总时长", value=format_duration_hms(daily_limit_seconds), inline=False)
         embed.add_field(name="今日已用时长", value=format_duration_hms(used_seconds), inline=False)
         embed.add_field(name="今日剩余时长", value=format_duration_hms(remaining_seconds), inline=False)
+
         if current_role_ids:
             roles_text = ", ".join([f"**{guild.get_role(rid).name}**" for rid in current_role_ids if guild.get_role(rid)])
             embed.add_field(name="当前持有", value=f"你当前正在使用 {roles_text}，计时进行中。", inline=False)
         else:
             embed.add_field(name="当前持有", value="你当前未持有任何限时身份组。", inline=False)
+
         reset_hour = config.ROLE_MANAGER_CONFIG.get("reset_hour_utc8", 16)
         embed.set_footer(text=f"每日UTC+8 {reset_hour}点重置时长。")
         await interaction.followup.send(embed=embed, ephemeral=True)
