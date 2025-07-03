@@ -112,7 +112,11 @@ class CoreCog(commands.Cog, name="Core"):
         self.bot.add_view(MainPanelView(self))  # MainPanelView 现在由 CoreCog 负责
         self.logger.info("核心模块已就绪，主控制面板持久化视图已注册。")
 
-    rolebot_group = app_commands.Group(name=config.COMMAND_GROUP_NAME, description="机器人核心管理与状态指令", guild_ids=[gid for gid in config.GUILD_IDS])
+    rolebot_group = app_commands.Group(
+        name=config.COMMAND_GROUP_NAME,
+        description="机器人核心管理与状态指令",
+        guild_ids=[gid for gid in config.GUILD_IDS]
+    )
 
     @rolebot_group.command(name="打开身份组自助中心面板", description="发送身份组管理面板到当前频道")
     @app_commands.default_permissions(manage_roles=True)
@@ -277,7 +281,7 @@ class CoreCog(commands.Cog, name="Core"):
         await interaction.followup.send(embed=embed)
 
     @rolebot_group.command(name="获取数据备份", description="打包并发送 data 目录下的所有数据文件。")
-    @app_commands.default_permissions(manage_roles=True)
+    @app_commands.default_permissions(manage_roles=True, view_audit_log=True)
     async def backup_data(self, interaction: discord.Interaction):
         """
         创建一个包含 'data' 目录下所有文件的 zip 压缩包，并私密地发送给命令使用者。
