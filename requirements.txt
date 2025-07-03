@@ -9,3 +9,4 @@ python-dotenv
 
 # 系统监测
 psutil
+distro

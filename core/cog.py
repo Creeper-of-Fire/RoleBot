@@ -3,6 +3,11 @@ from __future__ import annotations
 import asyncio
 import os
 import platform
+try:
+    import distro
+    IS_LINUX = True
+except ImportError:
+    IS_LINUX = False
 import typing
 from datetime import datetime, timezone
 from typing import Dict, List
@@ -190,55 +195,56 @@ class CoreCog(commands.Cog, name="Core"):
     @rolebot_group.command(name="系统状态", description="显示机器人和服务器的实时系统信息。")
     @app_commands.default_permissions(manage_roles=True)
     async def system_status(self, interaction: discord.Interaction):
-        """显示一个包含详细系统信息的监控面板。"""
-        await interaction.response.defer(ephemeral=False, thinking=True)
+        """显示一个包含详细系统信息的监控面板，采用更简洁的格式。"""
+        await interaction.response.defer()
 
-        # --- 1. 获取进程和机器人信息 ---
+        # --- 1. 获取进程和机器人信息 (不变) ---
         process = psutil.Process()
-        # memory_full_info() 在某些系统上比 memory_info() 提供更多信息
-        # 它在 Linux 和 Windows 上都可用
         try:
             mem_info = process.memory_full_info()
-            bot_mem_rss = mem_info.rss  # 常驻内存
-            bot_mem_uss = mem_info.uss  # 独占内存（作为“已分配”的代表）
-        except AttributeError:  # 在某些权限受限或不支持的系统上回退
+            bot_mem_uss = mem_info.uss
+            bot_mem_rss = mem_info.rss
+        except AttributeError:
             mem_info = process.memory_info()
             bot_mem_rss = mem_info.rss
-            bot_mem_uss = bot_mem_rss  # 如果无法获取uss, 就让两个值相等
+            bot_mem_uss = bot_mem_rss
 
-        # --- 2. 获取系统信息 ---
+        # --- 2. 获取系统资源信息 (不变) ---
         cpu_usage = psutil.cpu_percent(interval=1)
         ram_info = psutil.virtual_memory()
 
-        # --- 3. 获取操作系统信息 ---
-        # os.uname() 在 Windows 上不可用，所以我们做个兼容处理
-        if hasattr(os, "uname"):
-            uname = os.uname()
-            os_name = f"{uname.sysname}"
-            kernel_ver = f"{uname.release}"
-            os_ver = f"{uname.version}"
-        else:  # For Windows
-            os_name = platform.system()
-            kernel_ver = platform.release()
-            os_ver = platform.version()
+        # --- 3. 【核心修改】获取更简洁的操作系统信息 ---
+        os_display_name = ""
+        kernel_display = ""
+        os_ver_display = ""
+
+        if IS_LINUX:
+            # 在 Linux 上，使用 distro 库获取发行版信息
+            os_display_name = distro.name()  # e.g., "Ubuntu"
+            kernel_display = f"Linux {platform.release()}"  # e.g., "Linux 6.8.0-..."
+            os_ver_display = f"Linux ({distro.name()} {distro.version()})"  # e.g., "Linux (Ubuntu 24.04)"
+        else:
+            # 在 Windows 或其他系统上，使用 platform 作为后备方案
+            os_display_name = platform.system()  # e.g., "Windows"
+            kernel_display = platform.release()  # e.g., "10"
+            os_ver_display = f"{platform.system()} {platform.version()}"
 
         # --- 4. 构建 Embed ---
         embed = discord.Embed(
-            title="💻 系统信息",
-            color=discord.Color.green(),
+            title="🤖 系统信息",
+            color=discord.Color.from_rgb(107, 222, 122),  # 使用一个更柔和的绿色
             timestamp=discord.utils.utcnow()
         )
         if self.bot.user.display_avatar:
             embed.set_thumbnail(url=self.bot.user.display_avatar.url)
 
-        # 匹配您截图的布局
-        embed.add_field(name="🖥️ 系统名称", value=f"`{os_name}`", inline=True)
-        embed.add_field(name="🔧 内核版本", value=f"`{kernel_ver}`", inline=True)
-        # 为了更美观地显示，可以截断过长的 os_ver
-        os_ver_short = (os_ver[:45] + '...') if len(os_ver) > 45 else os_ver
-        embed.add_field(name=" OS 版本", value=f"`{os_ver_short}`", inline=True)
+        # 布局完全匹配新截图
+        embed.add_field(name="🖥️ 系统名称", value=f"`{os_display_name}`", inline=True)
+        embed.add_field(name="🔧 内核版本", value=f"`{kernel_display}`", inline=True)
+        # 为了匹配截图，我们让 OS 版本占用更多空间
+        embed.add_field(name="💻 操作系统版本", value=f"`{os_ver_display}`", inline=True)
 
-        # 您的截图是Rust, 但项目是Python, 所以显示Python版本
+        # 您的原始截图是Rust, 但项目是Python, 所以显示Python版本
         embed.add_field(name="🐍 Python 版本", value=f"`{platform.python_version()}`", inline=True)
         embed.add_field(name="🔥 CPU 使用率", value=f"`{cpu_usage}%`", inline=True)
         embed.add_field(
@@ -247,15 +253,13 @@ class CoreCog(commands.Cog, name="Core"):
             inline=True
         )
 
-        # 添加一个空行字段来强制换行，以实现更好的布局
+        # 添加一个空行字段来创建新的一行布局
         embed.add_field(name="\u200b", value="\u200b", inline=False)
 
         embed.add_field(name="📊 Bot 内存 (独占)", value=f"`{_format_bytes(bot_mem_uss)}`", inline=True)
         embed.add_field(name="📈 Bot 内存 (常驻)", value=f"`{_format_bytes(bot_mem_rss)}`", inline=True)
-
         embed.add_field(name="👥 缓存用户数", value=f"`{len(self.bot.users)}`", inline=True)
 
-        # 计算运行时间
         uptime = datetime.now(timezone.utc) - self.start_time
         days, remainder = divmod(int(uptime.total_seconds()), 86400)
         hours, remainder = divmod(remainder, 3600)
@@ -263,7 +267,7 @@ class CoreCog(commands.Cog, name="Core"):
         uptime_str = f"{days}天 {hours}时 {minutes}分"
         embed.add_field(name="⏱️ 机器人运行时长", value=f"`{uptime_str}`", inline=True)
 
-        embed.set_footer(text="机器人系统监控")
+        embed.set_footer(text=f"{self.bot.user.name} 系统监控")
 
         await interaction.followup.send(embed=embed)
 
