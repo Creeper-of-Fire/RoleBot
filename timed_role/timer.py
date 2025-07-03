@@ -19,6 +19,9 @@ def get_daily_limit_seconds(guild_id: int) -> int:
     )
     return int(limit_hours * 3600)
 
+def is_guild_permanent(guild_id: int) -> bool:
+    """检查服务器的限时时长是否超过24小时，若是则视为永久。"""
+    return get_daily_limit_seconds(guild_id) > 24 * 3600
 
 def get_remaining_seconds(user_data: dict, guild_id: int) -> int:
     """

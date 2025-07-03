@@ -10,6 +10,7 @@ from discord import app_commands
 from discord.ext import tasks, commands
 
 import config
+from timed_role import timer
 from timed_role.timer import UTC8
 
 from utility.auth import is_role_dangerous
@@ -76,9 +77,20 @@ class TimedRolesCog(FeatureCog, name="TimedRoles"):
         self.logger.info(f"管理员 {interaction.user} 正在强制触发限时身份组每日重置...")
         await interaction.response.send_message("正在强制触发每日重置...", ephemeral=True)
 
-        await self.timed_role_data_manager.daily_reset(self)
+        # Cog 负责筛选需要重置的服务器
+        guilds_to_reset = [
+            g for g in self.bot.guilds
+            if g.id in config.GUILD_CONFIGS and not timer.is_guild_permanent(g.id)
+        ]
 
-        await interaction.followup.send("✅ 强制重置成功。", ephemeral=True)
+        if not guilds_to_reset:
+            await interaction.followup.send("✅ 操作完成，没有需要重置的服务器。", ephemeral=True)
+            return
+
+        # 将筛选后的列表传递给 DataManager
+        await self.timed_role_data_manager.daily_reset(self, guilds_to_reset)
+
+        await interaction.followup.send(f"✅ 强制重置成功。已处理 {len(guilds_to_reset)} 个服务器。", ephemeral=True)
         self.logger.info("管理员强制重置成功。")
 
     @tasks.loop(minutes=1)
@@ -94,7 +106,19 @@ class TimedRolesCog(FeatureCog, name="TimedRoles"):
 
         if now >= today_reset_time > last_reset:
             self.logger.info(f"已到达每日重置时间 (UTC+8 {reset_hour}点)，正在启动重置...")
-            await self.timed_role_data_manager.daily_reset(self)
+            # Cog 负责筛选需要重置的服务器
+            guilds_to_reset = [
+                g for g in self.bot.guilds
+                if g.id in config.GUILD_CONFIGS and not timer.is_guild_permanent(g.id)
+            ]
+
+            if not guilds_to_reset:
+                self.logger.info("每日重置：没有需要处理的服务器，跳过。")
+                # 即使没有服务器要重置，也要更新时间戳以防重复触发
+                await self.timed_role_data_manager.update_last_reset_time()
+                return
+
+            await self.timed_role_data_manager.daily_reset(self, guilds_to_reset)
 
 
     @tasks.loop(minutes=1)
@@ -107,6 +131,12 @@ class TimedRolesCog(FeatureCog, name="TimedRoles"):
         # 引入一个计数器和更长的延迟间隔
         processed_count = 0
         for user_id, guild_id, role_ids in users_to_check:
+            if timer.is_guild_permanent(guild_id):
+                # --- 这是为永久服务器新增的“自愈”逻辑 ---
+                # 检查该用户的已用时间是否大于0，如果是，则说明数据存在异常（例如从非永久切换而来）
+                # 我们需要将其重置，以确保其“永久”状态。
+                await self.timed_role_data_manager.reset_user_used_seconds(user_id, guild_id)
+                continue
             # 这里的 get_remaining_seconds 内部可能调用 _get_guild_user_data，不涉及API
             if self.timed_role_data_manager.get_remaining_seconds(user_id, guild_id) <= 0:
                 self.logger.info(f"用户 {user_id} 在服务器 {guild_id} 的限时身份组已过期，正在移除...")

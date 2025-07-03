@@ -5,17 +5,16 @@ import asyncio
 import json
 import os
 from datetime import datetime, timedelta, timezone, time
-
-import config
-
 from typing import TYPE_CHECKING
 
+import discord
+
+import config
 from timed_role import timer
 from utility.role_service import batch_update_member_roles
 
 if TYPE_CHECKING:
     from utility.feature_cog import FeatureCog
-
 
 DATA_DIR = "data"
 DATA_FILE = os.path.join(DATA_DIR, "user_data.json")
@@ -44,15 +43,15 @@ class TimedRoleDataManager:
     async def save_data(self, force=False):
         """保存数据，支持防抖和增量更新"""
         self._dirty = True
-        
+
         # 如果强制保存或没有正在进行的保存任务
         if force or self._save_task is None:
             if self._save_task:
                 self._save_task.cancel()
-            
+
             # 延迟1秒保存，实现防抖
             self._save_task = asyncio.create_task(self._delayed_save())
-    
+
     async def _delayed_save(self):
         """延迟保存实现防抖"""
         try:
@@ -87,7 +86,7 @@ class TimedRoleDataManager:
     def get_remaining_seconds(self, user_id: int, guild_id: int) -> int:
         """获取用户在指定服务器今天剩余的可用时长。"""
         user_data = self._get_guild_user_data(user_id, guild_id)
-        return timer.get_remaining_seconds(user_data,guild_id)
+        return timer.get_remaining_seconds(user_data, guild_id)
 
     # 【核心改动】方法现在需要 guild_id，并且接受 role_ids 列表
     async def claim_timed_roles(self, user_id: int, role_ids: list[int], guild_id: int):
@@ -138,21 +137,35 @@ class TimedRoleDataManager:
                 last_reset_time = last_reset_time.replace(tzinfo=UTC8)
             return last_reset_time
 
-    async def daily_reset(self, cog: 'FeatureCog'):
-        """重置所有服务器中所有用户的每日计时。"""
-        now = datetime.now(UTC8)
-        async with self._lock:  # 添加锁机制防止并发问题
-            # 1. 识别所有管理的限时身份组和需要保留身份组的用户（豁免名单）
-            all_managed_role_ids = set()
-            for guild_config in config.GUILD_CONFIGS.values():
-                all_managed_role_ids.update(guild_config.get('timed_roles', []))
+    async def update_last_reset_time(self):
+        """仅更新重置时间戳。"""
+        async with self._lock:
+            self._data["last_reset"] = datetime.now(UTC8).isoformat()
+            await self.save_data(force=True)
 
+    async def daily_reset(self, cog: 'FeatureCog', guilds_to_reset: list[discord.Guild]):
+        """
+        重置指定服务器列表中所有用户的每日计时。
+        此方法现在由Cog驱动，只处理传入的、非永久的服务器。
+        """
+        now = datetime.now(UTC8)
+        bot = cog.bot
+
+        async with self._lock:
+            # 1. 识别需要保留身份组的用户（豁免名单），但只在需要重置的服务器中
+            guilds_to_reset_ids = {g.id for g in guilds_to_reset}
             exclusion_map = {}
+
             # 遍历数据库，处理正在计时的用户
-            for user_id_str, guilds_data in self._data["users"].items():
+            for user_id_str, guilds_data in list(self._data["users"].items()):
                 user_id = int(user_id_str)
-                for guild_id_str, user_data in guilds_data.items():
+                for guild_id_str, user_data in list(guilds_data.items()):
                     guild_id = int(guild_id_str)
+
+                    # 只处理传入的、需要重置的服务器
+                    if guild_id not in guilds_to_reset_ids:
+                        continue
+
                     if user_data.get("current_timed_roles") and user_data.get("last_claim_timestamp"):
                         if guild_id not in exclusion_map:
                             exclusion_map[guild_id] = {}
@@ -166,14 +179,14 @@ class TimedRoleDataManager:
                     else:
                         # 对于没有在计时的用户，直接重置其使用时间
                         user_data["used_seconds"] = 0
+                        # # 如果用户数据变得空洞，可以考虑清理
+                        # if not user_data.get("current_timed_roles"):
+                        #     # 为了简化，这里暂时不删除，但可以优化
+                        #     pass
 
-            # 2. 结合服务器上的实际情况，构建一个完整的、拥有身份组的成员列表
-            bot = cog.bot
+            # 2. 构建一个拥有身份组的成员列表，仅针对需要重置的服务器
             all_members_with_timed_roles = {}
-            for guild in bot.guilds:
-                if guild.id not in config.GUILD_CONFIGS:
-                    continue
-                
+            for guild in guilds_to_reset:
                 all_members_with_timed_roles[guild.id] = {}
                 guild_timed_roles = set(config.GUILD_CONFIGS[guild.id].get('timed_roles', []))
 
@@ -187,19 +200,23 @@ class TimedRoleDataManager:
 
 
             # 3. 同步和清理身份组
-            cog.logger.info(f"每日重置：开始处理 {len(all_members_with_timed_roles)} 个服务器的身份组同步...")
-            for guild_id, members_map in all_members_with_timed_roles.items():
-                guild = bot.get_guild(guild_id)
-                if not guild:
-                    continue
-                
+            cog.logger.info(f"每日重置：开始处理 {len(guilds_to_reset)} 个服务器的身份组同步...")
+            for guild in guilds_to_reset:
+                guild_id = guild.id
+                members_map = all_members_with_timed_roles.get(guild_id, {})
                 guild_exclusion_user_ids = set(exclusion_map.get(guild_id, {}).keys())
 
                 members_to_update = {}
+
                 for member_id, role_ids_on_server in members_map.items():
                     if member_id not in guild_exclusion_user_ids:
                         # 不在豁免名单内，移除所有限时身份组
                         members_to_update[member_id] = {"add": [], "remove": list(role_ids_on_server)}
+                        # 清理数据库中这些用户在该服务器的数据
+                        if str(member_id) in self._data["users"] and str(guild_id) in self._data["users"][str(member_id)]:
+                            del self._data["users"][str(member_id)][str(guild_id)]
+                            if not self._data["users"][str(member_id)]:
+                                del self._data["users"][str(member_id)]
 
                 # 3.1. 对于豁免名单内的用户，重新上号，确保他们的身份组是最新的
                 guild_exclusion_map = exclusion_map.get(guild_id, {})
@@ -226,8 +243,27 @@ class TimedRoleDataManager:
             # 更新重置时间戳
             self._data["last_reset"] = now.isoformat()
             await self.save_data(force=True)
-            cog.logger.info("所有服务器的每日重置任务已成功完成。")
-            return True
+            cog.logger.info("指定服务器的每日重置任务已成功完成。")
+
+    async def reset_user_used_seconds(self, user_id: int, guild_id: int):
+        """
+        对永久服务器，检查并修复用户的异常使用时长。
+        仅当用户的 'used_seconds' > 服务器配置的 'daily_limit_seconds' 时，
+        才将其重置为0。这主要用于处理数据异常或配置变更后的自愈。
+        """
+        user_data = self._get_guild_user_data(user_id, guild_id)
+        current_used = user_data.get("used_seconds", 0)
+
+        # 获取当前服务器的理论总时长
+        daily_limit_seconds = timer.get_daily_limit_seconds(guild_id)
+
+        # 仅当已用时间异常地超过了总上限时，才触发修复
+        if current_used > daily_limit_seconds:
+            user_data["used_seconds"] = 0
+            await self.save_data(force=False)
+            return True  # 表示已修复
+
+        return False  # 表示数据正常，无需修复
 
     # 【核心改动】返回的结构也变了
     def get_users_with_active_timed_role(self) -> list[tuple[int, int, list[int]]]:

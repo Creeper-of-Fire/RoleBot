@@ -6,6 +6,7 @@ import discord
 from discord import ui, Color
 
 import config
+from timed_role import timer
 from utility.auth import is_role_dangerous
 from utility.helpers import try_get_member, safe_defer, format_duration_hms
 from utility.role_service import update_member_roles
@@ -105,7 +106,8 @@ class PrivateTimedRoleSelect(ui.Select):
             return
 
         # 3. 检查用户时长
-        if roles_to_add_ids and self.cog.timed_role_data_manager.get_remaining_seconds(member.id, guild.id) <= 0:
+        is_permanent_guild = timer.is_guild_permanent(guild.id)
+        if roles_to_add_ids and not is_permanent_guild and self.cog.timed_role_data_manager.get_remaining_seconds(member.id, guild.id) <= 0:
             await interaction.followup.send("❌ 你今天的限时身份组使用时长已用尽，无法选择新的身份组。", ephemeral=True)
             await self._refresh_view(interaction, member)
             return
