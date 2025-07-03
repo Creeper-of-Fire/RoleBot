@@ -147,20 +147,18 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         """实时记录用户发送的每一条消息（逻辑不变）"""
         if message.author.bot or not message.guild:
             return
-
-        guild_id = message.guild.id
-        guild_cfg = self.config.get("guild_configs", {}).get(guild_id)
-
-        if not guild_cfg or message.channel.id in guild_cfg.get("ignored_channels", []):
+        guild_cfg = self.config.get("guild_configs", {}).get(message.guild.id)
+        if not guild_cfg:
+            return
+        ignored_channels = guild_cfg.get("ignored_channels", [])
+        ignored_categories = guild_cfg.get("ignored_categories", [])
+        if message.channel.id in ignored_channels or (message.channel.category_id and message.channel.category_id in ignored_categories):
             return
 
-        user_id = message.author.id
-        timestamp = message.created_at.timestamp()
-        key = ACTIVITY_KEY_TEMPLATE.format(guild_id=guild_id, user_id=user_id)
+        key = ACTIVITY_KEY_TEMPLATE.format(guild_id=message.guild.id, user_id=message.author.id)
 
         async with self.redis.pipeline() as pipe:
-            await pipe.zadd(key, {str(message.id): timestamp})
-
+            await pipe.zadd(key, {str(message.id): message.created_at.timestamp()})
             retention_days = guild_cfg.get("data_retention_days", 90)
             cutoff_timestamp = (datetime.now(timezone.utc) - timedelta(days=retention_days)).timestamp()
             await pipe.zremrangebyscore(key, '-inf', cutoff_timestamp)
