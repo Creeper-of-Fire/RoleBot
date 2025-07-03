@@ -12,8 +12,8 @@ from discord import app_commands, ui
 from discord.ext import commands
 
 import config
-from utility.views import ConfirmationView
 from activity_tracker.data_manager import DataManager, BEIJING_TZ
+from utility.views import ConfirmationView
 
 if typing.TYPE_CHECKING:
     from main import RoleBot
@@ -46,7 +46,7 @@ class ActivityReportPaginationView(ui.View):
                  total_messages: int, all_channel_data: list[tuple[int, int]], heatmap_data: dict[str, int],
                  days_window: int):
         super().__init__(timeout=300)  # 报告视图可以有超时
-        self.cog = cog
+        self.cog = cog  # 【重要】需要cog来访问bot
         self.user = user
         self.guild = guild
         self.total_messages = total_messages
@@ -72,7 +72,8 @@ class ActivityReportPaginationView(ui.View):
             self.previous_page.disabled = True
             self.next_page.disabled = True
 
-    def _create_embed(self) -> discord.Embed:
+    # --- 【代码修复】将此方法改为异步，以支持 fetch_channel ---
+    async def _create_embed(self) -> discord.Embed:
         """生成当前页的活跃度报告 Embed。"""
         embed = discord.Embed(
             title=f"📊 {self.user.display_name} 的活跃度报告",
@@ -97,7 +98,17 @@ class ActivityReportPaginationView(ui.View):
         if channels_on_page:
             channel_list_text = []
             for channel_id, count in channels_on_page:
+                # --- 【代码修复】增加 fetch_channel 作为后备方案 ---
                 channel = self.guild.get_channel(channel_id)
+                if not channel:  # 如果在缓存中找不到
+                    try:
+                        # 尝试从 API 获取，这可以找到已归档的帖子
+                        channel = await self.cog.bot.fetch_channel(channel_id)
+                    except (discord.NotFound, discord.Forbidden):
+                        # 如果真的被删了或无权访问，则保持为 None
+                        channel = None
+                # --- 【修复结束】---
+
                 if channel:
                     # 对于子频道，显示其父频道或所属类别
                     if isinstance(channel, discord.Thread):
@@ -125,7 +136,8 @@ class ActivityReportPaginationView(ui.View):
         if self.current_page > 0:
             self.current_page -= 1
             self._update_buttons()
-            await interaction.edit_original_response(embed=self._create_embed(), view=self)
+            # --- 【代码修复】增加 await ---
+            await interaction.edit_original_response(embed=await self._create_embed(), view=self)
 
     @ui.button(label="下一页", style=discord.ButtonStyle.secondary, custom_id="activity_report_next")
     async def next_page(self, interaction: discord.Interaction, button: ui.Button):
@@ -133,7 +145,8 @@ class ActivityReportPaginationView(ui.View):
         if self.current_page < self.total_pages - 1:
             self.current_page += 1
             self._update_buttons()
-            await interaction.edit_original_response(embed=self._create_embed(), view=self)
+            # --- 【代码修复】增加 await ---
+            await interaction.edit_original_response(embed=await self._create_embed(), view=self)
 
     async def on_timeout(self):
         # 禁用所有按钮
@@ -141,7 +154,9 @@ class ActivityReportPaginationView(ui.View):
             if isinstance(item, ui.Button):
                 item.disabled = True
         try:
-            await self.message.edit(view=self)
+            # 确保 self.message 存在
+            if hasattr(self, 'message') and self.message:
+                await self.message.edit(view=self)
         except discord.NotFound:
             pass
 
@@ -254,7 +269,7 @@ class ActivityRoleView(ui.View):
 
         view = ActivityReportPaginationView(self.cog, member, guild, total_messages, channel_data, heatmap_data, days_window)
         # 发送初始的报告消息
-        view.message = await interaction.followup.send(embed=view._create_embed(), view=view, ephemeral=True)
+        view.message = await interaction.followup.send(embed=await view._create_embed(), view=view, ephemeral=True)
 
     @ui.button(label="移除我的活跃度身份组", style=discord.ButtonStyle.danger, custom_id="remove_activity_role")
     async def remove_role_button(self, interaction: discord.Interaction, button: ui.Button):
@@ -291,7 +306,7 @@ class ActivityRoleView(ui.View):
 
         await confirm_view.wait()
 
-        if confirm_view.value is True:
+        if confirm_view.value:
             try:
                 await member.remove_roles(target_role, reason=f"用户通过面板主动移除活跃度角色")
                 await interaction.edit_original_response(content=f"✅ **成功移除！** 你的 `{target_role.name}` 角色已被移除。", view=None)
@@ -442,104 +457,85 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             retention_days=retention_days
         )
 
-    # --- 【代码修复】将整个函数改为异步，并添加对归档帖子的获取 ---
+    # --- 【代码修改】恢复为简单、快速的同步版本，不再获取已归档帖子以提高性能 ---
     async def _get_relevant_channels(self, guild: discord.Guild, guild_cfg: dict,
                                      target_channel: typing.Optional[discord.abc.Messageable] = None,
                                      target_category: typing.Optional[discord.CategoryChannel] = None) -> list[
         typing.Union[discord.TextChannel, discord.ForumChannel, discord.Thread]]:
         """
-        获取一个服务器内所有符合条件（未被忽略、有权限）的可发送消息的频道列表，
-        【已增强】现在会同时获取活跃和已归档的帖子。
-        可以根据 target_channel 或 target_category 进一步过滤。
+        获取一个服务器内所有符合条件（未被忽略、有权限）的可发送消息的频道列表。
+        【性能优化】此版本只从缓存中获取活跃频道和帖子，不主动请求已归档帖子，以加快数据收集速度。
         """
         ignored_channels = set(guild_cfg.get("ignored_channels", []))
         ignored_categories = set(guild_cfg.get("ignored_categories", []))
 
         all_messageable_channels: list[typing.Union[discord.TextChannel, discord.ForumChannel, discord.Thread]] = []
 
-        # --- 【代码修复】逻辑重构以适应异步和归档帖子 ---
-
-        # Step 1: 确定要搜索的父频道范围 (TextChannel, ForumChannel)
-        parent_channels_to_search: list[typing.Union[discord.TextChannel, discord.ForumChannel]] = []
-
+        # 优先处理特定频道或类别
         if target_channel:
-            # 如果目标是帖子，则其父频道是搜索范围
+            if not target_channel.permissions_for(guild.me).read_message_history:
+                self.logger.warning(f"无法访问 {target_channel.name} 的历史消息，跳过。")
+                return []
+            if target_channel.id in ignored_channels:
+                self.logger.info(f"频道 {target_channel.name} 被忽略，跳过。")
+                return []
             if isinstance(target_channel, discord.Thread):
-                if target_channel.parent:
-                    parent_channels_to_search.append(target_channel.parent)
-                # 同时把帖子本身也加入最终列表
+                if target_channel.parent and target_channel.parent.category_id in ignored_categories:
+                    self.logger.info(f"子频道 {target_channel.name} 的父频道类别被忽略，跳过。")
+                    return []
+            elif target_channel.category_id and target_channel.category_id in ignored_categories:
+                self.logger.info(f"频道 {target_channel.name} 的类别被忽略，跳过。")
+                return []
+            # 如果是论坛，需要把它和它的活跃帖子都加进去
+            if isinstance(target_channel, discord.ForumChannel):
                 all_messageable_channels.append(target_channel)
-            # 如果目标是文本或论坛频道，它自己就是搜索范围
-            elif isinstance(target_channel, (discord.TextChannel, discord.ForumChannel)):
-                parent_channels_to_search.append(target_channel)
-                all_messageable_channels.append(target_channel)
-
-        elif target_category:
-            if target_category.id not in ignored_categories:
-                for channel in target_category.channels:
-                    if isinstance(channel, (discord.TextChannel, discord.ForumChannel)) and channel.id not in ignored_channels:
-                        parent_channels_to_search.append(channel)
-                        all_messageable_channels.append(channel)
-
-        else:  # scope == "guild"
-            for channel in guild.channels:
-                if isinstance(channel, (discord.TextChannel, discord.ForumChannel)):
-                    if channel.id not in ignored_channels and \
-                            (not channel.category_id or channel.category_id not in ignored_categories):
-                        parent_channels_to_search.append(channel)
-                        all_messageable_channels.append(channel)
-
-        # Step 2: 从确定的父频道范围中，获取所有活跃和已归档的帖子
-        threads_found = set()  # 用于去重
-        for parent_channel in parent_channels_to_search:
-            # 检查权限
-            if not parent_channel.permissions_for(guild.me).read_message_history:
-                continue
-
-            # 获取活跃帖子
-            for thread in parent_channel.threads:
-                if thread.id not in ignored_channels and thread.id not in threads_found:
-                    all_messageable_channels.append(thread)
-                    threads_found.add(thread.id)
-
-            # 获取已归档帖子 (这是一个异步操作)
-            try:
-                async for thread in parent_channel.archived_threads(limit=None):
-                    if thread.id not in ignored_channels and thread.id not in threads_found:
+                for thread in target_channel.threads:
+                    if thread.id not in ignored_channels and thread.permissions_for(guild.me).read_message_history:
                         all_messageable_channels.append(thread)
-                        threads_found.add(thread.id)
-            except discord.Forbidden:
-                self.logger.warning(f"无法获取频道 #{parent_channel.name} 的已归档帖子，权限不足。")
-            except Exception as e:
-                self.logger.error(f"获取频道 #{parent_channel.name} 的已归档帖子时出错: {e}")
+                return all_messageable_channels
+            return [target_channel]
 
-        # 如果是全服扫描，还需要单独处理 guild.threads 获取的、可能不在上面频道列表中的活跃线程 (虽然少见)
-        if not target_channel and not target_category:
-            for thread in guild.threads:
-                if thread.id not in ignored_channels and thread.id not in threads_found:
-                    all_messageable_channels.append(thread)
-                    threads_found.add(thread.id)
+        if target_category:
+            if target_category.id in ignored_categories:
+                self.logger.info(f"类别 {target_category.name} 被忽略，跳过。")
+                return []
 
-        # 最后，进行权限和忽略配置的最终过滤和去重
+            # 获取类别下的所有文本和论坛频道
+            for channel in target_category.channels:
+                if isinstance(channel, (discord.TextChannel, discord.ForumChannel)):
+                    if channel.id not in ignored_channels and channel.permissions_for(guild.me).read_message_history:
+                        all_messageable_channels.append(channel)
+                        # 如果是论坛频道，其下的活跃帖子也应纳入统计
+                        if isinstance(channel, discord.ForumChannel):
+                            for thread in channel.threads:
+                                if thread.id not in ignored_channels and thread.permissions_for(guild.me).read_message_history:
+                                    all_messageable_channels.append(thread)
+            return all_messageable_channels
+
+        # 如果没有指定特定频道或类别，则获取整个服务器所有相关的可发送消息频道
+        for channel in guild.channels:
+            if isinstance(channel, (discord.TextChannel, discord.ForumChannel)):
+                if channel.id not in ignored_channels \
+                        and (not channel.category_id or channel.category_id not in ignored_categories) \
+                        and channel.permissions_for(guild.me).read_message_history:
+                    all_messageable_channels.append(channel)
+            # ForumChannel 的 Threads 会在 guild.threads 中单独处理，防止重复
+
+        for thread in guild.threads:  # guild.threads 只包含活跃帖子
+            # 检查 thread.parent 是否存在（有些旧的或特殊情况可能没有）
+            # 并检查其父频道的类别是否被忽略，或者线程本身是否被忽略
+            if thread.id not in ignored_channels \
+                    and (not thread.parent or not thread.parent.category_id or thread.parent.category_id not in ignored_categories) \
+                    and thread.permissions_for(guild.me).read_message_history:
+                all_messageable_channels.append(thread)
+
+        # 去重
         final_channels = []
         seen_ids = set()
         for ch in all_messageable_channels:
-            if ch.id in seen_ids:
-                continue
-
-            # 再次确认权限和忽略规则
-            if ch.id in ignored_channels:
-                continue
-
-            category_id_to_check = ch.category_id if not isinstance(ch, discord.Thread) else (ch.parent.category_id if ch.parent else None)
-            if category_id_to_check and category_id_to_check in ignored_categories:
-                continue
-
-            if not ch.permissions_for(guild.me).read_message_history:
-                continue
-
-            final_channels.append(ch)
-            seen_ids.add(ch.id)
+            if ch.id not in seen_ids:
+                final_channels.append(ch)
+                seen_ids.add(ch.id)
 
         return final_channels
 
@@ -1163,12 +1159,12 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             for channel_id, count in channel_stats:
                 # --- 【代码修复】增加 fetch_channel 作为后备方案 ---
                 channel_obj = guild.get_channel(channel_id)
-                if not channel_obj: # 如果在缓存中找不到
+                if not channel_obj:  # 如果在缓存中找不到
                     try:
                         # 尝试从 API 获取
                         channel_obj = await self.bot.fetch_channel(channel_id)
                     except (discord.NotFound, discord.Forbidden):
-                        channel_obj = None # 获取失败
+                        channel_obj = None  # 获取失败
                 # --- 【修复结束】---
 
                 channel_name_display = ""
