@@ -170,7 +170,7 @@ class ActivityTrackerCog(commands.Cog, name="ActivityTracker"):
     class ActivityGroup(app_commands.Group):
         def __init__(self, *args, **kwargs):
             super().__init__(
-                name="用户活跃度",
+                name="活跃度管理",
                 description="用户活动追踪相关指令",
                 guild_ids=[gid for gid in config.GUILD_IDS],
                 default_permissions=discord.Permissions(manage_roles=True),
@@ -215,6 +215,31 @@ class ActivityTrackerCog(commands.Cog, name="ActivityTracker"):
 
         view = ActivityRoleView(self)
         await interaction.followup.send(embed=embed, view=view)
+
+    @activity_group.command(name="手动拉取历史消息-强制解锁", description="【管理员】当回填任务卡死时，强制解锁服务器的回填状态。")
+    @app_commands.checks.has_permissions(manage_roles=True)
+    async def force_unlock_backfill(self, interaction: discord.Interaction):
+        """
+        强制从 Redis 中移除服务器的回填任务锁定标志。
+        """
+        guild = interaction.guild
+
+        # 检查当前是否真的被锁定了
+        is_locked = await self.redis.sismember(ACTIVE_BACKFILLS_KEY, str(guild.id))
+
+        if not is_locked:
+            await interaction.response.send_message("ℹ️ 本服务器的回填任务当前未被锁定，无需解锁。", ephemeral=True)
+            return
+
+        # 执行解锁
+        removed_count = await self.redis.srem(ACTIVE_BACKFILLS_KEY, str(guild.id))
+
+        if removed_count > 0:
+            self.logger.warning(f"服务器 '{guild.name}' 的回填任务被 {interaction.user} 强制解锁。")
+            await interaction.response.send_message("✅ **强制解锁成功！**\n现在可以重新运行 `/activity backfill` 指令了。", ephemeral=True)
+        else:
+            # 这个情况理论上不会发生，因为前面已经检查过了，但作为保险
+            await interaction.response.send_message("🤔 未能解锁，可能是因为在执行命令的瞬间任务刚好正常结束了。请重试。", ephemeral=True)
 
     @activity_group.command(name="手动拉取历史消息", description="手动拉取历史消息以填充活动数据。")
     @app_commands.describe(days="要拉取多少天内的历史消息（默认30天）")
