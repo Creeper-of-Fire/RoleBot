@@ -170,8 +170,8 @@ class ActivityTrackerCog(commands.Cog, name="ActivityTracker"):
     activity_group = app_commands.Group(
         name="用户活跃度",
         description="用户活动追踪相关指令",
-        guild_only=True,
-        default_permissions=discord.Permissions(),
+        guild_ids=[gid for gid in config.GUILD_IDS],
+        default_permissions=discord.Permissions(manage_roles=True),
     )
 
     @activity_group.command(name="活跃度身份组领取面板", description="发送一个活跃度角色申领面板。")
@@ -321,6 +321,6 @@ class ActivityTrackerCog(commands.Cog, name="ActivityTracker"):
         return embed
 
 
-async def setup(bot: commands.Bot):
+async def setup(bot: RoleBot):
     """Cog的入口点。"""
     await bot.add_cog(ActivityTrackerCog(bot))
