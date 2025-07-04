@@ -920,7 +920,8 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
     @app_commands.describe(action="要执行的操作。")
     @app_commands.choices(action=[
         app_commands.Choice(name="强制解锁回填任务", value="force_unlock"),
-        app_commands.Choice(name="清除本服所有活动数据", value="clear_guild_data")
+        app_commands.Choice(name="【危险】清除本服所有活动数据", value="clear_guild_data"),
+        app_commands.Choice(name="【一次性】为旧数据重建索引", value="rebuild_indexes")
     ])
     @app_commands.checks.has_permissions(manage_roles=True)
     async def manage_activity_data(self, interaction: discord.Interaction, action: str):
@@ -956,6 +957,71 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
                                                              view=None)
                 else:
                     await interaction.edit_original_response(content=f"❌ 清除数据时发生错误，请查看日志。", view=None)
+            elif view.value is False:
+                await interaction.edit_original_response(content="❌ 操作已取消。", view=None)
+            else:  # 超时
+                await interaction.edit_original_response(content="⏰ 操作超时，已自动取消。", view=None)
+
+        # --- 【新】处理索引重建的逻辑 ---
+        elif action == "rebuild_indexes":
+            # 检查回填锁，防止与回填任务冲突
+            is_running = await self.data_manager.is_backfill_locked(guild.id)
+            if is_running:
+                await interaction.response.send_message("❌ 此服务器上有一个回填任务正在运行，请等待其完成后再重建索引。", ephemeral=True)
+                return
+
+            view = ConfirmationView(author=interaction.user)
+            await interaction.response.send_message(
+                "⚠️ **注意！** 您将要为本服务器的所有历史活动数据重建索引。\n\n"
+                "这是一个**高负载、耗时较长**的操作，期间会扫描所有相关的 Redis 键。\n"
+                "仅在从旧版数据结构迁移后，或怀疑索引不完整时执行此操作。\n\n"
+                "**确定要开始吗？**",
+                view=view,
+                ephemeral=True
+            )
+
+            await view.wait()
+
+            if view.value:
+                # 锁定，防止其他任务干扰
+                await self.data_manager.lock_backfill(guild.id)
+                self.logger.warning(f"用户 {interaction.user} (ID: {interaction.user.id}) 启动了服务器 {guild.name} (ID: {guild.id}) 的索引重建任务。")
+
+                # 发送初始消息，告知任务已在后台开始
+                await interaction.edit_original_response(
+                    content=(
+                        "✅ **索引重建任务已启动！**\n"
+                        "我正在后台扫描数据并建立索引，这可能需要几分钟到几十分钟不等，具体取决于数据量。\n"
+                        "完成后会在此处通知您。请勿重复执行此命令。"
+                    ),
+                    view=None
+                )
+
+                # 异步执行耗时任务
+                start_time = time.time()
+                try:
+                    scanned_keys, created_indexes = await self.data_manager.rebuild_indexes_for_guild(guild.id)
+                    duration = time.time() - start_time
+
+                    self.logger.info(f"服务器 {guild.id} 索引重建成功，耗时 {duration:.2f} 秒。")
+                    await interaction.followup.send(
+                        (
+                            f"🎉 **索引重建完成！**\n\n"
+                            f"**服务器:** `{guild.name}`\n"
+                            f"**总耗时:** `{duration:.2f}` 秒\n"
+                            f"**扫描的活动数据键:** `{scanned_keys}`\n"
+                            f"**创建的新索引条目:** `{created_indexes}`\n\n"
+                            f"现在所有活动数据查询都将使用新索引，性能会大幅提升。"
+                        ),
+                        ephemeral=False  # 发送公开消息作为通知
+                    )
+                except Exception as e:
+                    self.logger.critical(f"为服务器 {guild.id} 重建索引时发生严重错误: {e}", exc_info=True)
+                    await interaction.followup.send(f"❌ **索引重建失败！**\n发生严重错误: `{e}`\n请检查日志获取详细信息。", ephemeral=False)
+                finally:
+                    # 确保解锁
+                    await self.data_manager.unlock_backfill(guild.id)
+
             elif view.value is False:
                 await interaction.edit_original_response(content="❌ 操作已取消。", view=None)
             else:  # 超时
@@ -1428,6 +1494,46 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
 
         # 发送带视图的响应
         view.message = await interaction.followup.send(embed=initial_embed, view=view, ephemeral=True)
+
+    # --- 【新】Redis 状态辅助方法 ---
+    async def get_redis_stats(self) -> typing.Optional[dict[str, str]]:
+        """
+        获取 Redis 服务器的关键统计信息，并格式化为字典。
+        如果获取失败，返回 None。
+        """
+        try:
+            # 使用 data_manager 的 redis 客户端执行 INFO 命令
+            info = await self.data_manager.redis.info()
+
+            # 提取关键指标
+            uptime_in_seconds = info.get("uptime_in_seconds", 0)
+            days, remainder = divmod(uptime_in_seconds, 86400)
+            hours, remainder = divmod(remainder, 3600)
+            minutes, _ = divmod(remainder, 60)
+            redis_uptime = f"{int(days)}天 {int(hours)}时 {int(minutes)}分"
+
+            # 格式化内存使用
+            used_memory_human = info.get("used_memory_human", "N/A")
+            maxmemory_human = info.get("maxmemory_human", "无限制")
+            if maxmemory_human == "0B": maxmemory_human = "无限制"
+            memory_usage = f"{used_memory_human} / {maxmemory_human}"
+
+            # 提取其他信息
+            connected_clients = info.get("connected_clients", "N/A")
+            total_keys = info.get("db0", {}).get("keys", "N/A")  # 假设使用DB 0
+            redis_version = info.get("redis_version", "N/A")
+
+            return {
+                "version": str(redis_version),
+                "uptime": redis_uptime,
+                "memory": memory_usage,
+                "clients": str(connected_clients),
+                "keys": str(total_keys),
+            }
+
+        except Exception as e:
+            self.logger.error(f"获取 Redis 统计信息时出错: {e}", exc_info=True)
+            return None
 
 
 async def setup(bot: RoleBot):

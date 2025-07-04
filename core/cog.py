@@ -28,6 +28,7 @@ from utility.helpers import create_progress_bar
 if typing.TYPE_CHECKING:
     from main import RoleBot
     from utility.feature_cog import FeatureCog
+    from activity_tracker.cog import TrackActivityCog
 
 
 def _format_bytes(size: int) -> str:
@@ -211,10 +212,12 @@ class CoreCog(commands.Cog, name="Core"):
     @rolebot_group.command(name="系统状态", description="显示机器人和服务器的实时系统信息。")
     @app_commands.checks.has_permissions(manage_roles=True)
     async def system_status(self, interaction: discord.Interaction):
-        """显示一个包含详细系统信息的监控面板，采用更简洁的格式。"""
+        """
+        【已增强】显示一个包含详细系统和 Redis 信息的监控面板。
+        """
         await interaction.response.defer(ephemeral=False, thinking=True)
 
-        # --- 1. 获取进程和机器人信息 (不变) ---
+        # --- 1. 获取进程和机器人信息 ---
         process = psutil.Process()
         try:
             mem_info = process.memory_full_info()
@@ -225,42 +228,38 @@ class CoreCog(commands.Cog, name="Core"):
             bot_mem_rss = mem_info.rss
             bot_mem_uss = bot_mem_rss
 
-        # --- 2. 获取系统资源信息 (不变) ---
+        # --- 2. 获取系统资源信息 ---
         cpu_usage = psutil.cpu_percent(interval=1)
         ram_info = psutil.virtual_memory()
 
-        # --- 3. 【核心修改】获取更简洁的操作系统信息 ---
+        # --- 3. 获取操作系统信息 ---
         os_display_name = ""
         kernel_display = ""
         os_ver_display = ""
-
         if IS_LINUX:
-            # 在 Linux 上，使用 distro 库获取发行版信息
-            os_display_name = distro.name()  # e.g., "Ubuntu"
-            kernel_display = f"Linux {platform.release()}"  # e.g., "Linux 6.8.0-..."
-            os_ver_display = f"Linux ({distro.name()} {distro.version()})"  # e.g., "Linux (Ubuntu 24.04)"
+            os_display_name = distro.name()
+            kernel_display = f"Linux {platform.release()}"
+            os_ver_display = f"Linux ({distro.name()} {distro.version()})"
         else:
-            # 在 Windows 或其他系统上，使用 platform 作为后备方案
-            os_display_name = platform.system()  # e.g., "Windows"
-            kernel_display = platform.release()  # e.g., "10"
+            os_display_name = platform.system()
+            kernel_display = platform.release()
             os_ver_display = f"{platform.system()} {platform.version()}"
 
         # --- 4. 构建 Embed ---
         embed = discord.Embed(
             title="🤖 系统信息",
-            color=discord.Color.from_rgb(107, 222, 122),  # 使用一个更柔和的绿色
+            color=discord.Color.from_rgb(107, 222, 122),
             timestamp=discord.utils.utcnow()
         )
         if self.bot.user.display_avatar:
             embed.set_thumbnail(url=self.bot.user.display_avatar.url)
 
-        # 布局完全匹配新截图
+        # Section 1: System Info
         embed.add_field(name="🖥️ 系统名称", value=f"{os_display_name}", inline=True)
         embed.add_field(name="🔧 内核版本", value=f"{kernel_display}", inline=True)
-        # 为了匹配截图，我们让 OS 版本占用更多空间
         embed.add_field(name="💻 操作系统版本", value=f"{os_ver_display}", inline=True)
 
-        # 您的原始截图是Rust, 但项目是Python, 所以显示Python版本
+        # Section 2: Resources
         embed.add_field(name="🐍 Python 版本", value=f"{platform.python_version()}", inline=True)
         embed.add_field(name="🔥 CPU 使用率", value=f"{cpu_usage}%", inline=True)
         embed.add_field(
@@ -270,19 +269,38 @@ class CoreCog(commands.Cog, name="Core"):
             inline=True
         )
 
-        # 添加一个空行字段来创建新的一行布局
-        embed.add_field(name="\u200b", value="\u200b", inline=False)
-
-        embed.add_field(name="📊 Bot 内存 (独占)", value=f"{_format_bytes(bot_mem_uss)}", inline=True)
-        embed.add_field(name="📈 Bot 内存 (常驻)", value=f"{_format_bytes(bot_mem_rss)}", inline=True)
-        embed.add_field(name="👥 缓存用户数", value=f"{len(self.bot.users)}", inline=True)
-
+        # Section 3: Bot Info
         uptime = datetime.now(timezone.utc) - self.start_time
         days, remainder = divmod(int(uptime.total_seconds()), 86400)
         hours, remainder = divmod(remainder, 3600)
         minutes, seconds = divmod(remainder, 60)
         uptime_str = f"{days}天 {hours}时 {minutes}分"
+
+        embed.add_field(name="📊 Bot 内存 (独占)", value=f"{_format_bytes(bot_mem_uss)}", inline=True)
+        embed.add_field(name="📈 Bot 内存 (常驻)", value=f"{_format_bytes(bot_mem_rss)}", inline=True)
+        embed.add_field(name="👥 缓存用户数", value=f"{len(self.bot.users)}", inline=True)
         embed.add_field(name="⏱️ 机器人运行时长", value=f"{uptime_str}", inline=False)
+
+        # --- 5. 【新】获取并添加 Redis 统计信息 ---
+        # 动态获取 TrackActivityCog 实例
+        activity_cog: typing.Optional[TrackActivityCog] = self.bot.get_cog("TrackActivity")
+
+        if activity_cog and hasattr(activity_cog, "get_redis_stats"):
+            redis_stats = await activity_cog.get_redis_stats()
+            if redis_stats:
+                redis_info_str = (
+                    f"**版本:** `{redis_stats['version']}`\n"
+                    f"**运行时长:** `{redis_stats['uptime']}`\n"
+                    f"**内存占用:** `{redis_stats['memory']}`\n"
+                    f"**客户端数:** `{redis_stats['clients']}`\n"
+                    f"**总键数 (DB0):** `{redis_stats['keys']}`"
+                )
+                embed.add_field(name="🗄️ Redis 状态", value=redis_info_str, inline=False)
+            else:
+                embed.add_field(name="🗄️ Redis 状态", value="无法获取 Redis 统计信息 (连接失败或发生错误)。", inline=False)
+        else:
+            # 如果 TrackActivityCog 未加载，则不显示 Redis 部分
+            pass
 
         embed.set_footer(text=f"{self.bot.user.name} 系统监控")
 
