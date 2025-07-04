@@ -68,6 +68,7 @@ class ActivityProcessor:
         # 【新增】带TTL的DTO缓存
         self._channel_info_cache: dict[int, tuple[float, typing.Optional[ChannelInfoDTO]]] = {}
         self.CACHE_TTL_SECONDS = 3600  # 1 hour
+        self._fetch_semaphore = asyncio.Semaphore(8)
 
     # --- 核心数据获取与过滤逻辑 (重构核心) ---
 
@@ -90,12 +91,23 @@ class ActivityProcessor:
                 return cached_dto
 
         if not channel_obj:
-            try:
-                channel_obj = await self.bot.fetch_channel(channel_id)
-            except (discord.NotFound, discord.Forbidden):
-                # 缓存失败结果，避免在1小时内重复尝试获取一个已知的无效ID
-                self._channel_info_cache[channel_id] = (now, None)
-                return None
+            # 【修改】将 API 调用包裹在 Semaphore 上下文中
+            async with self._fetch_semaphore:
+                try:
+                    # 在进入API调用前，先礼貌性地等待一小段时间，打散请求峰值
+                    await asyncio.sleep(0.1)
+                    channel_obj = await self.bot.fetch_channel(channel_id)
+                except (discord.NotFound, discord.Forbidden):
+                    self._channel_info_cache[channel_id] = (now, None)
+                    return None
+                except discord.HTTPException as e:
+                    # 如果即使有节流仍然被限速（可能是全局限速），记录错误并返回None
+                    if e.status == 429:
+                        self.bot.logger.warning(f"获取频道 {channel_id} 时遭遇速率限制 (HTTP 429)。")
+                    else:
+                        self.bot.logger.error(f"获取频道 {channel_id} 时发生 HTTP 异常: {e}")
+                    self._channel_info_cache[channel_id] = (now, None)  # 缓存失败结果
+                    return None
 
         if not isinstance(channel_obj, (discord.abc.GuildChannel, discord.Thread)):
             return None
@@ -140,54 +152,60 @@ class ActivityProcessor:
 
     # --- 上层业务逻辑 (适配新的过滤和数据结构) ---
 
-    async def get_scannable_channels(self, target: typing.Optional[typing.Union[discord.abc.GuildChannel, discord.CategoryChannel]] = None) -> list[
-        typing.Union[discord.TextChannel, discord.Thread]]:
+    async def get_scannable_channels(self, target: typing.Optional[typing.Union[discord.abc.GuildChannel, discord.CategoryChannel]] = None) -> list[int]:
         """
-        【新增】获取一个服务器内所有符合条件（未被忽略、有权限）的可扫描频道列表。
-        这是 _get_relevant_channels 的替代品，将逻辑集中到 Processor 中。
-        它返回完整的 discord 对象，因为调用者（回填任务）需要使用它们。
+        【修正】获取一个服务器内所有符合条件的可扫描频道的 ID 列表。
+        此方法利用并更新DTO缓存来高效决策，但只返回最终的ID列表，将获取对象的责任交给调用者。
 
-        :param target: (可选) 限定扫描范围为特定频道、论坛或类别。如果为None，则扫描全服。
-        :return: 一个可扫描的频道/帖子对象列表。
+        :param target: (可选) 限定扫描范围。
+        :return: 一个可扫描频道的 ID 列表。
         """
-        relevant_channels = []
-        channels_to_check: list[discord.abc.GuildChannel] = []
+        scannable_ids: set[int] = set()
 
-        # 1. 根据 target 确定初始检查列表
+        # 1. 确定初始检查列表 (来自 discord.py 的缓存)
+        initial_channels: list[discord.abc.GuildChannel] = []
         if isinstance(target, discord.CategoryChannel):
-            channels_to_check = list(target.channels)
+            initial_channels = list(target.channels)
         elif isinstance(target, (discord.TextChannel, discord.ForumChannel, discord.Thread)):
-            channels_to_check = [target]
+            initial_channels = [target]
         else:  # 全服扫描
-            channels_to_check = list(self.guild.channels)
-            # 全服扫描时，额外获取所有活跃帖子，确保不会遗漏
+            initial_channels = list(self.guild.channels)
             try:
-                channels_to_check.extend(self.guild.threads)
-            except discord.ClientException:  # Bot might not have GUILD_MEMBERS intent for guild.threads
+                # 额外包括所有帖子，避免遗漏
+                initial_channels.extend(self.guild.threads)
+            except discord.ClientException:
                 pass
 
-        # 2. 迭代并过滤
-        for channel in channels_to_check:
-            # 基本的类型和权限检查
-            if not isinstance(channel, (discord.TextChannel, discord.ForumChannel, discord.Thread)):
-                continue
-            if not channel.permissions_for(self.guild.me).read_message_history:
+        # 2. 机会主义地更新DTO缓存并进行初步筛选
+        # 这是一个无API调用的高效操作，利用了 discord.py 的内部缓存
+        update_tasks = [
+            self.get_or_fetch_channel_info(channel.id, channel)
+            for channel in initial_channels
+            if isinstance(channel, (discord.TextChannel, discord.Thread, discord.ForumChannel))  # 只处理我们关心的类型
+        ]
+        await asyncio.gather(*update_tasks)
+
+        # 3. 迭代所有已知的频道DTO，进行最终过滤
+        # 我们直接迭代初始列表，因为 get_or_fetch_channel_info 已经填充了我们的缓存
+        for channel in initial_channels:
+            if not isinstance(channel, (discord.TextChannel, discord.Thread, discord.ForumChannel)):
                 continue
 
-            # 使用集中的过滤逻辑 (传入 channel 对象以优化缓存)
+            # 使用核心过滤逻辑
             if not await self.is_channel_included(channel.id, channel):
                 continue
 
-            # 特殊处理论坛频道：它本身不含消息，但它的帖子需要被加入
+            # 特殊处理论坛频道
             if isinstance(channel, discord.ForumChannel):
                 for thread in channel.threads:
                     if thread.permissions_for(self.guild.me).read_message_history and await self.is_channel_included(thread.id, thread):
-                        relevant_channels.append(thread)
-            else:
-                relevant_channels.append(channel)
+                        scannable_ids.add(thread.id)
+            # 只添加可读历史的文本频道和帖子
+            elif isinstance(channel, (discord.TextChannel, discord.Thread)):
+                if channel.permissions_for(self.guild.me).read_message_history:
+                    scannable_ids.add(channel.id)
 
-        # 3. 去重并返回
-        return list(dict.fromkeys(relevant_channels))
+        return list(scannable_ids)
 
     async def get_user_activity_summary(self, user_id: int, days_window: int) -> tuple[int, list[tuple[int, int]]]:
         """【适配】获取单个用户的活动摘要，使用新的过滤方法。"""

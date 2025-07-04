@@ -90,7 +90,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             return
 
         guild_cfg = self.config.get("guild_configs", {}).get(message.guild.id)
-        if not guild_cfg or not guild_cfg.get("enabled", True):
+        if not guild_cfg:
             return
 
         # 1. 实例化处理器 (轻量级操作)
@@ -278,11 +278,12 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
                 self.logger.warning(f"无法为服务器 {guild.id} 获取 ActivityProcessor，中止回填任务。")
                 return
 
-            channels_to_scan = await processor.get_scannable_channels(single_channel)
+            scannable_channel_ids = await processor.get_scannable_channels(single_channel)
 
-            if not channels_to_scan:
+            if not scannable_channel_ids:
                 if target_channel and not is_startup_task:
                     await target_channel.send("⚠️ **任务取消**：没有找到任何符合条件的可扫描频道。")
+                self._backfill_locks.remove(guild.id)
                 return
 
             total_messages_added, last_update_time = 0, time.time()
@@ -290,9 +291,17 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             redis_pipe = self.data_manager.redis.pipeline()
             messages_in_pipe = 0
 
-            for i, channel in enumerate(channels_to_scan):
-                if isinstance(channel, discord.ForumChannel): continue
+            for i, channel_id in enumerate(scannable_channel_ids):
+                channel = None
                 try:
+                    # 使用 fetch 来获取最新的频道对象。这会进行一次API调用（如果不在d.py缓存中）。
+                    # 这是必要的，因为我们需要 history() 方法。
+                    channel = guild.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
+
+                    # 再次确认类型，因为 fetch_channel 可能返回其他类型
+                    if not isinstance(channel, (discord.TextChannel, discord.Thread)):
+                        self.logger.debug(f"频道 {channel_id} 不是文本频道或帖子，跳过。")
+                        continue
                     async for message in channel.history(limit=None, after=start_datetime, before=end_datetime):
                         if message.author.bot: continue
                         total_messages_added += 1
@@ -309,7 +318,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
 
                     # 只有手动任务才发送进度更新
                     if not is_startup_task and target_channel and time.time() - last_update_time > 5:
-                        embed = self._create_progress_embed(guild, start_time, len(channels_to_scan), i + 1, channel.name, total_messages_added,
+                        embed = self._create_progress_embed(guild, start_time, len(scannable_channel_ids), i + 1, channel.name, total_messages_added,
                                                             bool(single_channel))
                         if progress_message:
                             await progress_message.edit(embed=embed)
@@ -333,7 +342,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             duration = time.time() - start_time
             if target_channel:
                 final_embed = self._create_final_embed(
-                    "✅ 历史消息回填完成", guild.name, duration, len(channels_to_scan), total_messages_added,
+                    "✅ 历史消息回填完成", guild.name, duration, len(scannable_channel_ids), total_messages_added,
                     start_datetime, end_datetime, ts_update_msg
                 )
                 if progress_message:
@@ -579,7 +588,6 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             return
 
         # 2. 实例化 Processor 并预热缓存
-        guild_cfg = self.config.get("guild_configs", {}).get(guild.id, {})
         processor = self._get_processor(guild)
         if not processor:
             await interaction.followup.send("❌ 服务器配置不存在，请联系管理员。", ephemeral=True)
@@ -599,11 +607,11 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             # 获取目标范围内的所有子频道ID
 
             relevant_channels = await processor.get_scannable_channels(target_channel)
-            target_channel_ids = {c.id for c in relevant_channels}
+            target_channel_ids = {cid for cid in relevant_channels}
 
         for user_id, user_channels_data in raw_all_activity.items():
             for channel_id, count in user_channels_data.items():
-                if not processor.is_channel_included(channel_id): continue
+                if not await processor.is_channel_included(channel_id): continue
                 if scope == "channel" and channel_id not in target_channel_ids: continue
 
                 scoped_channel_msg_counts[channel_id] += count
@@ -627,7 +635,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         sorted_display_data = await processor.process_and_sort_for_display(data_to_sort)
 
         # 6. 构建 Embed 和 View
-        scope_desc = f"服务器 **{guild.name}**" if scope == "guild" else f"频道/类别 **{target_channel.name}**"
+        scope_desc = f"服务器 {guild.name}" if scope == "guild" else f"频道/类别 {target_channel.name}"
         metric_name = "总消息数" if metric == "total_messages" else "独立活跃用户数"
         value_suffix = "条" if metric == "total_messages" else "位"
 
