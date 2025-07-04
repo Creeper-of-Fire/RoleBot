@@ -17,11 +17,10 @@ from redis.asyncio.client import Pipeline
 BEIJING_TZ = pytz.timezone('Asia/Shanghai')
 
 # --- Redis 键名模板 ---
-# --- 引入索引键，彻底告别 SCAN ---
+# --- 移除了 ACTIVE_BACKFILLS_KEY ---
 CHANNEL_ACTIVITY_KEY_TEMPLATE = "activity:{guild_id}:{channel_id}:{user_id}"  # ZSET: {message_id: timestamp}
 GUILD_USERS_KEY_TEMPLATE = "index:guild_users:{guild_id}"  # SET: {user_id, ...}
 USER_CHANNELS_KEY_TEMPLATE = "index:user_channels:{guild_id}:{user_id}"  # SET: {channel_id, ...}
-ACTIVE_BACKFILLS_KEY = "active_backfills"  # SET: {guild_id, ...}
 LAST_SYNC_TIMESTAMP_KEY_TEMPLATE = "sync_timestamp:{guild_id}"
 
 
@@ -29,7 +28,7 @@ class DataManager:
     """
     负责所有 Redis 数据操作的单例管理器。
     【已重构】使用索引来加速查询，避免了耗时的 SCAN 操作。
-    封装了消息记录、查询、回填锁定以及数据清理等功能。
+    【已简化】移除了应用层面的锁逻辑，只负责数据存取。
     """
     _instance: typing.Optional[DataManager] = None
     _lock = asyncio.Lock()
@@ -235,27 +234,6 @@ class DataManager:
 
         return all_activity_data
 
-    async def is_backfill_locked(self, guild_id: int) -> bool:
-        """检查指定服务器是否有回填任务正在运行。"""
-        try:
-            return await self.redis.sismember(ACTIVE_BACKFILLS_KEY, str(guild_id))
-        except exceptions.RedisError as e:
-            self.logger.error(f"DataManager: 检查回填锁定状态失败 (Guild: {guild_id}): {e}", exc_info=True)
-            return False
-
-    async def lock_backfill(self, guild_id: int):
-        """锁定指定服务器的回填任务。"""
-        try:
-            await self.redis.sadd(ACTIVE_BACKFILLS_KEY, str(guild_id))
-        except exceptions.RedisError as e:
-            self.logger.error(f"DataManager: 锁定回填任务失败 (Guild: {guild_id}): {e}", exc_info=True)
-
-    async def unlock_backfill(self, guild_id: int):
-        """解锁指定服务器的回填任务。"""
-        try:
-            await self.redis.srem(ACTIVE_BACKFILLS_KEY, str(guild_id))
-        except exceptions.RedisError as e:
-            self.logger.error(f"DataManager: 解锁回填任务失败 (Guild: {guild_id}): {e}", exc_info=True)
 
     async def delete_guild_activity_data(self, guild_id: int) -> int:
         """
@@ -387,6 +365,6 @@ class DataManager:
         key = LAST_SYNC_TIMESTAMP_KEY_TEMPLATE.format(guild_id=guild_id)
         try:
             await self.redis.set(key, str(timestamp))
-            self.logger.info(f"DataManager: 已更新服务器 {guild_id} 的最后同步时间戳为 {datetime.fromtimestamp(timestamp, tz=timezone.utc)}")
+            # self.logger.info(f"DataManager: 已更新服务器 {guild_id} 的最后同步时间戳为 {datetime.fromtimestamp(timestamp, tz=timezone.utc)}")
         except exceptions.RedisError as e:
             self.logger.error(f"DataManager: 设置最后同步时间戳失败 (Key: {key}): {e}", exc_info=True)
