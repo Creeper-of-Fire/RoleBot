@@ -39,6 +39,27 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         self._last_timestamp_update: typing.Dict[int, float] = {}
         self.TIMESTAMP_UPDATE_INTERVAL = 60
 
+        self._processors: typing.Dict[int, ActivityProcessor] = {}
+
+    def _get_processor(self, guild: discord.Guild) -> typing.Optional[ActivityProcessor]:
+        """
+        【新增】获取或创建并缓存一个服务器的 ActivityProcessor 实例。
+        这是所有需要 Processor 的地方的统一入口。
+        """
+        if guild.id not in self._processors:
+            guild_cfg = self.config.get("guild_configs", {}).get(guild.id)
+            if not guild_cfg:
+                return None
+            self._processors[guild.id] = ActivityProcessor(self.bot, guild, self.data_manager, guild_cfg)
+        return self._processors[guild.id]
+
+    @commands.Cog.listener()
+    async def on_guild_remove(self, guild: discord.Guild):
+        """【新增】当机器人离开服务器时，清理相关资源。"""
+        if guild.id in self._processors:
+            del self._processors[guild.id]
+            self.logger.info(f"已从服务器 '{guild.name}' (ID: {guild.id}) 移除，清理了其 ActivityProcessor 实例。")
+
     # --- Cog 生命周期与事件监听 ---
 
     async def cog_load(self):
@@ -61,7 +82,10 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """实时记录用户发送的每一条消息，并节流更新“最后同步时间戳”。"""
+        """
+        【重构】实时记录用户发送的每一条消息。
+        现在调用 ActivityProcessor 的中央过滤方法来决定是否记录。
+        """
         if message.author.bot or not message.guild:
             return
 
@@ -69,19 +93,14 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         if not guild_cfg or not guild_cfg.get("enabled", True):
             return
 
-        # 实时过滤，避免记录不必要的数据
-        ignored_channels = set(guild_cfg.get("ignored_channels", []))
-        ignored_categories = set(guild_cfg.get("ignored_categories", []))
+        # 1. 实例化处理器 (轻量级操作)
+        processor = self._get_processor(message.guild)
 
-        category_id = None
-        if isinstance(message.channel, discord.Thread) and message.channel.parent:
-            category_id = message.channel.parent.category_id
-        else:
-            category_id = message.channel.category_id
-
-        if message.channel.id in ignored_channels or (category_id and category_id in ignored_categories):
+        # 2. 使用中央过滤逻辑，并传入 message.channel 对象来预热缓存，避免API调用
+        if not await processor.is_channel_included(message.channel.id, message.channel):
             return
 
+        # 3. 如果通过过滤，则记录数据
         retention_days = guild_cfg.get("data_retention_days", 90)
         message_ts = message.created_at.timestamp()
 
@@ -108,7 +127,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             await interaction.followup.send("❌ 配置中的目标角色未找到，请联系管理员。", ephemeral=True)
             return
 
-        processor = ActivityProcessor(self.bot, guild, self.data_manager, guild_cfg)
+        processor = self._get_processor(guild)
         total_messages, _ = await processor.get_user_activity_summary(member.id, guild_cfg["days_window"])
 
         is_eligible = total_messages >= guild_cfg["message_threshold"]
@@ -129,7 +148,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             action_text = "\n⚠️ 我没有权限为您操作角色，请联系管理员。"
 
         embed = ReportEmbeds.create_check_activity_embed(
-            member, guild_cfg["days_window"], total_messages, guild_cfg["message_threshold"], target_role, action_text
+            member, guild_cfg["days_window"], total_messages, guild_cfg["message_threshold"], action_text
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -141,7 +160,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             await interaction.followup.send("❌ 服务器配置不完整。", ephemeral=True)
             return
 
-        processor = ActivityProcessor(self.bot, guild, self.data_manager, guild_cfg)
+        processor = self._get_processor(guild)
         report_data = await processor.generate_user_report_data(member.id, days_window)
         sorted_display_data = await processor.process_and_sort_for_display(report_data.channel_activity)
 
@@ -253,8 +272,13 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             self.logger.info(f"服务器 '{guild.name}' 开始历史消息回填任务。内存锁已激活。")
 
             start_time = time.time()
-            guild_cfg = self.config.get("guild_configs", {}).get(guild.id, {})
-            channels_to_scan = await self._get_relevant_channels(guild, guild_cfg, single_channel)
+
+            processor = self._get_processor(guild)
+            if not processor:
+                self.logger.warning(f"无法为服务器 {guild.id} 获取 ActivityProcessor，中止回填任务。")
+                return
+
+            channels_to_scan = await processor.get_scannable_channels(single_channel)
 
             if not channels_to_scan:
                 if target_channel and not is_startup_task:
@@ -285,8 +309,8 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
 
                     # 只有手动任务才发送进度更新
                     if not is_startup_task and target_channel and time.time() - last_update_time > 5:
-                        embed = self._create_progress_embed(guild, start_time, len(channels_to_scan), i + 1, channel.name, total_messages_added, start_datetime,
-                                                            end_datetime, bool(single_channel))
+                        embed = self._create_progress_embed(guild, start_time, len(channels_to_scan), i + 1, channel.name, total_messages_added,
+                                                            bool(single_channel))
                         if progress_message:
                             await progress_message.edit(embed=embed)
                         else:
@@ -323,53 +347,6 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         finally:
             if guild.id in self._backfill_locks: self._backfill_locks.remove(guild.id)
             self.logger.info(f"服务器 '{guild.name}' 的回填任务结束，内存锁已释放。")
-
-    @staticmethod
-    async def _get_relevant_channels(guild: discord.Guild, guild_cfg: dict,
-                                     target: typing.Optional[typing.Union[discord.abc.GuildChannel, discord.CategoryChannel]] = None) -> list[
-        typing.Union[discord.TextChannel, discord.Thread]]:
-        """获取一个服务器内所有符合条件（未被忽略、有权限）的可读历史的频道列表。"""
-        ignored_channels = set(guild_cfg.get("ignored_channels", []))
-        ignored_categories = set(guild_cfg.get("ignored_categories", []))
-
-        relevant_channels = []
-
-        channels_to_check = []
-        if isinstance(target, discord.CategoryChannel):
-            channels_to_check = target.channels
-        elif isinstance(target, (discord.TextChannel, discord.ForumChannel, discord.Thread)):
-            channels_to_check = [target]
-            if isinstance(target, discord.ForumChannel):
-                channels_to_check.extend(target.threads)
-        else:  # 全服
-            channels_to_check = guild.channels
-
-        for channel in channels_to_check:
-            if not isinstance(channel, (discord.TextChannel, discord.ForumChannel, discord.Thread)): continue
-            if not channel.permissions_for(guild.me).read_message_history: continue
-            if channel.id in ignored_channels: continue
-
-            cat_id = channel.category_id if not isinstance(channel, discord.Thread) else (channel.parent.category_id if channel.parent else None)
-            if cat_id and cat_id in ignored_categories: continue
-
-            if isinstance(channel, discord.ForumChannel):
-                # 论坛本身不包含消息，但它的帖子需要被加入
-                for thread in channel.threads:
-                    if thread.permissions_for(guild.me).read_message_history and thread.id not in ignored_channels:
-                        relevant_channels.append(thread)
-            else:
-                relevant_channels.append(channel)
-
-        # 全服扫描时，额外获取所有活跃帖子
-        if target is None:
-            for thread in guild.threads:
-                if thread.id in {c.id for c in relevant_channels}: continue  # 去重
-                if thread.permissions_for(guild.me).read_message_history and thread.id not in ignored_channels:
-                    cat_id = thread.parent.category_id if thread.parent else None
-                    if not (cat_id and cat_id in ignored_categories):
-                        relevant_channels.append(thread)
-
-        return list(dict.fromkeys(relevant_channels))  # 去重并保持顺序
 
     # --- 斜杠指令组与指令 ---
 
@@ -415,7 +392,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
 
         if action == "finalize_and_unlock":
             if guild_id not in self._backfill_locks:
-                await interaction.response.send_message("ℹ️ 本服务器当前没有正在运行的回填任务。", ephemeral=True);
+                await interaction.response.send_message("ℹ️ 本服务器当前没有正在运行的回填任务。", ephemeral=True)
                 return
 
             await self._update_sync_timestamp(guild_id, datetime.now(timezone.utc).timestamp(), force=True)
@@ -436,7 +413,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
 
         elif action == "rebuild_indexes":
             if guild_id in self._backfill_locks:
-                await interaction.response.send_message("❌ 回填任务正在运行，请稍后再试。", ephemeral=True);
+                await interaction.response.send_message("❌ 回填任务正在运行，请稍后再试。", ephemeral=True)
                 return
 
             view = ConfirmationView(author=interaction.user)
@@ -492,7 +469,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             channel: typing.Optional[typing.Union[discord.TextChannel, discord.Thread, discord.ForumChannel, discord.CategoryChannel]] = None
     ):
         if interaction.guild_id in self._backfill_locks:
-            await interaction.response.send_message("❌ 此服务器上已经有一个回填任务正在运行。", ephemeral=True);
+            await interaction.response.send_message("❌ 此服务器上已经有一个回填任务正在运行。", ephemeral=True)
             return
 
         now_utc = datetime.now(timezone.utc)
@@ -500,25 +477,25 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
 
         if hours_ago:
             if start_date or end_date:
-                await interaction.response.send_message("❌ 不能同时使用日期和回溯小时数。", ephemeral=True);
+                await interaction.response.send_message("❌ 不能同时使用日期和回溯小时数。", ephemeral=True)
                 return
             start_dt = now_utc - timedelta(hours=hours_ago)
         else:
             if not start_date:
-                await interaction.response.send_message("❌ 必须提供 `start_date` 或 `hours_ago`。", ephemeral=True);
+                await interaction.response.send_message("❌ 必须提供 `start_date` 或 `hours_ago`。", ephemeral=True)
                 return
             start_dt = self._parse_flexible_date(start_date)
             if not start_dt:
-                await interaction.response.send_message("❌ 开始日期格式错误。", ephemeral=True);
+                await interaction.response.send_message("❌ 开始日期格式错误。", ephemeral=True)
                 return
             if end_date:
                 parsed_end = self._parse_flexible_date(end_date)
                 if not parsed_end:
-                    await interaction.response.send_message("❌ 结束日期格式错误。", ephemeral=True);
+                    await interaction.response.send_message("❌ 结束日期格式错误。", ephemeral=True)
                     return
                 end_dt = parsed_end + timedelta(days=1, microseconds=-1)
             if start_dt >= end_dt:
-                await interaction.response.send_message("❌ 开始日期必须在结束日期之前。", ephemeral=True);
+                await interaction.response.send_message("❌ 开始日期必须在结束日期之前。", ephemeral=True)
                 return
 
         start_disp = start_dt.astimezone(BEIJING_TZ).strftime('%Y-%m-%d %H:%M:%S')
@@ -537,7 +514,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         ))
 
     @staticmethod
-    def _create_progress_embed(guild, start_time, total, scanned, current_name, added, start_dt, end_dt, is_single):
+    def _create_progress_embed(guild, start_time, total, scanned, current_name, added, is_single):
         elapsed = time.time() - start_time
         scan_target = f"({scanned}/{total})" if not is_single else ""
         embed = discord.Embed(
@@ -592,20 +569,26 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         guild = interaction.guild
 
         if scope == "channel" and not target_channel:
-            await interaction.followup.send("❌ 当范围为 `特定频道/类别` 时，必须指定 `target_channel`。", ephemeral=True);
+            await interaction.followup.send("❌ 当范围为 `特定频道/类别` 时，必须指定 `target_channel`。", ephemeral=True)
             return
 
         # 1. 获取全量原始数据
         raw_all_activity = await self.data_manager.get_channel_activity_summary(guild.id, days_window)
         if not raw_all_activity:
-            await interaction.followup.send("在指定时间范围内没有找到任何活动记录。", ephemeral=True);
+            await interaction.followup.send("在指定时间范围内没有找到任何活动记录。", ephemeral=True)
             return
 
         # 2. 实例化 Processor 并预热缓存
         guild_cfg = self.config.get("guild_configs", {}).get(guild.id, {})
-        processor = ActivityProcessor(self.bot, guild, self.data_manager, guild_cfg)
+        processor = self._get_processor(guild)
+        if not processor:
+            await interaction.followup.send("❌ 服务器配置不存在，请联系管理员。", ephemeral=True)
+            return
         all_channel_ids = {cid for user_data in raw_all_activity.values() for cid in user_data.keys()}
-        await processor.build_channel_cache(all_channel_ids)
+
+        # 批量获取DTO以预热缓存
+        dto_tasks = [processor.get_or_fetch_channel_info(cid) for cid in all_channel_ids]
+        await asyncio.gather(*dto_tasks)
 
         # 3. 在 Python 端进行范围筛选和聚合
         scoped_channel_msg_counts = collections.defaultdict(int)
@@ -614,7 +597,8 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         target_channel_ids = set()
         if scope == "channel" and target_channel:
             # 获取目标范围内的所有子频道ID
-            relevant_channels = await self._get_relevant_channels(guild, guild_cfg, target_channel)
+
+            relevant_channels = await processor.get_scannable_channels(target_channel)
             target_channel_ids = {c.id for c in relevant_channels}
 
         for user_id, user_channels_data in raw_all_activity.items():
@@ -626,7 +610,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
                 scoped_channel_users[channel_id].add(user_id)
 
         if not scoped_channel_msg_counts:
-            await interaction.followup.send("在您指定的范围内没有找到任何符合条件的活动记录。", ephemeral=True);
+            await interaction.followup.send("在您指定的范围内没有找到任何符合条件的活动记录。", ephemeral=True)
             return
 
         # 4. 确定要排序的数据和总计

@@ -2,14 +2,13 @@
 from __future__ import annotations
 
 import typing
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 import discord
 from discord import ui
 
 from activity_tracker.data_manager import BEIJING_TZ
 from activity_tracker.logic import UserReportData, SortedDisplayItem
-from utility.views import ConfirmationView
 
 if typing.TYPE_CHECKING:
     from .cog import TrackActivityCog
@@ -44,7 +43,7 @@ class ReportEmbeds:
             emoji = HEATMAP_EMOJIS[0]
             for threshold in reversed(HEATMAP_THRESHOLDS):
                 if count >= threshold:
-                    emoji = HEATMAP_EMOJIS[threshold];
+                    emoji = HEATMAP_EMOJIS[threshold]
                     break
             heatmap_output.append(emoji)
 
@@ -69,8 +68,7 @@ class ReportEmbeds:
         return embed
 
     @staticmethod
-    def create_check_activity_embed(member: discord.Member, days_window: int, total_messages: int, threshold: int, target_role: discord.Role,
-                                    action_text: str) -> discord.Embed:
+    def create_check_activity_embed(member: discord.Member, days_window: int, total_messages: int, threshold: int, action_text: str) -> discord.Embed:
         """创建活跃度检查结果的 Embed。"""
         is_eligible = total_messages >= threshold
         embed = discord.Embed(
@@ -117,8 +115,9 @@ class GenericHierarchicalPaginationView(ui.View):
         page_data = self.sorted_display_data[start:end]
 
         if page_data:
+            # 【修改】 使用 item.channel_dto 来获取信息
             lines = [
-                f"{'  └ ' if isinstance(item.channel, discord.Thread) else ''}{item.channel.mention}: `{item.count}` {self.value_suffix}"
+                f"{'  └ ' if item.channel_dto.is_thread else ''}{item.channel_dto.mention}: `{item.count}` {self.value_suffix}"
                 for item in page_data
             ]
             field_title = f"{self.field_name} (第 {self.current_page + 1}/{self.total_pages} 页)"
