@@ -706,33 +706,33 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
 
     async def _get_user_activity_summary(self, guild: discord.Guild, user_id: int, days_window: int, guild_cfg: dict) -> tuple[int, list[tuple[int, int]]]:
         """
-        获取用户在指定天数窗口内的总消息数和分频道消息数。
-        返回 (总消息数, [(channel_id, count), ...])
+        【已性能优化】获取用户在指定天数窗口内的总消息数和分频道消息数。
+        使用批量频道缓存避免循环内API调用。
         """
-        # 从 DataManager 获取所有该用户的频道活动，不进行过滤
+        # 1. 从 DataManager 获取原始数据 (非常快)
         raw_channel_counts = await self.data_manager.get_user_activity_summary(
             guild_id=guild.id,
             user_id=user_id,
             days_window=days_window
         )
+        if not raw_channel_counts:
+            return 0, []
 
+        # 2. 【新】构建批量频道缓存
+        all_channel_ids = {channel_id for channel_id, count in raw_channel_counts}
+        channel_cache = await self._build_channel_cache(guild, all_channel_ids)
+
+        # 3. 在内存中高效处理和过滤
         total_message_count = 0
-        channel_counts: list[tuple[int, int]] = []
-
+        filtered_channel_counts: list[tuple[int, int]] = []
         ignored_channels = set(guild_cfg.get("ignored_channels", []))
         ignored_categories = set(guild_cfg.get("ignored_categories", []))
 
-        # 【代码修改】在 Cog 层进行过滤
         for channel_id, count in raw_channel_counts:
-            # 尝试从缓存获取频道对象，如果不在缓存中，则通过API获取
-            channel_obj = guild.get_channel(channel_id)
+            channel_obj = channel_cache.get(channel_id)
             if not channel_obj:
-                try:
-                    channel_obj = await self.bot.fetch_channel(channel_id)
-                except (discord.NotFound, discord.Forbidden):
-                    # 如果频道不存在或无权限，跳过
-                    self.logger.warning(f"用户 {user_id} 在未知/无权限频道 {channel_id} 有活动，已跳过统计。")
-                    continue
+                # 无法获取频道对象，跳过
+                continue
 
             # 应用忽略规则
             if channel_obj.id in ignored_channels:
@@ -748,40 +748,41 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             if is_ignored_category:
                 continue
 
-            channel_counts.append((channel_id, count))
+            filtered_channel_counts.append((channel_id, count))
             total_message_count += count
 
-        channel_counts.sort(key=lambda x: x[1], reverse=True)
-        return total_message_count, channel_counts
+        filtered_channel_counts.sort(key=lambda x: x[1], reverse=True)
+        return total_message_count, filtered_channel_counts
 
     # --- 辅助方法：生成热力图数据 ---
     async def _generate_heatmap_data(self, guild: discord.Guild, user_id: int, days_window: int) -> dict[str, int]:
         """
-        获取用户在指定天数窗口内每天的消息数，用于热力图。
-        返回 {'YYYY-MM-DD': count, ...}
+        【已性能优化】获取用户在指定天数窗口内每天的消息数，用于热力图。
+        使用批量频道缓存避免循环内API调用。
         """
-        # 从 DataManager 获取所有该用户的消息时间戳，不进行过滤
+        # 1. 从 DataManager 获取原始数据 (非常快)
         raw_messages_data = await self.data_manager.get_heatmap_data(
             guild_id=guild.id,
             user_id=user_id,
             days_window=days_window
         )
+        if not raw_messages_data:
+            return {}
 
+        # 2. 【新】构建批量频道缓存
+        all_channel_ids = {channel_id for channel_id, timestamp in raw_messages_data}
+        channel_cache = await self._build_channel_cache(guild, all_channel_ids)
+
+        # 3. 在内存中高效处理和过滤
         heatmap_counts = collections.defaultdict(int)
-
         guild_cfg = self.config.get("guild_configs", {}).get(guild.id, {})
         ignored_channels = set(guild_cfg.get("ignored_channels", []))
         ignored_categories = set(guild_cfg.get("ignored_categories", []))
 
-        # 【代码修改】在 Cog 层进行过滤和聚合
         for channel_id, timestamp in raw_messages_data:
-            # 尝试从缓存获取频道对象，如果不在缓存中，则通过API获取
-            channel_obj = guild.get_channel(channel_id)
+            channel_obj = channel_cache.get(channel_id)
             if not channel_obj:
-                try:
-                    channel_obj = await self.bot.fetch_channel(channel_id)
-                except (discord.NotFound, discord.Forbidden):
-                    continue  # 如果频道不存在或无权限，跳过
+                continue
 
             # 应用忽略规则
             if channel_obj.id in ignored_channels:
@@ -1377,7 +1378,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             await interaction.followup.send("❌ `回溯天数` 必须是正整数。", ephemeral=True)
             return
 
-        # 参数合法性检查
+        # 参数合法性检查 (不变)
         if scope == "channel" and not target_channel:
             await interaction.followup.send("❌ 当统计范围为 `特定频道` 时，`target_channel` 不能为空。", ephemeral=True)
             return
@@ -1388,111 +1389,103 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             await interaction.followup.send("❌ 当统计范围为 `整个服务器` 时，`target_channel` 和 `target_category` 必须为空。", ephemeral=True)
             return
 
-        guild_cfg = self.config.get("guild_configs", {}).get(guild.id, {})
-        ignored_channels = set(guild_cfg.get("ignored_channels", []))
-        ignored_categories = set(guild_cfg.get("ignored_categories", []))
-
-        scope_description = ""
-
-        # 从 DataManager 获取所有原始活动数据
+        # 1. 从 DataManager 获取所有原始数据 (非常快)
         raw_all_activity_data = await self.data_manager.get_channel_activity_summary(
             guild_id=guild.id,
             days_window=days_window
         )
+        if not raw_all_activity_data:
+            await interaction.followup.send("在指定时间范围内没有找到任何活动记录。", ephemeral=True)
+            return
+
+        # 2. 【新】构建批量频道缓存
+        all_channel_ids_in_data = set()
+        for user_id, user_channels_data in raw_all_activity_data.items():
+            all_channel_ids_in_data.update(user_channels_data.keys())
+
+        self.logger.info(f"开始为 get_activity_stats 构建频道缓存，共 {len(all_channel_ids_in_data)} 个唯一频道ID。")
+        channel_cache = await self._build_channel_cache(guild, all_channel_ids_in_data)
+        self.logger.info(f"频道缓存构建完毕。")
+
+        # 3. 在内存中高效处理和过滤
+        guild_cfg = self.config.get("guild_configs", {}).get(guild.id, {})
+        ignored_channels = set(guild_cfg.get("ignored_channels", []))
+        ignored_categories = set(guild_cfg.get("ignored_categories", []))
 
         total_overall_count = 0
         channel_message_counts = collections.defaultdict(int)
         distinct_users_global = set()
+        scope_description = ""
 
-        # 【代码修改】在 Cog 层进行过滤和聚合
         for user_id, user_channels_data in raw_all_activity_data.items():
             for channel_id, count in user_channels_data.items():
-                # 尝试从缓存获取频道对象，如果不在缓存中，则通过API获取
-                channel_obj = guild.get_channel(channel_id)
+                channel_obj = channel_cache.get(channel_id)
                 if not channel_obj:
-                    try:
-                        channel_obj = await self.bot.fetch_channel(channel_id)
-                    except (discord.NotFound, discord.Forbidden):
-                        continue  # 如果频道不存在或无权限，跳过
+                    continue
 
                 # Step 1: 应用配置中的忽略规则
                 if channel_obj.id in ignored_channels:
                     continue
-
                 is_ignored_category = False
                 if isinstance(channel_obj, discord.Thread):
                     if channel_obj.parent and channel_obj.parent.category_id in ignored_categories:
                         is_ignored_category = True
                 elif channel_obj.category_id and channel_obj.category_id in ignored_categories:
                     is_ignored_category = True
-
                 if is_ignored_category:
                     continue
 
-                # Step 2: 根据命令参数 (scope, target_channel, target_category) 进行过滤
+                # Step 2: 根据命令参数进行 scope 过滤
                 should_include_channel = False
                 if scope == "guild":
                     should_include_channel = True
                     scope_description = f"整个服务器的**所有**可读频道（含子频道和论坛频道）"
-                elif scope == "channel":
-                    if target_channel and channel_obj.id == target_channel.id:
+                elif scope == "channel" and target_channel and channel_obj.id == target_channel.id:
+                    should_include_channel = True
+                    scope_description = f"频道 {target_channel.mention}"
+                elif scope == "category" and target_category:
+                    cat_id_to_check = channel_obj.category_id
+                    if isinstance(channel_obj, discord.Thread) and channel_obj.parent:
+                        cat_id_to_check = channel_obj.parent.category_id
+                    if cat_id_to_check == target_category.id:
                         should_include_channel = True
-                        if isinstance(target_channel, discord.Thread):
-                            scope_description = f"子频道 {target_channel.mention}"
-                        elif isinstance(target_channel, discord.ForumChannel):
-                            scope_description = f"论坛频道 {target_channel.mention}"
-                        else:
-                            scope_description = f"频道 {target_channel.mention}"
-                elif scope == "category":
-                    if target_category:
-                        if isinstance(channel_obj, discord.Thread):
-                            if channel_obj.parent and channel_obj.parent.category_id == target_category.id:
-                                should_include_channel = True
-                        elif channel_obj.category_id == target_category.id:
-                            should_include_channel = True
-                    scope_description = f"频道类别 **{target_category.name}** 下所有可读频道（含子频道和论坛频道）"
+                        scope_description = f"频道类别 **{target_category.name}** 下所有可读频道（含子频道和论坛频道）"
 
                 if not should_include_channel:
-                    continue  # 如果不符合指定范围，跳过
+                    continue
 
-                # Step 3: 累加符合条件的计数
+                # Step 3: 累加计数
                 channel_message_counts[channel_id] += count
-
                 if metric == "distinct_users":
                     distinct_users_global.add(user_id)
                 elif metric == "total_messages":
                     total_overall_count += count
 
-        # 确定最终的总数
         if metric == "distinct_users":
             total_overall_count = len(distinct_users_global)
 
-        # 如果 scope_description 仍然为空，说明没有找到任何符合条件的频道
         if not scope_description:
-            # 这种情况可能发生在 target_channel/target_category 找不到，或者被忽略了
-            if scope == "channel" and target_channel:
-                await interaction.followup.send(f"❌ 无法统计 {target_channel.mention}，可能没有权限，或者该频道/其类别被忽略。", ephemeral=True)
-            elif scope == "category" and target_category:
-                await interaction.followup.send(f"❌ 无法统计频道类别 **{target_category.name}**，可能其被忽略，或者该类别下没有可统计频道。", ephemeral=True)
-            else:  # 这种情况通常不会发生，除非 guild 没有可读频道
-                await interaction.followup.send(f"❌ 在服务器中没有找到任何可以统计的频道。请检查配置和机器人权限。", ephemeral=True)
+            # 根据 scope 类型给出更准确的提示
+            if scope == "channel":
+                await interaction.followup.send(f"在指定范围内 ({target_channel.mention}) 没有找到任何活动记录，或该频道已被忽略。", ephemeral=True)
+            elif scope == "category":
+                await interaction.followup.send(f"在指定范围内 (类别: {target_category.name}) 没有找到任何活动记录，或该类别已被忽略。", ephemeral=True)
+            else:
+                await interaction.followup.send("在指定范围内没有找到任何活动记录。", ephemeral=True)
             return
 
-        # --- 使用新的翻页视图 ---
+        # --- 使用翻页视图 (不变) ---
         view = StatsPaginationView(
             cog=self,
             guild=guild,
-            total_stat=total_overall_count,  # total_overall_count 现在是根据 metric 来的
+            total_stat=total_overall_count,
             metric_name_display=("独立活跃用户数" if metric == "distinct_users" else "总消息数"),
-            all_channel_data=list(channel_message_counts.items()),  # 将 defaultdict 转换为列表
+            all_channel_data=sorted(list(channel_message_counts.items()), key=lambda item: item[1], reverse=True),
             days_window=days_window,
             scope_description=scope_description
         )
 
-        # 异步创建初始 Embed
         initial_embed = await view._create_embed()
-
-        # 发送带视图的响应
         view.message = await interaction.followup.send(embed=initial_embed, view=view, ephemeral=True)
 
     # --- 【新】Redis 状态辅助方法 ---
@@ -1534,6 +1527,66 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         except Exception as e:
             self.logger.error(f"获取 Redis 统计信息时出错: {e}", exc_info=True)
             return None
+
+    # --- 【性能优化】核心辅助方法：批量构建频道对象缓存 ---
+    async def _build_channel_cache(
+            self,
+            guild: discord.Guild,
+            channel_ids: typing.Set[int]
+    ) -> typing.Dict[int, typing.Optional[discord.abc.GuildChannel]]:
+        """
+        高效地为一组 channel_id 构建一个频道对象缓存。
+        优先从 guild.channels/threads 缓存获取，对未找到的进行一次性批量 API 请求。
+        返回一个 {channel_id: channel_object | None} 的字典。
+        """
+        channel_cache: typing.Dict[int, typing.Optional[discord.abc.GuildChannel]] = {}
+        ids_to_fetch = set()
+
+        # 第一遍：从机器人内部缓存快速查找
+        for cid in channel_ids:
+            channel = guild.get_channel(cid)
+            if channel:
+                channel_cache[cid] = channel
+            else:
+                # 如果在缓存中找不到，则记录下来准备批量获取
+                ids_to_fetch.add(cid)
+
+        if not ids_to_fetch:
+            return channel_cache  # 所有频道都在缓存中，直接返回
+
+        self.logger.info(f"频道缓存未命中 {len(ids_to_fetch)} 个ID，准备从API获取...")
+
+        # 第二遍：批量从 API 获取未缓存的频道
+        # discord.py 没有原生的批量 fetch_channel，但我们可以通过并发来模拟
+        # 注意：这里仍然可能因速率限制而变慢，但调用总数已大大减少
+        async def fetch_one(channel_id):
+            try:
+                return await self.bot.fetch_channel(channel_id)
+            except (discord.NotFound, discord.Forbidden):
+                # 记录获取失败的频道，避免后续重复尝试
+                self.logger.warning(f"无法获取频道 {channel_id} (可能已删除或无权限)。")
+                return None
+
+        # 并发执行所有 fetch 操作
+        fetch_tasks = [fetch_one(cid) for cid in ids_to_fetch]
+        fetched_channels = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+
+        for channel in fetched_channels:
+            if isinstance(channel, discord.abc.GuildChannel):
+                channel_cache[channel.id] = channel
+            elif channel is None:
+                # fetch_one 已经处理了失败情况，这里不需要额外操作
+                pass
+            elif isinstance(channel, Exception):
+                # asyncio.gather 可能会返回异常对象
+                self.logger.error(f"批量获取频道对象时出现未处理的异常: {channel}", exc_info=channel)
+
+        # 确保所有请求过的 ID 都在缓存中有个结果（即使是None）
+        for cid in ids_to_fetch:
+            if cid not in channel_cache:
+                channel_cache[cid] = None
+
+        return channel_cache
 
 
 async def setup(bot: RoleBot):
