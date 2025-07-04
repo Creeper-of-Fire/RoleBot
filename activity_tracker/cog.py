@@ -227,7 +227,7 @@ class ActivityRoleView(ui.View):
             return
 
         # 1. 获取原始数据
-        total_messages, channel_data = await self.cog._get_user_activity_summary(
+        channel_data = await self.cog._get_user_activity_summary(
             guild, member.id, days_window
         )
         heatmap_data = await self.cog._generate_heatmap_data(
@@ -235,7 +235,7 @@ class ActivityRoleView(ui.View):
         )
 
         # 2. 调用通用方法处理和排序数据
-        sorted_display_data = await self.cog._process_and_sort_activity_data(guild, guild_cfg, channel_data)
+        sorted_display_data, total_messages = await self.cog._process_and_sort_activity_data(guild, guild_cfg, channel_data)
 
         # 3. 创建 Embed 模板
         embed_template = discord.Embed(
@@ -1324,7 +1324,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
                 channel_values_to_sort[cid] = len(users)
             total_overall_stat = len(scoped_global_distinct_users)
 
-        sorted_display_data = await self._process_and_sort_activity_data(guild, guild_cfg, list(channel_values_to_sort.items()))
+        sorted_display_data, total_overall = await self._process_and_sort_activity_data(guild, guild_cfg, list(channel_values_to_sort.items()))
 
         metric_name_display = "总消息数" if metric == "total_messages" else "独立活跃用户数"
         value_suffix = "条消息" if metric == "total_messages" else "位用户"
