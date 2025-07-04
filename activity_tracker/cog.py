@@ -161,7 +161,7 @@ class ActivityRoleView(ui.View):
         # --- 从 Redis 聚合数据 ---
         # 优化：使用新的辅助方法来获取总消息数
         total_message_count, _ = await self.cog._get_user_activity_summary(
-            guild, member.id, days_window, guild_cfg
+            guild, member.id, days_window
         )
 
         has_role = target_role in member.roles
@@ -228,14 +228,14 @@ class ActivityRoleView(ui.View):
 
         # 1. 获取原始数据
         total_messages, channel_data = await self.cog._get_user_activity_summary(
-            guild, member.id, days_window, guild_cfg
+            guild, member.id, days_window
         )
         heatmap_data = await self.cog._generate_heatmap_data(
-            guild, member.id, days_window
+            guild, member.id, days_window, guild_cfg
         )
 
         # 2. 调用通用方法处理和排序数据
-        sorted_display_data = await self.cog._process_and_sort_activity_data(guild, channel_data)
+        sorted_display_data = await self.cog._process_and_sort_activity_data(guild, guild_cfg, channel_data)
 
         # 3. 创建 Embed 模板
         embed_template = discord.Embed(
@@ -385,13 +385,6 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
                 if report_channel_id:
                     report_channel = guild.get_channel(report_channel_id)
 
-                # 检查回填锁
-                if guild.id in self._backfill_locks:
-                    self.logger.warning(f"服务器 {guild.name} 检测到内存回填锁，本次启动时增量同步任务已跳过。")
-                    if report_channel:
-                        await report_channel.send(f"⚠️ **启动同步跳过！**\n检测到服务器当前有另一个回填任务正在进行，本次自动增量同步已取消。")
-                    continue
-
                 last_sync_ts = await self.data_manager.get_last_sync_timestamp(guild.id)
                 now_utc = datetime.now(timezone.utc)
 
@@ -471,22 +464,70 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
 
         await self.data_manager.set_last_sync_timestamp(guild_id, timestamp)
 
-    async def _process_and_sort_activity_data(self, guild: discord.Guild, activity_data: list[tuple[int, int]]) -> list[tuple[discord.abc.GuildChannel, int]]:
+    async def _process_and_sort_activity_data(
+            self,
+            guild: discord.Guild,
+            guild_cfg: dict,
+            raw_activity_data: list[tuple[int, int]]
+    ) -> tuple[list[tuple[discord.abc.GuildChannel, int]], int]:
         """
-        【已重构和修正】通用的数据处理和层级排序辅助方法。
-        此版本不再依赖不稳定的 'thread.parent' 属性，而是使用 'thread.parent_id' 和
-        我们自己构建的频道缓存进行关联，确保子频道能被正确识别和排序。
-        【第二次修正】将 `isinstance` 检查替换为更可靠的 `channel.type` 检查。
+        【核心处理函数】接收原始活动数据，执行过滤、层级排序，并返回最终显示列表和总消息数。
+        这是所有报告数据的唯一处理入口。
         """
-        if not activity_data:
-            return []
+        if not raw_activity_data:
+            return [], 0
 
-        # 1. 建立一个包含所有活动频道及其父频道的完整缓存
-        all_channel_ids = {cid for cid, _ in activity_data}
+        # =================================================================
+        # STAGE 1: 过滤 (Filtering) - 在所有操作之前进行
+        # =================================================================
+        filtered_data: list[tuple[int, int]] = []
+        total_message_count = 0
+
+        ignored_channels = set(guild_cfg.get("ignored_channels", []))
+        ignored_categories = set(guild_cfg.get("ignored_categories", []))
+
+        # 高效地一次性获取所有涉及的频道对象
+        all_channel_ids = {cid for cid, _ in raw_activity_data}
         channel_cache = await self._build_channel_cache(guild, all_channel_ids)
 
+        for channel_id, count in raw_activity_data:
+            channel_obj = channel_cache.get(channel_id)
+            if not channel_obj:
+                continue  # 跳过已删除或无权访问的频道
+
+            # 检查频道本身是否被忽略
+            if channel_obj.id in ignored_channels:
+                continue
+
+            # --- 【核心Bug修复】在这里使用正确的过滤逻辑 ---
+            category_id_to_check = None
+            if isinstance(channel_obj, discord.Thread):
+                # 如果是子频道(帖子)，我们必须检查其父频道的类别
+                if channel_obj.parent:
+                    category_id_to_check = channel_obj.parent.category_id
+            else:
+                # 如果是普通频道，直接检查其类别
+                category_id_to_check = channel_obj.category_id
+
+            if category_id_to_check and category_id_to_check in ignored_categories:
+                continue
+
+            # 如果数据通过了所有过滤检查，则将其保留
+            filtered_data.append((channel_id, count))
+            total_message_count += count
+
+        # 如果过滤后没有任何数据，提前返回
+        if not filtered_data:
+            return [], 0
+
+        # =================================================================
+        # STAGE 2: 排序和层级构建 (Sorting & Hierarchy) - 对已过滤的数据进行
+        # =================================================================
+
+        # 为了构建层级，我们需要子频道父级的对象
         parent_ids_to_fetch = set()
-        for channel in channel_cache.values():
+        for cid, _ in filtered_data:
+            channel = channel_cache.get(cid)
             if channel and isinstance(channel, discord.Thread) and channel.parent_id:
                 if channel.parent_id not in channel_cache:
                     parent_ids_to_fetch.add(channel.parent_id)
@@ -495,16 +536,14 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             parent_cache = await self._build_channel_cache(guild, parent_ids_to_fetch)
             channel_cache.update(parent_cache)
 
-        # 2. 【核心修正】使用 parent_id 进行分组，不再依赖 .parent 属性
-        top_level_activity_by_id = {}  # {channel_id: count}
-        threads_by_parent_id = collections.defaultdict(list)  # {parent_id: [(thread_obj, count), ...]}
+        # 按父频道ID对子频道进行分组
+        top_level_activity_by_id = {}
+        threads_by_parent_id = collections.defaultdict(list)
 
-        for channel_id, count in activity_data:
+        for channel_id, count in filtered_data:
             channel = channel_cache.get(channel_id)
-            if not channel:
-                continue
+            if not channel: continue
 
-            # 【关键修复】使用 channel.type 进行判断，比 isinstance 更可靠
             is_thread = channel.type in (
                 discord.ChannelType.public_thread,
                 discord.ChannelType.private_thread,
@@ -516,46 +555,38 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             else:
                 top_level_activity_by_id[channel_id] = count
 
-        # 3. 计算用于排序的聚合计数 (自身消息 + 子频道消息总和)
-        aggregate_scores = collections.defaultdict(int)  # {parent_channel_id: aggregate_count}
-
-        # 首先加入顶级频道自身的分数
+        # 计算用于排序的聚合分数 (父频道分数 = 自身消息 + 所有子频道消息)
+        aggregate_scores = collections.defaultdict(int)
         for channel_id, count in top_level_activity_by_id.items():
             aggregate_scores[channel_id] += count
-
-        # 然后将子频道的计数加到其父频道的聚合分数上
         for parent_id, children in threads_by_parent_id.items():
             children_total_count = sum(c for _, c in children)
             aggregate_scores[parent_id] += children_total_count
 
-        # 4. 按聚合计数对所有顶级项目（包括有子频道的父频道）进行排序
-        sorted_parent_ids = sorted(
-            aggregate_scores.items(),
-            key=lambda item: item[1],
-            reverse=True
-        )
+        # 按聚合分数对所有顶级项目（包括作为容器的父频道）进行降序排序
+        sorted_parent_ids = sorted(aggregate_scores.items(), key=lambda item: item[1], reverse=True)
 
-        # 5. 构建最终的、扁平化的、有序的显示列表
+        # 构建最终的、有序的、扁平化显示列表
         final_sorted_list = []
         for parent_id, _ in sorted_parent_ids:
             parent_obj = channel_cache.get(parent_id)
-            if not parent_obj:
-                continue
+            if not parent_obj: continue
 
-            # A. 如果这个父频道本身有消息，把它添加到列表
-            if parent_id in top_level_activity_by_id:
+            has_direct_messages = parent_id in top_level_activity_by_id
+            has_child_threads = parent_id in threads_by_parent_id
+
+            # 添加父级条目（无论是普通频道还是作为容器的论坛频道）
+            if has_direct_messages:
                 final_sorted_list.append((parent_obj, top_level_activity_by_id[parent_id]))
+            elif parent_obj.type == discord.ChannelType.forum and has_child_threads:
+                final_sorted_list.append((parent_obj, 0))  # 论坛本身消息数为0
 
-            # B. 如果这个父频道下有子频道，把它们（已按自身活跃度排序）添加到列表
-            if parent_id in threads_by_parent_id:
-                sorted_threads = sorted(
-                    threads_by_parent_id[parent_id],
-                    key=lambda item: item[1],
-                    reverse=True
-                )
+            # 添加其下的子频道（已按活跃度排序）
+            if has_child_threads:
+                sorted_threads = sorted(threads_by_parent_id[parent_id], key=lambda item: item[1], reverse=True)
                 final_sorted_list.extend(sorted_threads)
 
-        return final_sorted_list
+        return final_sorted_list, total_message_count
 
     # --- 后续所有辅助方法和指令定义保持不变，除了 manage_activity_data ---
     # ... ( _get_relevant_channels, _get_user_activity_summary, _generate_heatmap_data, _render_heatmap_text, ActivityGroup, send_panel 等 ) ...
@@ -640,61 +671,22 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
 
         return final_channels
 
-    async def _get_user_activity_summary(self, guild: discord.Guild, user_id: int, days_window: int, guild_cfg: dict) -> tuple[int, list[tuple[int, int]]]:
+    async def _get_user_activity_summary(self, guild_id: int, user_id: int, days_window: int) -> list[tuple[int, int]]:
         """
-        【已性能优化】获取用户在指定天数窗口内的总消息数和分频道消息数。
-        使用批量频道缓存避免循环内API调用。
+        【已简化】仅从 DataManager 获取指定用户在窗口期内原始的、未经过滤的分频道消息数。
+        所有过滤和业务逻辑已转移到 _process_and_sort_activity_data。
         """
-        # 1. 从 DataManager 获取原始数据 (非常快)
-        raw_channel_counts = await self.data_manager.get_user_activity_summary(
-            guild_id=guild.id,
+        return await self.data_manager.get_user_activity_summary(
+            guild_id=guild_id,
             user_id=user_id,
             days_window=days_window
         )
-        if not raw_channel_counts:
-            return 0, []
-
-        # 2. 【新】构建批量频道缓存
-        all_channel_ids = {channel_id for channel_id, count in raw_channel_counts}
-        channel_cache = await self._build_channel_cache(guild, all_channel_ids)
-
-        # 3. 在内存中高效处理和过滤
-        total_message_count = 0
-        filtered_channel_counts: list[tuple[int, int]] = []
-        ignored_channels = set(guild_cfg.get("ignored_channels", []))
-        ignored_categories = set(guild_cfg.get("ignored_categories", []))
-
-        for channel_id, count in raw_channel_counts:
-            channel_obj = channel_cache.get(channel_id)
-            if not channel_obj:
-                # 无法获取频道对象，跳过
-                continue
-
-            # 应用忽略规则
-            if channel_obj.id in ignored_channels:
-                continue
-
-            is_ignored_category = False
-            if isinstance(channel_obj, discord.Thread):
-                if channel_obj.parent and channel_obj.parent.category_id in ignored_categories:
-                    is_ignored_category = True
-            elif channel_obj.category_id and channel_obj.category_id in ignored_categories:
-                is_ignored_category = True
-
-            if is_ignored_category:
-                continue
-
-            filtered_channel_counts.append((channel_id, count))
-            total_message_count += count
-
-        filtered_channel_counts.sort(key=lambda x: x[1], reverse=True)
-        return total_message_count, filtered_channel_counts
 
     # --- 辅助方法：生成热力图数据 ---
-    async def _generate_heatmap_data(self, guild: discord.Guild, user_id: int, days_window: int) -> dict[str, int]:
+    async def _generate_heatmap_data(self, guild: discord.Guild, user_id: int, days_window: int, guild_cfg: dict) -> dict[str, int]:
         """
-        【已性能优化】获取用户在指定天数窗口内每天的消息数，用于热力图。
-        使用批量频道缓存避免循环内API调用。
+        【已重构】获取并处理用于生成热力图的数据。
+        过滤逻辑已在本函数内修正。
         """
         # 1. 从 DataManager 获取原始数据 (非常快)
         raw_messages_data = await self.data_manager.get_heatmap_data(
@@ -705,35 +697,40 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         if not raw_messages_data:
             return {}
 
-        # 2. 【新】构建批量频道缓存
+        # 2. 构建批量频道缓存 (这是高效处理的关键)
         all_channel_ids = {channel_id for channel_id, timestamp in raw_messages_data}
         channel_cache = await self._build_channel_cache(guild, all_channel_ids)
 
         # 3. 在内存中高效处理和过滤
         heatmap_counts = collections.defaultdict(int)
-        guild_cfg = self.config.get("guild_configs", {}).get(guild.id, {})
         ignored_channels = set(guild_cfg.get("ignored_channels", []))
         ignored_categories = set(guild_cfg.get("ignored_categories", []))
 
         for channel_id, timestamp in raw_messages_data:
             channel_obj = channel_cache.get(channel_id)
             if not channel_obj:
-                continue
+                continue  # 跳过无法获取的频道
 
-            # 应用忽略规则
+            # --- 【核心Bug修复】在这里使用正确的过滤逻辑 ---
+            # 检查频道本身是否被忽略
             if channel_obj.id in ignored_channels:
                 continue
 
-            is_ignored_category = False
+            # 正确地检查频道所在的类别是否被忽略
+            category_id_to_check = None
             if isinstance(channel_obj, discord.Thread):
-                if channel_obj.parent and channel_obj.parent.category_id in ignored_categories:
-                    is_ignored_category = True
-            elif channel_obj.category_id and channel_obj.category_id in ignored_categories:
-                is_ignored_category = True
+                # 如果是子频道(帖子)，获取其父频道的类别ID
+                if channel_obj.parent:
+                    category_id_to_check = channel_obj.parent.category_id
+            else:
+                # 如果是普通频道，直接获取其类别ID
+                category_id_to_check = channel_obj.category_id
 
-            if is_ignored_category:
+            if category_id_to_check and category_id_to_check in ignored_categories:
                 continue
+            # --- 过滤逻辑结束 ---
 
+            # 如果数据通过了所有过滤，则进行统计
             dt_utc8 = datetime.fromtimestamp(float(timestamp), tz=timezone.utc).astimezone(BEIJING_TZ)
             date_str = dt_utc8.strftime('%Y-%m-%d')
             heatmap_counts[date_str] += 1
@@ -1084,7 +1081,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
                                       is_startup_task: bool,
                                       single_channel: typing.Optional[typing.Union[discord.TextChannel, discord.Thread, discord.ForumChannel]] = None):
         """【核心执行器】负责回填历史消息，现在是所有同步任务的唯一入口。"""
-        if guild.id in self._backfill_locks:
+        if guild.id in self._backfill_locks and (not is_startup_task):
             self.logger.warning(f"服务器 '{guild.name}' 尝试启动回填任务，但任务已被锁定，本次请求中止。")
             if target_channel and not is_startup_task:  # 启动任务不发消息
                 await target_channel.send("⚠️ **任务中止**：服务器上已有另一个回填任务正在运行。")
@@ -1299,14 +1296,14 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
                 elif scope == "channel" and target_channel:
                     if isinstance(target_channel, discord.ForumChannel):
                         if (isinstance(channel_obj, discord.Thread) and channel_obj.parent_id == target_channel.id) or channel_obj.id == target_channel.id:
-                            should_include = True;
+                            should_include = True
                             scope_description = f"论坛频道 {target_channel.mention}"
                     elif channel_obj.id == target_channel.id:
-                        should_include = True;
+                        should_include = True
                         scope_description = f"频道 {target_channel.mention}"
                 elif scope == "category" and target_category and category_id_to_check == target_category.id:
-                    should_include = True;
-                    scope_description = f"频道类别 **{target_category.name}**"
+                    should_include = True
+                    scope_description = f"频道类别 {target_category.name}"
 
                 if not should_include: continue
 
@@ -1327,7 +1324,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
                 channel_values_to_sort[cid] = len(users)
             total_overall_stat = len(scoped_global_distinct_users)
 
-        sorted_display_data = await self._process_and_sort_activity_data(guild, list(channel_values_to_sort.items()))
+        sorted_display_data = await self._process_and_sort_activity_data(guild, guild_cfg, list(channel_values_to_sort.items()))
 
         metric_name_display = "总消息数" if metric == "total_messages" else "独立活跃用户数"
         value_suffix = "条消息" if metric == "total_messages" else "位用户"
