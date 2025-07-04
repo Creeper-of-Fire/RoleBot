@@ -1237,7 +1237,6 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         ]
     )
     @app_commands.checks.has_permissions(manage_roles=True)
-    @app_commands.checks.has_permissions(manage_roles=True)
     async def get_activity_stats(
             self,
             interaction: discord.Interaction,
@@ -1247,14 +1246,29 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             target_channel: typing.Optional[typing.Union[discord.TextChannel, discord.Thread, discord.ForumChannel]] = None,
             target_category: typing.Optional[discord.CategoryChannel] = None
     ):
+        """
+        【核心统计指令】根据指定的范围 (全服/频道/类别) 和指标 (消息数/用户数) 生成活跃度报告。
+
+        工作流程:
+        1.  参数校验，确保命令的有效性。
+        2.  从 DataManager 高效获取指定时间窗口内的所有原始活动数据。
+        3.  通过 _build_channel_cache 批量获取所有涉及的频道对象，避免 API 速率限制。
+        4.  对原始数据进行单次遍历，同时应用 scope/ignore 规则，并聚合所需数据。
+            - 针对 `distinct_users` 指标，会特别记录每个频道和全局的独立用户集合。
+        5.  根据用户选择的 `metric`，确定最终用于排序和展示的频道数值 (channel_values)。
+        6.  调用 _process_and_sort_activity_data 对数据进行层级化排序。
+        7.  构建一个包含统计摘要的 Embed 模板。
+        8.  将模板和排好序的数据传递给通用的 GenericHierarchicalPaginationView 进行分页展示。
+        """
         await interaction.response.defer(ephemeral=True, thinking=True)
         guild = interaction.guild
 
+        # ===================================================================
+        # 1. 参数校验
+        # ===================================================================
         if days_window <= 0:
             await interaction.followup.send("❌ `回溯天数` 必须是正整数。", ephemeral=True)
             return
-
-        # 参数合法性检查 (不变)
         if scope == "channel" and not target_channel:
             await interaction.followup.send("❌ 当统计范围为 `特定频道` 时，`target_channel` 不能为空。", ephemeral=True)
             return
@@ -1265,7 +1279,10 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             await interaction.followup.send("❌ 当统计范围为 `整个服务器` 时，`target_channel` 和 `target_category` 必须为空。", ephemeral=True)
             return
 
-        # 1. 从 DataManager 获取所有原始数据 (非常快)
+        # ===================================================================
+        # 2. 获取原始数据 & 构建频道缓存
+        # ===================================================================
+        # 从 Redis 获取全服原始数据，此操作已通过索引优化，非常快速。
         raw_all_activity_data = await self.data_manager.get_channel_activity_summary(
             guild_id=guild.id,
             days_window=days_window
@@ -1274,106 +1291,104 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             await interaction.followup.send("在指定时间范围内没有找到任何活动记录。", ephemeral=True)
             return
 
-        # 2. 构建批量频道缓存 (已优化)
-        all_channel_ids_in_data = set()
-        for user_id, user_channels_data in raw_all_activity_data.items():
-            all_channel_ids_in_data.update(user_channels_data.keys())
-
-        self.logger.info(f"开始为 get_activity_stats 构建频道缓存，共 {len(all_channel_ids_in_data)} 个唯一频道ID。")
+        # 收集所有唯一的频道ID，准备一次性获取频道对象。
+        all_channel_ids_in_data = {
+            cid for user_data in raw_all_activity_data.values() for cid in user_data.keys()
+        }
         channel_cache = await self._build_channel_cache(guild, all_channel_ids_in_data)
-        self.logger.info(f"频道缓存构建完毕。")
 
-        # 3. 在内存中高效处理和过滤
+        # ===================================================================
+        # 3. 数据过滤与聚合 (单次遍历)
+        # ===================================================================
         guild_cfg = self.config.get("guild_configs", {}).get(guild.id, {})
         ignored_channels = set(guild_cfg.get("ignored_channels", []))
         ignored_categories = set(guild_cfg.get("ignored_categories", []))
 
-        total_overall_count = 0
-        channel_message_counts = collections.defaultdict(int)
-        distinct_users_global = set()
+        # 存储每个在 scope 内的频道的独立用户集合。
+        scoped_channel_distinct_users = collections.defaultdict(set)
+        # 存储每个在 scope 内的频道的总消息数。
+        scoped_channel_message_counts = collections.defaultdict(int)
+        # 存储在 scope 内的全局独立用户集合。
+        scoped_global_distinct_users = set()
+
         scope_description = ""
 
+        # 对原始数据进行一次完整的遍历
         for user_id, user_channels_data in raw_all_activity_data.items():
             for channel_id, count in user_channels_data.items():
                 channel_obj = channel_cache.get(channel_id)
                 if not channel_obj:
+                    continue  # 跳过无法获取的频道
+
+                # --- 应用忽略规则 (Ignore Rules) ---
+                category_id_to_check = channel_obj.parent.category_id if isinstance(channel_obj,
+                                                                                    discord.Thread) and channel_obj.parent else channel_obj.category_id
+                if category_id_to_check in ignored_categories or channel_obj.id in ignored_channels:
                     continue
 
-                # Step 1: 应用配置中的忽略规则
-                # 【修正】先判断子频道的父类别，再判断频道本身
-                is_ignored_category = False
-                if isinstance(channel_obj, discord.Thread):
-                    if channel_obj.parent and channel_obj.parent.category_id in ignored_categories:
-                        is_ignored_category = True
-                elif channel_obj.category_id and channel_obj.category_id in ignored_categories:
-                    is_ignored_category = True
-                if is_ignored_category:
-                    continue
-
-                if channel_obj.id in ignored_channels:
-                    continue
-
-                # Step 2: 根据命令参数进行 scope 过滤
-                should_include_channel = False
+                # --- 应用范围规则 (Scope Rules) ---
+                should_include = False
                 if scope == "guild":
-                    should_include_channel = True
+                    should_include = True
                     scope_description = f"整个服务器的**所有**可读频道（含子频道和论坛频道）"
-                elif scope == "channel":
-                    # 【修正】确保能正确匹配子频道和论坛频道
-                    if target_channel:
-                        # 如果目标是论坛，其下的子频道也应被包括
-                        if isinstance(target_channel, discord.ForumChannel):
-                            if (isinstance(channel_obj, discord.Thread) and channel_obj.parent_id == target_channel.id) or channel_obj.id == target_channel.id:
-                                should_include_channel = True
-                                scope_description = f"论坛频道 {target_channel.mention} 及其子频道"
-                        # 如果目标就是这个频道
-                        elif channel_obj.id == target_channel.id:
-                            should_include_channel = True
-                            scope_description = f"频道 {target_channel.mention}"
-                elif scope == "category" and target_category:
-                    # --- 【核心修正点】---
-                    # 正确获取频道的类别ID，无论是普通频道还是子频道
-                    category_id_of_channel = None
-                    if isinstance(channel_obj, discord.Thread):
-                        # 对于子频道，我们看它父频道的类别
-                        if channel_obj.parent:
-                            category_id_of_channel = channel_obj.parent.category_id
-                    else:
-                        # 对于普通频道，直接用它的类别ID
-                        category_id_of_channel = channel_obj.category_id
+                elif scope == "channel" and target_channel:
+                    if isinstance(target_channel, discord.ForumChannel):
+                        if (isinstance(channel_obj, discord.Thread) and channel_obj.parent_id == target_channel.id) or channel_obj.id == target_channel.id:
+                            should_include = True
+                            scope_description = f"论坛频道 {target_channel.mention} 及其子频道"
+                    elif channel_obj.id == target_channel.id:
+                        should_include = True
+                        scope_description = f"频道 {target_channel.mention}"
+                elif scope == "category" and target_category and category_id_to_check == target_category.id:
+                    should_include = True
+                    scope_description = f"频道类别 **{target_category.name}** 下所有可读频道（含子频道和论坛频道）"
 
-                    if category_id_of_channel == target_category.id:
-                        should_include_channel = True
-                        scope_description = f"频道类别 **{target_category.name}** 下所有可读频道（含子频道和论坛频道）"
-
-                if not should_include_channel:
+                if not should_include:
                     continue
 
-                # Step 3: 累加计数
-                channel_message_counts[channel_id] += count
-                if metric == "distinct_users":
-                    distinct_users_global.add(user_id)
-                elif metric == "total_messages":
-                    total_overall_count += count
-
-        if metric == "distinct_users":
-            total_overall_count = len(distinct_users_global)
+                # --- 如果频道在范围内，则进行聚合 ---
+                scoped_channel_message_counts[channel_id] += count
+                scoped_channel_distinct_users[channel_id].add(user_id)
+                scoped_global_distinct_users.add(user_id)
 
         if not scope_description:
-            if scope == "channel" and target_channel:
-                await interaction.followup.send(f"在指定范围内 ({target_channel.mention}) 没有找到任何活动记录，或该频道/类别已被忽略。", ephemeral=True)
-            elif scope == "category" and target_category:
-                await interaction.followup.send(f"在指定范围内 (类别: {target_category.name}) 没有找到任何活动记录，或该类别/其下频道已被忽略。", ephemeral=True)
-            else:
-                await interaction.followup.send("在指定范围内没有找到任何活动记录。", ephemeral=True)
+            # 如果循环结束后 scope_description 仍为空，说明指定范围内没有任何活动。
+            await interaction.followup.send(f"在您指定的范围内没有找到任何符合条件的活动记录。", ephemeral=True)
             return
 
-        # --- 【新】调用通用方法处理和排序数据 ---
-        sorted_display_data = await self._process_and_sort_activity_data(guild, list(channel_message_counts.items()))
+        # ===================================================================
+        # 4. 根据指标确定最终统计值和排序依据
+        # ===================================================================
+        channel_values_to_sort: dict[int, int] = {}
+        total_overall_stat: int = 0
 
-        # --- 【新】创建 Embed 模板 ---
-        total_value_display = f"`{total_overall_count}` 位" if metric == "distinct_users" else f"`{total_overall_count}` 条"
-        metric_name_display = "独立活跃用户数" if metric == "distinct_users" else "总消息数"
+        if metric == "total_messages":
+            channel_values_to_sort = scoped_channel_message_counts
+            total_overall_stat = sum(scoped_channel_message_counts.values())
+        elif metric == "distinct_users":
+            for cid, users in scoped_channel_distinct_users.items():
+                channel_values_to_sort[cid] = len(users)
+            total_overall_stat = len(scoped_global_distinct_users)
+
+        # ===================================================================
+        # 5. 调用通用方法进行层级排序
+        # ===================================================================
+        sorted_display_data = await self._process_and_sort_activity_data(guild, list(channel_values_to_sort.items()))
+
+        # ===================================================================
+        # 6. 构建 Embed 模板并启动分页视图
+        # ===================================================================
+        value_suffix, metric_name_display, total_value_display_suffix = "", "", ""
+        if metric == "total_messages":
+            metric_name_display = "总消息数"
+            value_suffix = "条消息"
+            total_value_display_suffix = "条"
+        elif metric == "distinct_users":
+            metric_name_display = "独立活跃用户数"
+            value_suffix = "位用户"
+            total_value_display_suffix = "位"
+
+        total_value_display = f"`{total_overall_stat}` {total_value_display_suffix}"
 
         embed_template = discord.Embed(
             title=f"📈 活跃度统计报告 - {days_window} 天",
@@ -1384,13 +1399,13 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         embed_template.add_field(name=f"**总计 {metric_name_display}**", value=total_value_display, inline=False)
         embed_template.set_footer(text=f"统计时间: {datetime.now(BEIJING_TZ).strftime('%Y-%m-%d %H:%M:%S')} (UTC+8)")
 
-        # --- 【新】实例化并启动新的通用视图 ---
+        # 实例化并启动通用分页视图
         view = GenericHierarchicalPaginationView(
             interaction=interaction,
             embed_template=embed_template,
             sorted_display_data=sorted_display_data,
-            field_name="分频道消息数",
-            value_suffix="条消息"
+            field_name=f"分频道{metric_name_display}",
+            value_suffix=value_suffix
         )
         await view.start()
 
