@@ -390,3 +390,27 @@ class DataManager:
             self.logger.info(f"DataManager: 已更新服务器 {guild_id} 的最后同步时间戳为 {datetime.fromtimestamp(timestamp, tz=timezone.utc)}")
         except exceptions.RedisError as e:
             self.logger.error(f"DataManager: 设置最后同步时间戳失败 (Key: {key}): {e}", exc_info=True)
+
+    async def get_redis_info(self) -> typing.Optional[dict]:
+        """获取并解析 Redis 服务器信息。"""
+        try:
+            info = await self.redis.info()
+            uptime_seconds = info.get('uptime_in_seconds', 0)
+            uptime_delta = timedelta(seconds=uptime_seconds)
+
+            # 将 timedelta 格式化为 "X天 Y时 Z分"
+            days, remainder = divmod(uptime_delta.total_seconds(), 86400)
+            hours, remainder = divmod(remainder, 3600)
+            minutes, _ = divmod(remainder, 60)
+            uptime_str = f"{int(days)}天 {int(hours)}时 {int(minutes)}分"
+
+            return {
+                "version": info.get('redis_version', 'N/A'),
+                "uptime": uptime_str,
+                "memory": info.get('used_memory_human', 'N/A'),
+                "clients": info.get('connected_clients', 'N/A'),
+                "keys": info.get('db0', {}).get('keys', 'N/A')
+            }
+        except exceptions.RedisError as e:
+            self.logger.error(f"DataManager: 获取 Redis INFO 失败: {e}", exc_info=True)
+            return None

@@ -83,8 +83,35 @@ class ReportEmbeds:
         return embed
 
 
+class PageJumpModal(ui.Modal, title="跳转到指定页面"):
+    def __init__(self, total_pages: int):
+        super().__init__(timeout=120)
+        self.total_pages = total_pages
+        self.jump_to_page: typing.Optional[int] = None
+
+        self.page_input = ui.TextInput(
+            label="输入页码",
+            placeholder=f"请输入 1 到 {self.total_pages} 之间的数字",
+            required=True,
+            min_length=1,
+            max_length=len(str(self.total_pages))
+        )
+        self.add_item(self.page_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            page_num = int(self.page_input.value)
+            if 1 <= page_num <= self.total_pages:
+                self.jump_to_page = page_num - 1  # 转换为 0 索引
+                await interaction.response.defer() # 确认交互，让主视图处理更新
+            else:
+                await interaction.response.send_message(f"❌ 页码必须在 1 到 {self.total_pages} 之间。", ephemeral=True)
+        except ValueError:
+            await interaction.response.send_message("❌ 请输入有效的数字。", ephemeral=True)
+
+
 class GenericHierarchicalPaginationView(ui.View):
-    """【职责不变】通用的层级分页视图，只负责分页和展示。"""
+    """【已增强】通用的层级分页视图，支持首页、末页和页面跳转，使用装饰器实现。"""
 
     def __init__(self, interaction: discord.Interaction, embed_template: discord.Embed,
                  sorted_display_data: list[SortedDisplayItem],
@@ -99,23 +126,37 @@ class GenericHierarchicalPaginationView(ui.View):
         self.channels_per_page = MAX_CHANNELS_PER_PAGE
         self.total_pages = (len(self.sorted_display_data) + self.channels_per_page - 1) // self.channels_per_page or 1
         self.message: typing.Optional[discord.Message] = None
+
         self._update_buttons()
 
     def _update_buttons(self):
-        self.previous_page.disabled = self.current_page == 0
-        self.next_page.disabled = self.current_page >= self.total_pages - 1
+        """更新所有按钮的状态和标签。"""
+        is_first_page = self.current_page == 0
+        is_last_page = self.current_page >= self.total_pages - 1
+
+        # 通过 custom_id 查找并更新按钮
+        # 假设 custom_id 是固定的
+        self.go_to_first.disabled = is_first_page
+        self.previous_page.disabled = is_first_page
+
+        # 特别处理动态标签按钮
+        self.jump_to_page_button.label = f"{self.current_page + 1}/{self.total_pages}"
+        self.jump_to_page_button.disabled = self.total_pages <= 1
+
+        self.next_page.disabled = is_last_page
+        self.go_to_last.disabled = is_last_page
 
     def _create_page_embed(self) -> discord.Embed:
         embed = self.embed_template.copy()
-        # 移除旧的分页字段，保留模板中的其他字段
-        embed.remove_field(-1) if embed.fields and embed.fields[-1].name.startswith(self.field_name) else None
+        # 移除旧的分页字段
+        if embed.fields and embed.fields[-1].name.startswith(self.field_name):
+            embed.remove_field(-1)
 
         start = self.current_page * self.channels_per_page
         end = start + self.channels_per_page
         page_data = self.sorted_display_data[start:end]
 
         if page_data:
-            # 【修改】 使用 item.channel_dto 来获取信息
             lines = [
                 f"{'  └ ' if item.channel_dto.is_thread else ''}{item.channel_dto.mention}: `{item.count}` {self.value_suffix}"
                 for item in page_data
@@ -126,25 +167,56 @@ class GenericHierarchicalPaginationView(ui.View):
             embed.add_field(name=self.field_name, value="没有找到任何符合条件的记录。", inline=False)
         return embed
 
+    async def _update_view(self, interaction: discord.Interaction, edit_response: bool = True):
+        """【辅助方法】统一处理视图更新逻辑。"""
+        self._update_buttons()
+        embed = self._create_page_embed()
+        if edit_response:
+            await interaction.response.edit_message(embed=embed, view=self)
+        else:
+            # 用于 modal 回调后更新
+            await self.message.edit(embed=embed, view=self)
+
     async def start(self):
         embed = self._create_page_embed()
+        # 发送消息时，视图会自动添加它的子项（按钮）
         self.message = await self.interaction.followup.send(embed=embed, view=self, ephemeral=True)
 
-    @ui.button(label="上一页", style=discord.ButtonStyle.primary, custom_id="pagination_prev")
+    # --- 按钮回调函数 (使用装饰器) ---
+
+    @ui.button(label="⏮️", style=discord.ButtonStyle.secondary, row=1, custom_id="pagination_first")
+    async def go_to_first(self, interaction: discord.Interaction, button: ui.Button):
+        self.current_page = 0
+        await self._update_view(interaction)
+
+    @ui.button(label="◀️", style=discord.ButtonStyle.primary, row=1, custom_id="pagination_prev")
     async def previous_page(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.defer()
         if self.current_page > 0:
             self.current_page -= 1
-            self._update_buttons()
-            await interaction.edit_original_response(embed=self._create_page_embed(), view=self)
+        await self._update_view(interaction)
 
-    @ui.button(label="下一页", style=discord.ButtonStyle.primary, custom_id="pagination_next")
+    @ui.button(label="1/1", style=discord.ButtonStyle.secondary, row=1, custom_id="pagination_jump")
+    async def jump_to_page_button(self, interaction: discord.Interaction, button: ui.Button):
+        modal = PageJumpModal(self.total_pages)
+        await interaction.response.send_modal(modal)
+        timed_out = await modal.wait()
+
+        if not timed_out and modal.jump_to_page is not None:
+            self.current_page = modal.jump_to_page
+            # modal.on_submit 已经 defer 了交互，所以我们不能再次响应
+            # 我们需要直接编辑原始消息
+            await self._update_view(interaction, edit_response=False)
+
+    @ui.button(label="▶️", style=discord.ButtonStyle.primary, row=1, custom_id="pagination_next")
     async def next_page(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.defer()
         if self.current_page < self.total_pages - 1:
             self.current_page += 1
-            self._update_buttons()
-            await interaction.edit_original_response(embed=self._create_page_embed(), view=self)
+        await self._update_view(interaction)
+
+    @ui.button(label="⏭️", style=discord.ButtonStyle.secondary, row=1, custom_id="pagination_last")
+    async def go_to_last(self, interaction: discord.Interaction, button: ui.Button):
+        self.current_page = self.total_pages - 1
+        await self._update_view(interaction)
 
     async def on_timeout(self):
         for item in self.children: item.disabled = True

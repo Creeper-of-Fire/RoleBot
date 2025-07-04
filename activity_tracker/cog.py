@@ -8,7 +8,7 @@ import typing
 from datetime import datetime, timedelta, timezone
 
 import discord
-from discord import app_commands
+from discord import app_commands, Guild
 from discord.ext import commands
 
 import config
@@ -34,7 +34,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             host=config.REDIS_HOST, port=config.REDIS_PORT, db=config.REDIS_DB, logger=bot.logger
         )
         # 用于防止并发回填任务的内存锁
-        self._backfill_locks: set[int] = set()
+        self._backfill_locks: set[int] = set(config.GUILD_IDS)
         # 用于节流更新最后同步时间戳
         self._last_timestamp_update: typing.Dict[int, float] = {}
         self.TIMESTAMP_UPDATE_INTERVAL = 60
@@ -234,8 +234,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
                     guild=guild,
                     target_channel=report_channel,  # 用于发送最终报告
                     start_datetime=start_datetime,
-                    end_datetime=now_utc,
-                    is_startup_task=True
+                    end_datetime=now_utc
                 ))
                 await asyncio.sleep(1)  # 避免同时启动多个任务造成拥堵
             except Exception as e:
@@ -258,15 +257,8 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
     async def _backfill_guild_history(self, guild: discord.Guild,
                                       target_channel: typing.Optional[discord.abc.Messageable],
                                       start_datetime: datetime, end_datetime: datetime,
-                                      is_startup_task: bool,
                                       single_channel: typing.Optional[typing.Union[discord.TextChannel, discord.Thread, discord.ForumChannel]] = None):
         """【核心执行器】负责回填历史消息，是所有同步任务的唯一入口。"""
-        if guild.id in self._backfill_locks:
-            self.logger.warning(f"服务器 '{guild.name}' 尝试启动回填任务，但任务已被锁定。")
-            if target_channel and not is_startup_task:
-                await target_channel.send("⚠️ **任务中止**：服务器上已有另一个回填任务正在运行。")
-            return
-
         try:
             self._backfill_locks.add(guild.id)
             self.logger.info(f"服务器 '{guild.name}' 开始历史消息回填任务。内存锁已激活。")
@@ -281,7 +273,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             scannable_channel_ids = await processor.get_scannable_channels(single_channel)
 
             if not scannable_channel_ids:
-                if target_channel and not is_startup_task:
+                if target_channel:
                     await target_channel.send("⚠️ **任务取消**：没有找到任何符合条件的可扫描频道。")
                 self._backfill_locks.remove(guild.id)
                 return
@@ -316,15 +308,14 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
                             messages_in_pipe = 0
                             await asyncio.sleep(0.05)  # 短暂让步
 
-                    # 只有手动任务才发送进度更新
-                    if not is_startup_task and target_channel and time.time() - last_update_time > 5:
-                        embed = self._create_progress_embed(guild, start_time, len(scannable_channel_ids), i + 1, channel.name, total_messages_added,
-                                                            bool(single_channel))
-                        if progress_message:
-                            await progress_message.edit(embed=embed)
-                        else:
-                            progress_message = await target_channel.send(embed=embed)
-                        last_update_time = time.time()
+                        if target_channel and time.time() - last_update_time > 5:
+                            embed = self._create_progress_embed(guild, start_time, len(scannable_channel_ids), i + 1, channel.name, total_messages_added,
+                                                                bool(single_channel))
+                            if progress_message:
+                                await progress_message.edit(embed=embed)
+                            else:
+                                progress_message = await target_channel.send(embed=embed)
+                            last_update_time = time.time()
                 except discord.Forbidden:
                     self.logger.warning(f"[{guild.name}] 无法访问频道 #{channel.name}，已跳过。")
                 except Exception as e:
@@ -473,13 +464,16 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
     @app_commands.checks.has_permissions(manage_roles=True)
     async def backfill_history(
             self, interaction: discord.Interaction,
-            start_date: str, end_date: typing.Optional[str] = None,
+            start_date: typing.Optional[str] = None,
+            end_date: typing.Optional[str] = None,
             hours_ago: typing.Optional[int] = None,
             channel: typing.Optional[typing.Union[discord.TextChannel, discord.Thread, discord.ForumChannel, discord.CategoryChannel]] = None
     ):
         if interaction.guild_id in self._backfill_locks:
             await interaction.response.send_message("❌ 此服务器上已经有一个回填任务正在运行。", ephemeral=True)
             return
+
+        guild = interaction.guild
 
         now_utc = datetime.now(timezone.utc)
         start_dt, end_dt = None, now_utc
@@ -516,10 +510,16 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             ephemeral=False
         )
 
+        if guild.id in self._backfill_locks:
+            self.logger.warning(f"服务器 '{guild.name}' 尝试启动回填任务，但任务已被锁定。")
+            if interaction.channel:
+                await interaction.channel.send("⚠️ **任务中止**：服务器上已有另一个回填任务正在运行。")
+            return
+
         self.bot.loop.create_task(self._backfill_guild_history(
             guild=interaction.guild, target_channel=interaction.channel,
             start_datetime=start_dt, end_datetime=end_dt,
-            is_startup_task=False, single_channel=channel
+            single_channel=channel
         ))
 
     @staticmethod
@@ -532,8 +532,8 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             color=discord.Color.blue()
         )
         embed.add_field(name="当前进度", value=f"正在扫描 **#{current_name}** {scan_target}", inline=False)
-        embed.add_field(name="已写入", value=f"`{added}` 条", inline=True)
-        embed.add_field(name="已用时", value=f"`{int(elapsed)}` 秒", inline=True)
+        embed.add_field(name="已写入", value=f"{added} 条", inline=True)
+        embed.add_field(name="已用时", value=f"{int(elapsed)} 秒", inline=True)
         return embed
 
     @staticmethod
@@ -651,6 +651,24 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             interaction, embed_template, sorted_display_data, f"分频道{metric_name}", f"{value_suffix}"
         )
         await view.start()
+
+    async def get_redis_stats(self) -> typing.Optional[dict]:
+        """【新增】公共接口，用于从其 DataManager 获取 Redis 统计信息。"""
+        return await self.data_manager.get_redis_info()
+
+    def get_processor_cache_stats(self, guild: Guild) -> tuple[int, int]:
+        """
+        【新增】公共接口，获取当前服务器/所有 ActivityProcessor 实例中缓存的 DTO 总数。
+        返回 (this_dtos, total_dtos)
+        """
+        if not self._processors:
+            return 0, 0
+
+        this_dtos = len(self._get_processor(guild).channel_info_cache)
+        total_dtos = sum(
+            len(processor.channel_info_cache) for processor in self._processors.values()
+        )
+        return this_dtos, total_dtos
 
 
 async def setup(bot: RoleBot):

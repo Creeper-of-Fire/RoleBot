@@ -66,7 +66,7 @@ class ActivityProcessor:
         self.ignored_channels = set(self.guild_cfg.get("ignored_channels", []))
         self.ignored_categories = set(self.guild_cfg.get("ignored_categories", []))
         # 【新增】带TTL的DTO缓存
-        self._channel_info_cache: dict[int, tuple[float, typing.Optional[ChannelInfoDTO]]] = {}
+        self.channel_info_cache: dict[int, tuple[float, typing.Optional[ChannelInfoDTO]]] = {}
         self.CACHE_TTL_SECONDS = 3600  # 1 hour
         self._fetch_semaphore = asyncio.Semaphore(8)
 
@@ -85,8 +85,8 @@ class ActivityProcessor:
         :return: ChannelInfoDTO 或 None (如果频道不存在或无权限)。
         """
         now = time.time()
-        if channel_id in self._channel_info_cache:
-            timestamp, cached_dto = self._channel_info_cache[channel_id]
+        if channel_id in self.channel_info_cache:
+            timestamp, cached_dto = self.channel_info_cache[channel_id]
             if now - timestamp < self.CACHE_TTL_SECONDS:
                 return cached_dto
 
@@ -98,7 +98,7 @@ class ActivityProcessor:
                     await asyncio.sleep(0.1)
                     channel_obj = await self.bot.fetch_channel(channel_id)
                 except (discord.NotFound, discord.Forbidden):
-                    self._channel_info_cache[channel_id] = (now, None)
+                    self.channel_info_cache[channel_id] = (now, None)
                     return None
                 except discord.HTTPException as e:
                     # 如果即使有节流仍然被限速（可能是全局限速），记录错误并返回None
@@ -106,7 +106,7 @@ class ActivityProcessor:
                         self.bot.logger.warning(f"获取频道 {channel_id} 时遭遇速率限制 (HTTP 429)。")
                     else:
                         self.bot.logger.error(f"获取频道 {channel_id} 时发生 HTTP 异常: {e}")
-                    self._channel_info_cache[channel_id] = (now, None)  # 缓存失败结果
+                    self.channel_info_cache[channel_id] = (now, None)  # 缓存失败结果
                     return None
 
         if not isinstance(channel_obj, (discord.abc.GuildChannel, discord.Thread)):
@@ -121,7 +121,7 @@ class ActivityProcessor:
             parent_id=channel_obj.parent_id if is_thread else None,
             category_id=channel_obj.category_id,
         )
-        self._channel_info_cache[channel_id] = (now, dto)
+        self.channel_info_cache[channel_id] = (now, dto)
         return dto
 
     async def is_channel_included(self, channel_id: int,
@@ -261,7 +261,7 @@ class ActivityProcessor:
 
         # 2. 识别并获取父频道的DTO (如果它们还不在缓存中)
         parent_ids_to_fetch = {
-            dto.parent_id for dto in dtos if dto.is_thread and dto.parent_id and not self._channel_info_cache.get(dto.parent_id)
+            dto.parent_id for dto in dtos if dto.is_thread and dto.parent_id and not self.channel_info_cache.get(dto.parent_id)
         }
         if parent_ids_to_fetch:
             parent_tasks = [self.get_or_fetch_channel_info(pid) for pid in parent_ids_to_fetch]

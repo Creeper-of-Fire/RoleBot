@@ -228,7 +228,10 @@ class RoleApplicationCog(commands.Cog, name="RoleApplication"):
             description=(
                 f"如果你拥有 **{creator_role_name}** 或 **{contrib_role_name}** 身份组，"
                 f"你可以在此领取专属的 **{builder_role_name}** 身份组。\n\n"
-                f"如果已拥有并希望移除，也可点击下方按钮操作。"
+                f"**{builder_role_name}**可以在提案区发起提案，并参与讨论，深度参与建设社区。\n"
+                f"并且每次有新的提案进入讨论时，系统会自动 **@{builder_role_name}**。\n"
+                f"以便该身份组的所有成员都可以第一时间参与新提案的讨论。\n"
+                f"如果你已经拥有 **{builder_role_name}** 的身份组并希望移除，也可以点击下方按钮移除。"
             ),
             color=discord.Color.gold()
         )
@@ -236,41 +239,41 @@ class RoleApplicationCog(commands.Cog, name="RoleApplication"):
         await interaction.followup.send(embed=embed, view=CommunityBuilderView())
         self.logger.info(f"用户 {interaction.user} 在服务器 {interaction.guild.name} 发送了社区建设者申请面板。")
 
-    @application_group.command(name="发送创作者申请面板", description="发送创作者作品审核的提交入口面板。")
-    @app_commands.checks.has_permissions(manage_roles=True)
-    async def send_creator_panel(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-        guild = interaction.guild
-        creator_role = guild.get_role(CREATOR_TARGET_ROLE_ID)
-        if not creator_role:
-            await interaction.followup.send("❌ 错误：未能在服务器上找到“创作者”身份组，请检查配置或联系管理员。", ephemeral=True)
-            return
-        embed = discord.Embed(
-            title="🔎 作品审核提交入口",
-            description="请点击下方按钮提交您的作品链接进行审核。",
-            color=discord.Color.blue()
-        )
-        embed.add_field(
-            name="审核要求:",
-            value=(
-                "- 提交**论坛帖子**链接\n"
-                f"- 帖子**首楼**需要达到 **{CREATOR_REACTION_THRESHOLD}** 个反应\n"
-                f"- 审核通过后将获得 {creator_role.mention} 身份组"
-            ),
-            inline=False
-        )
-        embed.add_field(
-            name="注意事项:",
-            value=(
-                "- 请确保作品帖子链接正确且可访问\n"
-                "- 只有达到反应数要求的作品才能通过审核\n"
-                "- 提交者必须是帖子的创建者"
-            ),
-            inline=False
-        )
-        view = CreatorApplicationView(self)
-        await interaction.followup.send(embed=embed, view=view)
-        self.logger.info(f"用户 {interaction.user} 在服务器 {guild.name} 的频道 {interaction.channel.name} 发送了创作者申请面板。")
+    # @application_group.command(name="发送创作者申请面板", description="发送创作者作品审核的提交入口面板。")
+    # @app_commands.checks.has_permissions(manage_roles=True)
+    # async def send_creator_panel(self, interaction: discord.Interaction):
+    #     await interaction.response.defer()
+    #     guild = interaction.guild
+    #     creator_role = guild.get_role(CREATOR_TARGET_ROLE_ID)
+    #     if not creator_role:
+    #         await interaction.followup.send("❌ 错误：未能在服务器上找到“创作者”身份组，请检查配置或联系管理员。", ephemeral=True)
+    #         return
+    #     embed = discord.Embed(
+    #         title="🔎 作品审核提交入口",
+    #         description="请点击下方按钮提交您的作品链接进行审核。",
+    #         color=discord.Color.blue()
+    #     )
+    #     embed.add_field(
+    #         name="审核要求:",
+    #         value=(
+    #             "- 提交**论坛帖子**链接\n"
+    #             f"- 帖子**首楼**需要达到 **{CREATOR_REACTION_THRESHOLD}** 个反应\n"
+    #             f"- 审核通过后将获得 {creator_role.mention} 身份组"
+    #         ),
+    #         inline=False
+    #     )
+    #     embed.add_field(
+    #         name="注意事项:",
+    #         value=(
+    #             "- 请确保作品帖子链接正确且可访问\n"
+    #             "- 只有达到反应数要求的作品才能通过审核\n"
+    #             "- 提交者必须是帖子的创建者"
+    #         ),
+    #         inline=False
+    #     )
+    #     view = CreatorApplicationView(self)
+    #     await interaction.followup.send(embed=embed, view=view)
+    #     self.logger.info(f"用户 {interaction.user} 在服务器 {guild.name} 的频道 {interaction.channel.name} 发送了创作者申请面板。")
 
 
 async def setup(bot: commands.Bot):

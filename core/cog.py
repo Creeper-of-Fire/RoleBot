@@ -124,7 +124,6 @@ class CoreCog(commands.Cog, name="Core"):
                 **kwargs
             )
 
-
     rolebot_group = RoleBotGroup()
 
     @rolebot_group.command(name="打开身份组自助中心面板", description="发送身份组管理面板到当前频道")
@@ -285,19 +284,29 @@ class CoreCog(commands.Cog, name="Core"):
         # 动态获取 TrackActivityCog 实例
         activity_cog: typing.Optional[TrackActivityCog] = self.bot.get_cog("TrackActivity")
 
-        if activity_cog and hasattr(activity_cog, "get_redis_stats"):
+        if activity_cog:
+            # 获取 Redis 统计信息
             redis_stats = await activity_cog.get_redis_stats()
             if redis_stats:
                 redis_info_str = (
-                    f"**版本:** `{redis_stats['version']}`\n"
-                    f"**运行时长:** `{redis_stats['uptime']}`\n"
-                    f"**内存占用:** `{redis_stats['memory']}`\n"
-                    f"**客户端数:** `{redis_stats['clients']}`\n"
-                    f"**总键数 (DB0):** `{redis_stats['keys']}`"
+                    f"**版本:** {redis_stats['version']}\n"
+                    f"**运行时长:** {redis_stats['uptime']}\n"
+                    f"**内存占用:** {redis_stats['memory']}\n"
+                    f"**客户端数:** {redis_stats['clients']}\n"
+                    f"**总键数 (DB0):** {redis_stats['keys']}"
                 )
-                embed.add_field(name="🗄️ Redis 状态", value=redis_info_str, inline=False)
+                embed.add_field(name="🗄️ Redis 状态", value=redis_info_str, inline=True)
             else:
-                embed.add_field(name="🗄️ Redis 状态", value="无法获取 Redis 统计信息 (连接失败或发生错误)。", inline=False)
+                embed.add_field(name="🗄️ Redis 状态", value="无法获取统计信息。", inline=True)
+
+            # 获取内部缓存统计
+            this_dtos, total_dtos = activity_cog.get_processor_cache_stats(guild=interaction.guild)
+            cache_info_str = (
+                f"**当前服务器频道信息缓存 (DTOs):** {this_dtos}\n"
+                f"**全部服务器频道信息缓存 (DTOs):** {total_dtos}"
+            )
+            embed.add_field(name="🧠 活跃度模块缓存", value=cache_info_str, inline=True)
+
         else:
             # 如果 TrackActivityCog 未加载，则不显示 Redis 部分
             pass
