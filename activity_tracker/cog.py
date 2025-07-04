@@ -1,5 +1,4 @@
 # activity_tracker/cog.py
-
 from __future__ import annotations
 
 import asyncio
@@ -473,11 +472,11 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         await self.data_manager.set_last_sync_timestamp(guild_id, timestamp)
 
     async def _process_and_sort_activity_data(self, guild: discord.Guild, activity_data: list[tuple[int, int]]) -> list[tuple[discord.abc.GuildChannel, int]]:
-        # ... (此方法已在上一轮修正，保持不变) ...
         """
         【已重构和修正】通用的数据处理和层级排序辅助方法。
         此版本不再依赖不稳定的 'thread.parent' 属性，而是使用 'thread.parent_id' 和
         我们自己构建的频道缓存进行关联，确保子频道能被正确识别和排序。
+        【第二次修正】将 `isinstance` 检查替换为更可靠的 `channel.type` 检查。
         """
         if not activity_data:
             return []
@@ -505,7 +504,14 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             if not channel:
                 continue
 
-            if isinstance(channel, discord.Thread) and channel.parent_id:
+            # 【关键修复】使用 channel.type 进行判断，比 isinstance 更可靠
+            is_thread = channel.type in (
+                discord.ChannelType.public_thread,
+                discord.ChannelType.private_thread,
+                discord.ChannelType.news_thread
+            )
+
+            if is_thread and hasattr(channel, 'parent_id') and channel.parent_id:
                 threads_by_parent_id[channel.parent_id].append((channel, count))
             else:
                 top_level_activity_by_id[channel_id] = count
@@ -738,17 +744,25 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
     @staticmethod
     def _render_heatmap_text(heatmap_data: dict[str, int], days_window: int) -> str:
         """
-        将热力图数据转换为表情符号字符串。
+        【已修正】将热力图数据转换为表情符号字符串。
         """
-        # 从今天开始回溯 days_window 天
+        if not heatmap_data and days_window > 0:
+            return "暂无消息记录。"
+
         today_utc8 = datetime.now(BEIJING_TZ)
-        heatmap_lines = []
+        heatmap_output = []
 
-        current_date = today_utc8 - timedelta(days=days_window - 1)  # 从最早的日期开始
+        # 创建一个从 `days_window` 天前到今天的日期列表
+        date_range = [today_utc8 - timedelta(days=i) for i in range(days_window - 1, -1, -1)]
 
-        # 创建一个表示日期的列表，填充所有天的表情
-        daily_emojis = []
-        for i in range(days_window):
+        # 遍历日期范围，生成带标签的表情符号行
+        for i, current_date in enumerate(date_range):
+            if i % 7 == 0:  # 每7天或行首开始一个新行
+                if i != 0:
+                    heatmap_output.append("\n")
+                # 添加日期标签，例如 `06-28:`
+                heatmap_output.append(f"`{current_date.strftime('%m-%d')}`: ")
+
             date_str = current_date.strftime('%Y-%m-%d')
             count = heatmap_data.get(date_str, 0)
 
@@ -758,25 +772,10 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
                 if count >= threshold:
                     emoji = HEATMAP_EMOJIS[threshold]
                     break
-            daily_emojis.append(emoji)
-            current_date += timedelta(days=1)
-
-        # 将日历线分成多行，每行14天
-        rows = []
-        for i in range(0, len(daily_emojis), 14):
-            rows.append("".join(daily_emojis[i:i + 14]))
-
-        heatmap_output = []
-        current_date_display = today_utc8 - timedelta(days=days_window - 1)
-
-        for i, emoji in enumerate(daily_emojis):
-            # 每隔一段时间显示日期，或者每行开始显示日期
-            if i % 7 == 0:  # 每7天或行首显示日期
-                if i != 0: heatmap_output.append("\n")  # 换行
-                heatmap_output.append(f"`{current_date_display.strftime('%m-%d')}`: ")
-
             heatmap_output.append(emoji)
-            current_date_display += timedelta(days=1)
+
+        if not heatmap_output:
+            return "暂无消息记录。"
 
         # 添加图例
         legend_items = []
@@ -792,9 +791,6 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
                 legend_items.append(f"{emoji} 16-30")
             elif threshold == 31:
                 legend_items.append(f"{emoji} 31+")
-
-        if not daily_emojis:
-            return "暂无消息记录。"
 
         return "\n" + "".join(heatmap_output) + "\n\n**图例:** " + " ".join(legend_items)
 
