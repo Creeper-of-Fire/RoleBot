@@ -1362,6 +1362,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         ]
     )
     @app_commands.checks.has_permissions(manage_roles=True)
+    @app_commands.checks.has_permissions(manage_roles=True)
     async def get_activity_stats(
             self,
             interaction: discord.Interaction,
@@ -1398,7 +1399,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             await interaction.followup.send("在指定时间范围内没有找到任何活动记录。", ephemeral=True)
             return
 
-        # 2. 【新】构建批量频道缓存
+        # 2. 构建批量频道缓存 (已优化)
         all_channel_ids_in_data = set()
         for user_id, user_channels_data in raw_all_activity_data.items():
             all_channel_ids_in_data.update(user_channels_data.keys())
@@ -1424,8 +1425,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
                     continue
 
                 # Step 1: 应用配置中的忽略规则
-                if channel_obj.id in ignored_channels:
-                    continue
+                # 【修正】先判断子频道的父类别，再判断频道本身
                 is_ignored_category = False
                 if isinstance(channel_obj, discord.Thread):
                     if channel_obj.parent and channel_obj.parent.category_id in ignored_categories:
@@ -1435,19 +1435,39 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
                 if is_ignored_category:
                     continue
 
+                if channel_obj.id in ignored_channels:
+                    continue
+
                 # Step 2: 根据命令参数进行 scope 过滤
                 should_include_channel = False
                 if scope == "guild":
                     should_include_channel = True
                     scope_description = f"整个服务器的**所有**可读频道（含子频道和论坛频道）"
-                elif scope == "channel" and target_channel and channel_obj.id == target_channel.id:
-                    should_include_channel = True
-                    scope_description = f"频道 {target_channel.mention}"
+                elif scope == "channel":
+                    # 【修正】确保能正确匹配子频道和论坛频道
+                    if target_channel:
+                        # 如果目标是论坛，其下的子频道也应被包括
+                        if isinstance(target_channel, discord.ForumChannel):
+                            if (isinstance(channel_obj, discord.Thread) and channel_obj.parent_id == target_channel.id) or channel_obj.id == target_channel.id:
+                                should_include_channel = True
+                                scope_description = f"论坛频道 {target_channel.mention} 及其子频道"
+                        # 如果目标就是这个频道
+                        elif channel_obj.id == target_channel.id:
+                            should_include_channel = True
+                            scope_description = f"频道 {target_channel.mention}"
                 elif scope == "category" and target_category:
-                    cat_id_to_check = channel_obj.category_id
-                    if isinstance(channel_obj, discord.Thread) and channel_obj.parent:
-                        cat_id_to_check = channel_obj.parent.category_id
-                    if cat_id_to_check == target_category.id:
+                    # --- 【核心修正点】---
+                    # 正确获取频道的类别ID，无论是普通频道还是子频道
+                    category_id_of_channel = None
+                    if isinstance(channel_obj, discord.Thread):
+                        # 对于子频道，我们看它父频道的类别
+                        if channel_obj.parent:
+                            category_id_of_channel = channel_obj.parent.category_id
+                    else:
+                        # 对于普通频道，直接用它的类别ID
+                        category_id_of_channel = channel_obj.category_id
+
+                    if category_id_of_channel == target_category.id:
                         should_include_channel = True
                         scope_description = f"频道类别 **{target_category.name}** 下所有可读频道（含子频道和论坛频道）"
 
@@ -1465,68 +1485,30 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             total_overall_count = len(distinct_users_global)
 
         if not scope_description:
-            # 根据 scope 类型给出更准确的提示
-            if scope == "channel":
-                await interaction.followup.send(f"在指定范围内 ({target_channel.mention}) 没有找到任何活动记录，或该频道已被忽略。", ephemeral=True)
-            elif scope == "category":
-                await interaction.followup.send(f"在指定范围内 (类别: {target_category.name}) 没有找到任何活动记录，或该类别已被忽略。", ephemeral=True)
+            if scope == "channel" and target_channel:
+                await interaction.followup.send(f"在指定范围内 ({target_channel.mention}) 没有找到任何活动记录，或该频道/类别已被忽略。", ephemeral=True)
+            elif scope == "category" and target_category:
+                await interaction.followup.send(f"在指定范围内 (类别: {target_category.name}) 没有找到任何活动记录，或该类别/其下频道已被忽略。", ephemeral=True)
             else:
                 await interaction.followup.send("在指定范围内没有找到任何活动记录。", ephemeral=True)
             return
 
         # --- 使用翻页视图 (不变) ---
+        # 排序后再传给View
+        sorted_channel_data = sorted(list(channel_message_counts.items()), key=lambda item: item[1], reverse=True)
+
         view = StatsPaginationView(
             cog=self,
             guild=guild,
             total_stat=total_overall_count,
             metric_name_display=("独立活跃用户数" if metric == "distinct_users" else "总消息数"),
-            all_channel_data=sorted(list(channel_message_counts.items()), key=lambda item: item[1], reverse=True),
+            all_channel_data=sorted_channel_data,
             days_window=days_window,
             scope_description=scope_description
         )
 
         initial_embed = await view._create_embed()
         view.message = await interaction.followup.send(embed=initial_embed, view=view, ephemeral=True)
-
-    # --- 【新】Redis 状态辅助方法 ---
-    async def get_redis_stats(self) -> typing.Optional[dict[str, str]]:
-        """
-        获取 Redis 服务器的关键统计信息，并格式化为字典。
-        如果获取失败，返回 None。
-        """
-        try:
-            # 使用 data_manager 的 redis 客户端执行 INFO 命令
-            info = await self.data_manager.redis.info()
-
-            # 提取关键指标
-            uptime_in_seconds = info.get("uptime_in_seconds", 0)
-            days, remainder = divmod(uptime_in_seconds, 86400)
-            hours, remainder = divmod(remainder, 3600)
-            minutes, _ = divmod(remainder, 60)
-            redis_uptime = f"{int(days)}天 {int(hours)}时 {int(minutes)}分"
-
-            # 格式化内存使用
-            used_memory_human = info.get("used_memory_human", "N/A")
-            maxmemory_human = info.get("maxmemory_human", "无限制")
-            if maxmemory_human == "0B": maxmemory_human = "无限制"
-            memory_usage = f"{used_memory_human} / {maxmemory_human}"
-
-            # 提取其他信息
-            connected_clients = info.get("connected_clients", "N/A")
-            total_keys = info.get("db0", {}).get("keys", "N/A")  # 假设使用DB 0
-            redis_version = info.get("redis_version", "N/A")
-
-            return {
-                "version": str(redis_version),
-                "uptime": redis_uptime,
-                "memory": memory_usage,
-                "clients": str(connected_clients),
-                "keys": str(total_keys),
-            }
-
-        except Exception as e:
-            self.logger.error(f"获取 Redis 统计信息时出错: {e}", exc_info=True)
-            return None
 
     # --- 【性能优化】核心辅助方法：批量构建频道对象缓存 ---
     async def _build_channel_cache(
