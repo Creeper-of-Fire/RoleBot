@@ -22,6 +22,7 @@ CHANNEL_ACTIVITY_KEY_TEMPLATE = "activity:{guild_id}:{channel_id}:{user_id}"  # 
 GUILD_USERS_KEY_TEMPLATE = "index:guild_users:{guild_id}"  # SET: {user_id, ...}
 USER_CHANNELS_KEY_TEMPLATE = "index:user_channels:{guild_id}:{user_id}"  # SET: {channel_id, ...}
 ACTIVE_BACKFILLS_KEY = "active_backfills"  # SET: {guild_id, ...}
+LAST_SYNC_TIMESTAMP_KEY_TEMPLATE = "sync_timestamp:{guild_id}"
 
 
 class DataManager:
@@ -258,7 +259,7 @@ class DataManager:
 
     async def delete_guild_activity_data(self, guild_id: int) -> int:
         """
-        【已重构】删除一个服务器的所有活动数据键及其关联的索引。
+        【已增强】删除一个服务器的所有活动数据键及其关联的索引和同步时间戳。
         """
         self.logger.warning(f"DataManager: 开始为服务器 {guild_id} 清除所有活动数据和索引。")
         keys_to_delete = []
@@ -275,18 +276,18 @@ class DataManager:
             async for key in self.redis.scan_iter(user_channels_pattern):
                 keys_to_delete.append(key)
 
-            # 3. 添加主索引键
-            guild_users_key = GUILD_USERS_KEY_TEMPLATE.format(guild_id=guild_id)
-            keys_to_delete.append(guild_users_key)
+            # 3. 添加主索引键和同步时间戳键
+            keys_to_delete.append(GUILD_USERS_KEY_TEMPLATE.format(guild_id=guild_id))
+            keys_to_delete.append(LAST_SYNC_TIMESTAMP_KEY_TEMPLATE.format(guild_id=guild_id))
 
             if not keys_to_delete:
                 self.logger.info(f"DataManager: 服务器 {guild_id} 没有找到需要清除的活动数据或索引。")
                 return 0
 
-            await self.redis.delete(*keys_to_delete)
-            deleted_count = len(keys_to_delete)
-            self.logger.warning(f"DataManager: 成功为服务器 {guild_id} 清除了 {deleted_count} 个键 (包括数据和索引)。")
-            return deleted_count
+            # 使用 unlink 可能是个好主意，如果键很多的话
+            deleted_count = await self.redis.delete(*keys_to_delete)
+            self.logger.warning(f"DataManager: 成功为服务器 {guild_id} 清除了 {deleted_count} 个键 (包括数据、索引和时间戳)。")
+            return int(deleted_count)  # delete returns int
         except exceptions.RedisError as e:
             self.logger.critical(f"DataManager: 清除服务器 {guild_id} 活动数据失败: {e}", exc_info=True)
             return -1
@@ -368,3 +369,24 @@ class DataManager:
         self.logger.warning(
             f"DataManager: 服务器 {guild_id} 的索引重建完成。总共扫描了 {scanned_keys_count} 个活动键，创建了 {index_entries_created} 个新索引条目。")
         return scanned_keys_count, index_entries_created
+
+    async def get_last_sync_timestamp(self, guild_id: int) -> typing.Optional[float]:
+        """获取指定服务器最后一次成功同步的Unix时间戳。"""
+        key = LAST_SYNC_TIMESTAMP_KEY_TEMPLATE.format(guild_id=guild_id)
+        try:
+            timestamp_str = await self.redis.get(key)
+            if timestamp_str:
+                return float(timestamp_str)
+            return None
+        except (exceptions.RedisError, ValueError) as e:
+            self.logger.error(f"DataManager: 获取最后同步时间戳失败 (Key: {key}): {e}", exc_info=True)
+            return None
+
+    async def set_last_sync_timestamp(self, guild_id: int, timestamp: float):
+        """设置指定服务器最后一次成功同步的Unix时间戳。"""
+        key = LAST_SYNC_TIMESTAMP_KEY_TEMPLATE.format(guild_id=guild_id)
+        try:
+            await self.redis.set(key, str(timestamp))
+            self.logger.info(f"DataManager: 已更新服务器 {guild_id} 的最后同步时间戳为 {datetime.fromtimestamp(timestamp, tz=timezone.utc)}")
+        except exceptions.RedisError as e:
+            self.logger.error(f"DataManager: 设置最后同步时间戳失败 (Key: {key}): {e}", exc_info=True)

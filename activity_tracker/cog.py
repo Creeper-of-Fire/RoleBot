@@ -131,6 +131,7 @@ class GenericHierarchicalPaginationView(ui.View):
         except discord.NotFound:
             pass
 
+
 class ActivityRoleView(ui.View):
     """
     包含“检查我的活跃度”、“查看报告”和“移除角色”按钮的持久化视图。
@@ -338,6 +339,12 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
 
         self._has_run_startup_task = False  # Cog内部的状态标志，用于确保启动任务只运行一次
 
+        # --- 【新】用于 on_message 时间戳更新的节流控制 ---
+        # 结构: {guild_id: last_update_timestamp}
+        self._last_timestamp_update: typing.Dict[int, float] = {}
+        # 时间戳更新的最小间隔（秒），例如60秒
+        self.TIMESTAMP_UPDATE_INTERVAL = 60
+
     # --- 【新】Cog 生命周期方法 ---
     async def cog_load(self):
         """Cog 加载时执行的操作"""
@@ -349,107 +356,156 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
     async def on_ready(self):
         """
         当 bot 准备就绪时，执行一次性的启动任务。
-        这个监听器是 Cog 的一部分，比在 setup 中定义更健壮。
+        【已重构】现在会基于持久化的时间戳来执行增量同步。
         """
         # 等待内部缓存完全加载
         await self.bot.wait_until_ready()
 
         if not await self.data_manager.check_connection():
-            self.bot.logger.error("Redis 连接失败，活跃度追踪模块将无法正常工作。不加载 TrackActivityCog。")
+            self.logger.error("Redis 连接失败，活跃度追踪模块将无法正常工作。")
+            # 阻止该 Cog 的所有命令被使用
             self.cog_check = lambda ctx: False
             return
 
+        # _has_run_startup_task 确保这个逻辑只在机器人生命周期中运行一次
         if not self._has_run_startup_task:
-            self.logger.info("检测到首次启动，准备执行启动时回填任务...")
+            self.logger.info("检测到首次启动，准备执行增量同步任务...")
             # 使用 create_task 在后台运行，不阻塞 on_ready
-            self.bot.loop.create_task(self._startup_backfill_task_body())
+            self.bot.loop.create_task(self._incremental_sync_on_startup())
             self._has_run_startup_task = True
 
-    async def _startup_backfill_task_body(self):
+    async def _incremental_sync_on_startup(self):
         """
-        启动时自动回填任务的具体逻辑。
-        【已修复】现在会自动处理因上次异常关闭而残留的"僵尸锁"。
+        【已重构和修正】在机器人启动时，为每个配置的服务器执行增量数据同步。
+        该方法会读取最后同步时间戳，并回填从该时间点到现在的缺失数据。
+        所有的进度和结果都会发送到配置文件中指定的报告频道。
         """
-        startup_backfill_cfg = self.config.get("startup_backfill", {})
-        if not startup_backfill_cfg.get("enabled", False):
-            self.logger.info("启动时回填任务未启用，跳过。")
-            return
+        # 遍历在 config.py 中配置的所有 guild_configs
+        for guild_id, guild_cfg in self.config.get("guild_configs", {}).items():
+            # 检查该服务器的配置是否启用了活动追踪功能
+            if not guild_cfg.get("enabled", True):  # 默认为启用
+                self.logger.info(f"[Guild {guild_id}] 活动追踪功能未启用，跳过启动时同步。")
+                continue
 
-        guild_id = startup_backfill_cfg.get("guild_id")
-        report_channel_id = startup_backfill_cfg.get("report_channel_id")
-        duration_minutes = startup_backfill_cfg.get("duration_minutes")
+            guild = self.bot.get_guild(guild_id)
+            if not guild:
+                self.logger.error(f"无法找到服务器 {guild_id}，跳过该服务器的增量同步。")
+                continue
 
-        if not all([guild_id, report_channel_id, duration_minutes]) or duration_minutes <= 0:
-            self.logger.error("启动时回填配置不完整或无效。请检查 'startup_backfill' 配置。")
-            return
+            # --- 【核心修正】恢复报告频道逻辑 ---
+            report_channel_id = guild_cfg.get("report_channel_id")
+            if not report_channel_id:
+                self.logger.warning(f"服务器 {guild.name} (ID: {guild.id}) 未配置 'report_channel_id'，将无法发送启动同步通知。")
+                # 在这种情况下，我们选择继续静默运行，而不是中止。
+                # 因为数据同步本身比通知更重要。但会留下警告。
+                report_channel = None
+            else:
+                report_channel = guild.get_channel(report_channel_id)
+                if not report_channel or not isinstance(report_channel, discord.TextChannel):
+                    self.logger.error(f"服务器 {guild.name} (ID: {guild.id}) 的报告频道 {report_channel_id} 无效或不是文本频道。无法发送通知。")
+                    report_channel = None  # 同样，继续静默运行
 
-        guild = self.bot.get_guild(guild_id)
-        report_channel = None
-        if guild:
-            report_channel = guild.get_channel(report_channel_id)
+            # 检查回填锁，以防万一
+            if await self.data_manager.is_backfill_locked(guild.id):
+                self.logger.warning(f"服务器 {guild.name} 检测到回填锁，本次启动时增量同步任务已跳过。可能是手动任务正在运行。")
+                if report_channel:
+                    await report_channel.send(f"⚠️ **启动同步跳过！**\n检测到服务器当前有另一个回填任务正在进行，本次自动增量同步已取消。")
+                continue
 
-        if not guild or not report_channel or not isinstance(report_channel, discord.TextChannel):
-            self.logger.error(f"启动时回填：无法找到服务器 {guild_id} 或报告频道 {report_channel_id}，或其不是文本频道。跳过。")
-            return
+            # 获取最后同步时间戳
+            last_sync_ts = await self.data_manager.get_last_sync_timestamp(guild.id)
+            now_utc = datetime.now(timezone.utc)
 
-        # --- 【代码修复】---
-        # 检查回填任务是否已在运行。如果是，假定它是陈旧的锁并强制解锁。
-        is_running = await self.data_manager.is_backfill_locked(guild.id)
-        if is_running:
-            self.logger.warning(f"服务器 '{guild.name}' 上检测到一个可能由上次异常关闭导致的回填锁。将强制解锁并继续执行启动任务。")
-            await report_channel.send(f"⚠️ **回填锁重置！**\n检测到可能由先前异常中断导致的回填锁。系统将自动重置该锁并开始本次启动回填任务。")
-            await self.data_manager.unlock_backfill(guild.id)
-        # --- 【修复结束】---
+            if last_sync_ts is None:
+                # 这是机器人首次在此服务器上运行，或数据被清除过
+                self.logger.warning(
+                    f"服务器 {guild.name} 没有找到最后同步时间戳。这可能是首次运行。\n"
+                    f"将不会自动执行回填。请使用 `/用户活跃度 手动拉取历史消息` 指令进行初始数据填充。\n"
+                    f"当前的同步时间戳将设置为现在: {now_utc.isoformat()}"
+                )
+                if report_channel:
+                    await report_channel.send(
+                        f"👋 **首次启动初始化**\n"
+                        f"看起来这是我第一次在这个服务器上记录活动。为了获取历史数据，请管理员使用 `/用户活跃度 手动拉取历史消息` 指令进行一次初始回填。\n"
+                        f"我已经将当前的同步时间点记录下来，未来的离线数据将会自动同步。"
+                    )
+                # 设置一个初始时间戳，以便未来的离线可以被同步
+                await self.data_manager.set_last_sync_timestamp(guild.id, now_utc.timestamp())
+                continue  # 跳过回填
 
-        self.logger.info(f"正在执行启动时自动回填任务，服务器: {guild.name}, 持续时间: {duration_minutes} 分钟, 报告频道: #{report_channel.name}")
+            start_datetime = datetime.fromtimestamp(last_sync_ts, tz=timezone.utc)
+            # 如果离线时间很短（例如小于60秒），则没必要启动一个回填任务
+            if (now_utc - start_datetime).total_seconds() < 60:
+                self.logger.info(f"服务器 {guild.name} 离线时间很短，无需执行增量同步。")
+                continue
 
-        end_datetime = datetime.now(timezone.utc)
-        start_datetime = end_datetime - timedelta(minutes=duration_minutes)
+            # 准备执行增量回填
+            self.logger.info(f"为服务器 {guild.name} 执行增量同步，范围: {start_datetime.isoformat()} -> {now_utc.isoformat()}")
+            if report_channel:
+                start_display = start_datetime.astimezone(BEIJING_TZ).strftime('%Y-%m-%d %H:%M:%S')
+                end_display = now_utc.astimezone(BEIJING_TZ).strftime('%Y-%m-%d %H:%M:%S')
+                await report_channel.send(
+                    f"🤖 **自动增量同步启动！**\n"
+                    f"检测到机器人离线期间的数据缺失，我将开始补全从 `{start_display}` 到 `{end_display}` (UTC+8) 的历史消息。\n"
+                    f"进度和结果将在此频道更新。"
+                )
 
-        await report_channel.send(
-            f"🤖 **自动回填任务启动！**\n我将在后台开始拉取服务器 `{guild.name}` 过去 `{duration_minutes}` 分钟的历史消息。进度和结果将在此频道更新。")
+            # 调用核心回填逻辑，并正确传入 report_channel
+            # 注意：这里的 single_channel 是 None，表示全服扫描
+            await self._backfill_guild_history(
+                guild=guild,
+                target_channel=report_channel,  # 【修正】正确传入频道对象
+                start_datetime=start_datetime,
+                end_datetime=now_utc,
+                single_channel=None
+            )
 
-        # 现在调用 self._backfill_guild_history
-        await self._backfill_guild_history(
-            guild=guild,
-            target_channel=report_channel,
-            start_datetime=start_datetime,
-            end_datetime=end_datetime
-        )
+            # 在两个服务器的回填任务之间稍作停顿，避免同时触发大量API请求
+            await asyncio.sleep(1)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """实时记录用户发送的每一条消息到对应频道的键"""
+        """
+        实时记录用户发送的每一条消息，并节流更新“最后同步时间戳”。
+        """
         if message.author.bot or not message.guild:
             return
+
         guild_cfg = self.config.get("guild_configs", {}).get(message.guild.id)
-        if not guild_cfg:
+        if not guild_cfg or not guild_cfg.get("enabled", True):
             return
 
+        # --- 忽略规则 (保持不变) ---
         ignored_channels = set(guild_cfg.get("ignored_channels", []))
         ignored_categories = set(guild_cfg.get("ignored_categories", []))
+        if message.channel.id in ignored_channels: return
+        category_id_to_check = message.channel.parent.category_id if isinstance(message.channel,
+                                                                                discord.Thread) and message.channel.parent else message.channel.category_id
+        if category_id_to_check in ignored_categories: return
 
-        # Check if the channel itself is ignored
-        if message.channel.id in ignored_channels:
-            return
-
-        # Check if the channel's category is ignored
-        # For Threads, message.channel.category_id is None, so check parent's category
-        if isinstance(message.channel, discord.Thread):
-            if message.channel.parent and message.channel.parent.category_id in ignored_categories:
-                return
-        elif message.channel.category_id and message.channel.category_id in ignored_categories:
-            return
-
+        # --- 1. 记录消息 (保持不变) ---
         retention_days = guild_cfg.get("data_retention_days", 90)
+        message_ts = message.created_at.timestamp()
         await self.data_manager.record_message(
             guild_id=message.guild.id,
-            channel_id=message.channel.id,  # This is correct, it will be the thread ID for threads
+            channel_id=message.channel.id,
             user_id=message.author.id,
             message_id=message.id,
-            created_at_timestamp=message.created_at.timestamp(),
+            created_at_timestamp=message_ts,
             retention_days=retention_days
         )
+
+        # --- 2. 【新】节流更新最后同步时间戳 ---
+        # 如果当前服务器正在回填，则绝对不能更新时间戳
+        if await self.data_manager.is_backfill_locked(message.guild.id):
+            return
+
+        now = time.time()
+        last_update = self._last_timestamp_update.get(message.guild.id, 0)
+
+        if now - last_update > self.TIMESTAMP_UPDATE_INTERVAL:
+            await self.data_manager.set_last_sync_timestamp(message.guild.id, message_ts)
+            self._last_timestamp_update[message.guild.id] = now
 
     async def _process_and_sort_activity_data(
             self,
@@ -1069,24 +1125,45 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             single_channel=channel
         ))
 
-    async def _backfill_guild_history(self, guild: discord.Guild, target_channel: discord.TextChannel,
+    async def _backfill_guild_history(self, guild: discord.Guild,
+                                      target_channel: typing.Optional[discord.TextChannel],
                                       start_datetime: datetime, end_datetime: datetime,
                                       single_channel: typing.Optional[typing.Union[discord.TextChannel, discord.Thread, discord.ForumChannel]] = None):
         """
-        负责回填指定时间范围内的历史消息。
-        现在接受一个 discord.TextChannel 对象来发送更新，而不是直接修改 interaction.response。
+        【核心执行器】负责回填指定时间范围内的历史消息。
+
+        该方法是机器人数据同步的核心。它会执行以下操作:
+        1.  锁定服务器的回填状态，以防止与 `on_message` 的时间戳更新或其他回填任务冲突。
+        2.  获取需要扫描的频道列表（全服或单个频道）。
+        3.  遍历每个频道，拉取指定时间范围内的历史消息。
+        4.  将消息数据批量添加到 Redis Pipeline 中以提高效率。
+        5.  定期向 `target_channel` 发送进度更新（如果提供了该频道）。
+        6.  在 `try...except...finally` 结构中执行所有操作，确保健壮性。
+            - 如果任务无异常完成 (try块走完)，则在最后调用 DataManager 更新 `last_sync_timestamp`。
+            - 如果任务中途失败 (进入except块)，则不更新时间戳，以便下次可以从同一点重试。
+            - 无论成功或失败 (进入finally块)，都必须释放回填锁。
+
+        参数:
+            guild: 目标服务器对象。
+            target_channel: 用于发送进度和结果通知的文本频道，可为 None。
+            start_datetime: 回填的开始时间 (UTC, a ware)。
+            end_datetime: 回填的结束时间 (UTC, a ware)。
+            single_channel: 如果指定，则只回填此特定频道/子频道/论坛。
         """
+        # -------------------------------------------------------------------
+        # 1. 任务初始化与锁定
+        # -------------------------------------------------------------------
         await self.data_manager.lock_backfill(guild.id)
         self.logger.info(
             f"服务器 '{guild.name}' 开始历史消息回填任务。范围: "
-            f"{start_datetime.strftime('%Y-%m-%d %H:%M:%S')} 至 {end_datetime.strftime('%Y-%m-%d %H:%M:%S')} (UTC)"
-            f"。目标: {'单个频道' if single_channel else '全服'}。报告频道: #{target_channel.name}"
+            f"{start_datetime.isoformat()} 至 {end_datetime.isoformat()} (UTC)"
+            f"。目标: {'单个频道' if single_channel else '全服'}。报告频道: {'#' + target_channel.name if target_channel else '无'}。"
         )
 
         start_time = time.time()
         guild_cfg = self.config.get("guild_configs", {}).get(guild.id, {})
 
-        channels_to_scan = []
+        # 获取需要扫描的频道列表
         if single_channel:
             channels_to_scan = await self._get_relevant_channels(guild, guild_cfg, target_channel=single_channel)
         else:
@@ -1094,51 +1171,59 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
 
         total_channels = len(channels_to_scan)
         if total_channels == 0:
-            await target_channel.send("⚠️ 没有找到任何可扫描的频道（可能所有频道都被忽略或无权限）。任务已取消。")
-            await self.data_manager.unlock_backfill(guild.id)
+            if target_channel:
+                await target_channel.send("⚠️ **任务取消**：没有找到任何可扫描的频道（可能所有频道都被忽略或机器人无权限）。")
+            self.logger.warning(f"服务器 '{guild.name}' 回填任务因找不到可扫描频道而中止。")
+            await self.data_manager.unlock_backfill(guild.id)  # 别忘了在中止前解锁
             return
 
+        # 初始化统计和进度变量
         total_messages_processed, total_messages_added, channels_scanned = 0, 0, 0
         last_update_time, progress_message = time.time(), None
 
+        # -------------------------------------------------------------------
+        # 2. 核心处理循环 (在 try...except...finally 中)
+        # -------------------------------------------------------------------
         try:
-            redis_pipe = self.data_manager.redis.pipeline()  # 获取 Redis 客户端的 pipeline
+            redis_pipe = self.data_manager.redis.pipeline()
             messages_in_pipe = 0
+
             for channel in channels_to_scan:
                 channels_scanned += 1
                 try:
-                    # --- 【代码修复】---
-                    # 检查当前频道是否为论坛频道。如果是，则跳过。
-                    # 因为论坛频道本身没有消息历史，它的帖子(Thread)已经被 _get_relevant_channels 单独收集并会在此循环中被处理。
+                    # 跳过论坛频道容器本身，因为它的帖子会单独处理
                     if isinstance(channel, discord.ForumChannel):
                         self.logger.info(f"[{guild.name}] 跳过论坛频道容器 #{channel.name}，其帖子将作为独立子频道进行扫描。")
                         continue
-                    # --- 【修复结束】---
 
-                    # 使用 after 和 before 参数来精确控制时间范围
-                    async for message in channel.history(limit=None, after=start_datetime, before=end_datetime, oldest_first=False):
-                        if message.author.bot: continue  # 过滤掉机器人消息
+                    # 使用 after 和 before 参数精确控制 history 的时间范围
+                    async for message in channel.history(limit=None, after=start_datetime, before=end_datetime):
+                        if message.author.bot:
+                            continue
+
                         total_messages_processed += 1
+                        total_messages_added += 1  # 假设所有非机器人消息都会被添加
 
                         await self.data_manager.add_message_to_pipeline(
                             redis_pipe,
                             guild_id=guild.id,
-                            channel_id=message.channel.id,  # 确保记录的是消息实际所在的频道ID (可能是thread ID)
+                            channel_id=message.channel.id,
                             user_id=message.author.id,
                             message_id=message.id,
                             created_at_timestamp=message.created_at.timestamp()
                         )
                         messages_in_pipe += 1
-                        total_messages_added += 1
 
+                        # 当 pipeline 中消息达到阈值时，执行并重置，以控制内存和网络负载
                         if messages_in_pipe >= 500:
                             await self.data_manager.execute_pipeline(redis_pipe)
-                            redis_pipe = self.data_manager.redis.pipeline()  # 重置管道
+                            redis_pipe = self.data_manager.redis.pipeline()
                             messages_in_pipe = 0
-                            await asyncio.sleep(0.1)  # 避免阻塞
+                            await asyncio.sleep(0.1)  # 短暂休眠，避免过度占用事件循环
 
+                        # 定期更新进度报告
                         current_time = time.time()
-                        if current_time - last_update_time > 2:  # Update progress every 2 seconds
+                        if target_channel and (current_time - last_update_time > 5):  # 每5秒更新一次
                             embed = self._create_progress_embed(
                                 guild, start_time, total_channels, channels_scanned,
                                 channel.name, total_messages_processed, total_messages_added,
@@ -1148,51 +1233,91 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
                                 try:
                                     await progress_message.edit(embed=embed)
                                 except (discord.NotFound, discord.HTTPException):
-                                    # If original message gone, send a new one
                                     progress_message = await target_channel.send(embed=embed)
                             else:
-                                # First time sending progress message
                                 progress_message = await target_channel.send(embed=embed)
                             last_update_time = current_time
+
                 except discord.Forbidden:
                     self.logger.warning(f"[{guild.name}] 无法访问频道 #{channel.name} 的历史记录，已跳过。")
                 except Exception as e:
-                    self.logger.error(f"[{guild.name}] 扫描频道 #{channel.name} 时发生错误: {e}", exc_info=True)
+                    self.logger.error(f"[{guild.name}] 扫描频道 #{channel.name} 时发生非致命错误: {e}", exc_info=True)
 
+            # 确保循环结束后，pipeline 中剩余的消息也被执行
             if messages_in_pipe > 0:
                 await self.data_manager.execute_pipeline(redis_pipe)
 
+            # -------------------------------------------------------------------
+            # 3. 任务成功完成后的操作
+            # -------------------------------------------------------------------
+
+            # 只有在本次任务是全服扫描时 (即 single_channel 为 None)，才更新最后同步时间戳。
+            # 这保证了时间戳始终代表全局数据的完整性。
+            if single_channel is None:
+                await self.data_manager.set_last_sync_timestamp(guild.id, end_datetime.timestamp())
+                timestamp_update_message = "\n**全局同步时间点已更新至任务结束时刻。**"
+                log_timestamp_message = "同步时间戳已更新。"
+            else:
+                timestamp_update_message = "\n**注意：本次为部分频道回填，全局同步时间点未更新。**"
+                log_timestamp_message = "部分频道回填，未更新同步时间戳。"
+
+            # 准备并发送最终的成功报告
             end_time = time.time()
             duration = end_time - start_time
-            self.logger.info(f"服务器 '{guild.name}' 的历史消息回填任务完成。耗时: {duration:.2f}秒")
+            self.logger.info(f"服务器 '{guild.name}' 的历史消息回填任务成功完成。耗时: {duration:.2f}秒。{log_timestamp_message}")
 
-            # 最终报告也显示 UTC+8 日期和时间
-            start_display = start_datetime.astimezone(BEIJING_TZ).strftime('%Y-%m-%d %H:%M:%S')
-            end_display = end_datetime.astimezone(BEIJING_TZ).strftime('%Y-%m-%d %H:%M:%S')
+            if target_channel:
+                start_display = start_datetime.astimezone(BEIJING_TZ).strftime('%Y-%m-%d %H:%M:%S')
+                end_display = end_datetime.astimezone(BEIJING_TZ).strftime('%Y-%m-%d %H:%M:%S')
+                final_embed = discord.Embed(
+                    title="✅ 历史消息回填完成",
+                    description=(
+                        f"成功为服务器 **{guild.name}** 拉取了从 **{start_display}** 到 **{end_display}** (UTC+8) 的历史消息。"
+                        f"{timestamp_update_message}"  # 动态添加提示信息
+                    ),
+                    color=discord.Color.green(),
+                    timestamp=datetime.now(timezone.utc)
+                )
+                final_embed.add_field(name="总耗时", value=f"{duration:.2f} 秒", inline=True)
+                final_embed.add_field(name="扫描频道数", value=f"{channels_scanned}/{total_channels}", inline=True)
+                final_embed.add_field(name="处理消息总数", value=f"{total_messages_processed}", inline=True)
+                final_embed.add_field(name="有效消息写入数", value=f"{total_messages_added}", inline=True)
 
-            final_embed = discord.Embed(
-                title="✅ 历史消息回填完成",
-                description=f"成功为服务器 **{guild.name}** 拉取了从 **{start_display}** 到 **{end_display}** 的历史消息。",
-                color=discord.Color.green(),
-                timestamp=datetime.now(timezone.utc)
-            )
-            final_embed.add_field(name="总耗时", value=f"{duration:.2f} 秒", inline=True)
-            final_embed.add_field(name="扫描频道数", value=f"{channels_scanned}/{total_channels}", inline=True)
-            final_embed.add_field(name="处理消息总数", value=f"{total_messages_processed}", inline=True)
-            final_embed.add_field(name="有效消息写入数", value=f"{total_messages_added}", inline=True)
-            if progress_message:
-                try:
-                    await progress_message.edit(embed=final_embed, view=None)  # Disable view if any
-                except (discord.NotFound, discord.HTTPException):
+                if progress_message:
+                    try:
+                        await progress_message.edit(embed=final_embed, view=None)
+                    except (discord.NotFound, discord.HTTPException):
+                        await target_channel.send(embed=final_embed)
+                else:
                     await target_channel.send(embed=final_embed)
-            else:
-                await target_channel.send(embed=final_embed)
+
+
         except Exception as e:
+            # -------------------------------------------------------------------
+            # 4. 任务失败时的操作
+            # -------------------------------------------------------------------
             self.logger.critical(f"服务器 '{guild.name}' 的回填任务发生严重错误并中断: {e}", exc_info=True)
-            error_embed = discord.Embed(title="❌ 回填任务异常中断", description=f"发生严重错误: `{e}`", color=discord.Color.red())
-            await target_channel.send(embed=error_embed)
+            if target_channel:
+                error_embed = discord.Embed(
+                    title="❌ 回填任务异常中断",
+                    description=f"发生严重错误: `{e}`\n**【重要】同步时间戳未被更新，以便下次启动或手动执行时可以重试。**",
+                    color=discord.Color.red()
+                )
+                if progress_message:
+                    try:
+                        await progress_message.edit(embed=error_embed, view=None)
+                    except discord.HTTPException:
+                        await target_channel.send(embed=error_embed)
+                else:
+                    await target_channel.send(embed=error_embed)
+
         finally:
+            # -------------------------------------------------------------------
+            # 5. 任务收尾，无论成功或失败
+            # -------------------------------------------------------------------
+            # 必须释放锁，以便其他任务（如下次启动的同步）可以运行
             await self.data_manager.unlock_backfill(guild.id)
+            self.logger.info(f"服务器 '{guild.name}' 的回填锁已释放。")
 
     @staticmethod
     def _create_progress_embed(guild, start_time, total_channels, channels_scanned, current_channel_name, processed_count, added_count, start_dt, end_dt,
