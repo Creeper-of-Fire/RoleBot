@@ -334,7 +334,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         )
 
         # 【已修改】使用内存锁作为所有同步任务（启动时、手动）的唯一并发控制。
-        self._backfill_locks: set[int] = set()
+        self._backfill_locks: set[int] = set(config.GUILD_IDS)
 
         # 【已移除】_startup_sync_complete 标志，不再需要。
 
@@ -468,7 +468,6 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         除非 'force' 为 True，否则在回填任务锁定时会拒绝更新。
         """
         if guild_id in self._backfill_locks and not force:
-            self.logger.debug(f"Guild {guild_id} is locked. Skipping timestamp update.")
             return
 
         await self.data_manager.set_last_sync_timestamp(guild_id, timestamp)
