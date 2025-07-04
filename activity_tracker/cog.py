@@ -429,7 +429,7 @@ class ActivityRoleView(ui.View):
             guild, member.id, days_window, guild_cfg
         )
         heatmap_data = await self.cog._generate_heatmap_data(
-            guild, member.id, days_window, guild_cfg
+            guild, member.id, days_window
         )
 
         view = ActivityReportPaginationView(self.cog, member, guild, total_messages, channel_data, heatmap_data, days_window)
@@ -1196,7 +1196,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
                             await asyncio.sleep(0.1)  # 避免阻塞
 
                         current_time = time.time()
-                        if current_time - last_update_time > 30:  # Update progress every 30 seconds
+                        if current_time - last_update_time > 2:  # Update progress every 2 seconds
                             embed = self._create_progress_embed(
                                 guild, start_time, total_channels, channels_scanned,
                                 channel.name, total_messages_processed, total_messages_added,
