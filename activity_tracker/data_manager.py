@@ -480,7 +480,10 @@ class DataManager:
         
         # 写入数据行
         for (time_key, channel_id, user_id), count in aggregated_data.items():
-            writer.writerow([time_key, channel_id, user_id, count])
+            # 【关键修改】将 ID 格式化为 `="ID"`，强制电子表格将其视为文本
+            formatted_channel_id = f'="{channel_id}"'
+            formatted_user_id = f'="{user_id}"'
+            writer.writerow([time_key, formatted_channel_id, formatted_user_id, count])
             
         # 4. 获取字节流并进行可选的压缩
         csv_data = output.getvalue()
