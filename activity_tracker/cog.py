@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import io
 import time
 import typing
 from datetime import datetime, timedelta, timezone
@@ -692,9 +693,9 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         """
         处理数据导出请求。这是一个高负载操作，会流式处理 Redis 数据。
         """
-        if interaction.guild_id in self._backfill_locks:
-            await interaction.response.send_message("❌ 回填任务正在运行，为避免性能问题，请稍后再导出。", ephemeral=True)
-            return
+        # if interaction.guild_id in self._backfill_locks:
+        #     await interaction.response.send_message("❌ 回填任务正在运行，为避免性能问题，请稍后再导出。", ephemeral=True)
+        #     return
 
         await interaction.response.defer(ephemeral=True, thinking=True)
         
