@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import csv
+import gzip
+import io
 import logging
 import typing
 from datetime import datetime, timedelta, timezone
