@@ -60,9 +60,11 @@ class FashionManageView(PaginatedView):
         all_role_ids = {role.id for role in member.roles}
 
         self.add_item(FashionRoleSelect(
-            self.cog, self.guild.id, page_fashion_options, 
-            all_role_ids,
-            page_num=self.page, total_pages=self.total_pages
+            self.cog, self.guild.id,
+            fashion_to_base_map=self.fashion_to_base_map,
+            page_options_data=page_fashion_options,
+            all_role_ids=all_role_ids,
+            page_num=self.page, total_pages=self.total_pages,
         ))
 
         self._add_pagination_buttons(row=1)
@@ -78,19 +80,20 @@ class FashionManageView(PaginatedView):
 class FashionRoleSelect(ui.Select):
     """幻化身份组的选择菜单，会根据用户是否拥有基础组来显示锁定/解锁状态。"""
 
-    def __init__(self, cog: 'FashionCog', guild_id: int, page_options_data: List[tuple[int, int]],
+    def __init__(self, cog: 'FashionCog', guild_id: int, fashion_to_base_map: Dict[int, List[int]], page_options_data: List[tuple[int, int]],
                  all_role_ids: set[int], page_num: int, total_pages: int):
         self.cog = cog
         self.guild_id = guild_id
-        self.fashion_to_base_map = self.view.fashion_to_base_map # Get from the view
+        self.fashion_to_base_map = fashion_to_base_map  # Get from the view
 
-        sorted_page_options_data = sorted(page_options_data, key=lambda x: any(base_id in all_role_ids for base_id in self.fashion_to_base_map.get(x[0], [])), reverse=True)
+        sorted_page_options_data = sorted(page_options_data, key=lambda x: any(base_id in all_role_ids for base_id in self.fashion_to_base_map.get(x[0], [])),
+                                          reverse=True)
 
         options = []
-        for fashion_id, _ in sorted_page_options_data: # base_id is not directly used for display anymore
+        for fashion_id, _ in sorted_page_options_data:  # base_id is not directly used for display anymore
             fashion_name = cog.role_name_cache.get(fashion_id, f"未知(ID:{fashion_id})")
             required_base_ids = self.fashion_to_base_map.get(fashion_id, [])
-            
+
             is_unlocked = any(base_id in all_role_ids for base_id in required_base_ids)
 
             if fashion_name:
@@ -198,6 +201,6 @@ class FashionRoleSelect(ui.Select):
             if interaction.response.is_done():
                 await interaction.edit_original_response(content=None, embed=new_view.embed, view=new_view)
             else:
-                await interaction.followup.send(content=None,embed=new_view.embed, view=new_view, ephemeral=True)
+                await interaction.followup.send(content=None, embed=new_view.embed, view=new_view, ephemeral=True)
         else:
             await interaction.edit_original_response(content=None, view=None, embed=None)
