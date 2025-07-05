@@ -216,7 +216,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
 
                 report_channel = None
                 if report_channel_id := guild_cfg.get("report_channel_id"):
-                    report_channel = guild.get_channel(report_channel_id)
+                    report_channel = guild.get_channel(report_channel_id) or guild.fetch_channel(report_channel_id)
 
                 if last_sync_ts is None:
                     await self._update_sync_timestamp(guild.id, now_utc.timestamp(), force=True)

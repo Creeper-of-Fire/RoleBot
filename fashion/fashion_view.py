@@ -26,13 +26,21 @@ class FashionManageView(PaginatedView):
         self.cog = cog
 
         safe_fashion_map = self.cog.safe_fashion_map_cache.get(self.guild.id, {})
-        self.fashion_to_base_map: Dict[int, int] = {}
+        self.fashion_to_base_map: Dict[int, List[int]] = {}
         all_fashion_options = []
 
+        temp_fashion_to_bases: Dict[int, set[int]] = {}
         for base_id, fashion_ids_list in safe_fashion_map.items():
             for fashion_id in fashion_ids_list:
-                all_fashion_options.append((fashion_id, base_id))
-                self.fashion_to_base_map[fashion_id] = base_id
+                if fashion_id not in temp_fashion_to_bases:
+                    temp_fashion_to_bases[fashion_id] = set()
+                temp_fashion_to_bases[fashion_id].add(base_id)
+
+        for fashion_id, base_ids_set in temp_fashion_to_bases.items():
+            self.fashion_to_base_map[fashion_id] = list(base_ids_set)
+            # 对于 all_fashion_options，我们仍然需要一个“代表性”的基础组用于排序和初步构建，这里选第一个
+            representative_base_id = list(base_ids_set)[0]
+            all_fashion_options.append((fashion_id, representative_base_id))
 
         all_fashion_options.sort(key=lambda x: self.cog.role_name_cache.get(x[0], ''))
         self._update_page_info(all_fashion_options)
@@ -74,18 +82,27 @@ class FashionRoleSelect(ui.Select):
                  all_role_ids: set[int], page_num: int, total_pages: int):
         self.cog = cog
         self.guild_id = guild_id
+        self.fashion_to_base_map = self.view.fashion_to_base_map # Get from the view
 
-        sorted_page_options_data = sorted(page_options_data, key=lambda x: x[1] in all_role_ids, reverse=True)
+        sorted_page_options_data = sorted(page_options_data, key=lambda x: any(base_id in all_role_ids for base_id in self.fashion_to_base_map.get(x[0], [])), reverse=True)
 
         options = []
-        for fashion_id, base_id in sorted_page_options_data:
+        for fashion_id, _ in sorted_page_options_data: # base_id is not directly used for display anymore
             fashion_name = cog.role_name_cache.get(fashion_id, f"未知(ID:{fashion_id})")
-            base_name = cog.role_name_cache.get(base_id, "未知基础组")
+            required_base_ids = self.fashion_to_base_map.get(fashion_id, [])
+            
+            is_unlocked = any(base_id in all_role_ids for base_id in required_base_ids)
 
-            if fashion_name and base_name:
-                is_unlocked = base_id in all_role_ids
+            if fashion_name:
                 label_prefix = "✅ " if is_unlocked else "🔒 "
-                description_text = f"由「{base_name}」解锁" if is_unlocked else f"需要拥有「{base_name}」"
+                if is_unlocked:
+                    # Find which base role the user has that unlocks this fashion
+                    owned_base_id = next((bid for bid in required_base_ids if bid in all_role_ids), None)
+                    base_name = cog.role_name_cache.get(owned_base_id, "未知基础组")
+                    description_text = f"由「{base_name}」解锁"
+                else:
+                    base_names = [cog.role_name_cache.get(bid, f"ID:{bid}") for bid in required_base_ids]
+                    description_text = f"需要拥有 {' 或 '.join(f'「{name}」' for name in base_names if name)}中任意一个"
 
                 options.append(
                     discord.SelectOption(
@@ -136,8 +153,8 @@ class FashionRoleSelect(ui.Select):
         failed_attempts = []
 
         for role_id in roles_to_add_ids:
-            required_base_id = fashion_to_base_map.get(role_id)
-            if required_base_id and required_base_id in member_role_ids:
+            required_base_ids = fashion_to_base_map.get(role_id)
+            if required_base_ids and any(base_id in member_role_ids for base_id in required_base_ids):
                 role_obj = guild.get_role(role_id)
                 if role_obj and not is_role_dangerous(role_obj):
                     roles_to_actually_add.append(role_obj)
@@ -145,8 +162,8 @@ class FashionRoleSelect(ui.Select):
                     self.cog.logger.warning(f"用户 {member.id} 尝试获取危险/不存在的幻化 {role_id}，已阻止。")
             else:
                 role_name = self.cog.role_name_cache.get(role_id, f"ID:{role_id}")
-                base_name = self.cog.role_name_cache.get(required_base_id, f"ID:{required_base_id}")
-                failed_attempts.append(f"**{role_name}** (需要 **{base_name}**)")
+                base_names = [self.cog.role_name_cache.get(bid, f"ID:{bid}") for bid in required_base_ids]
+                failed_attempts.append(f"**{role_name}** (需要 {' 或 '.join(f'**{name}**' for name in base_names if name)} 中任意一个)")
 
         for role_id in roles_to_remove_ids:
             role_obj = guild.get_role(role_id)
