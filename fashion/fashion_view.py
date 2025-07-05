@@ -84,7 +84,7 @@ class FashionRoleSelect(ui.Select):
                  all_role_ids: set[int], page_num: int, total_pages: int):
         self.cog = cog
         self.guild_id = guild_id
-        self.fashion_to_base_map = fashion_to_base_map  # Get from the view
+        self.fashion_to_base_map = fashion_to_base_map
 
         sorted_page_options_data = sorted(page_options_data, key=lambda x: any(base_id in all_role_ids for base_id in self.fashion_to_base_map.get(x[0], [])),
                                           reverse=True)

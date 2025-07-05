@@ -414,3 +414,82 @@ class DataManager:
         except exceptions.RedisError as e:
             self.logger.error(f"DataManager: 获取 Redis INFO 失败: {e}", exc_info=True)
             return None
+
+    async def generate_activity_csv(self, guild_id: int, aggregation_level: str, use_compression: bool) -> tuple[bytes, str]:
+        """
+        【新增】扫描、聚合服务器的所有活动数据，并生成 CSV 文件字节流。
+
+        这是一个高负载操作，但通过流式处理和内存聚合进行了优化。
+        它不依赖于新的索引，而是直接扫描原始数据键，以确保完整性。
+
+        :param guild_id: 服务器 ID.
+        :param aggregation_level: 聚合级别 ('daily' 或 'hourly').
+        :param use_compression: 是否使用 Gzip 压缩.
+        :return: 一个包含 (文件字节流, 文件名) 的元组.
+        """
+        self.logger.info(f"DataManager: 开始为服务器 {guild_id} 生成 {aggregation_level} 聚合的活动数据 CSV。")
+        
+        # 聚合数据的容器，键是 (时间点, channel_id, user_id)，值是 count
+        aggregated_data = collections.defaultdict(int)
+
+        activity_pattern = f"activity:{guild_id}:*"
+        keys_scanned = 0
+
+        # 1. 使用 scan_iter 流式扫描所有相关的活动键
+        async for key in self.redis.scan_iter(match=activity_pattern, count=1000):
+            keys_scanned += 1
+            try:
+                # 解析键以获取 channel_id 和 user_id
+                # 格式: activity:{guild_id}:{channel_id}:{user_id}
+                parts = key.split(':')
+                channel_id = int(parts[2])
+                user_id = int(parts[3])
+
+                # 2. 对每个键，使用 zrange 流式获取所有消息的时间戳
+                # 我们只需要 score (timestamp)，所以 withscores=True
+                async for _, timestamp in self.redis.zscan_iter(key):
+                    dt_utc8 = datetime.fromtimestamp(float(timestamp), tz=BEIJING_TZ)
+                    
+                    if aggregation_level == 'daily':
+                        time_key = dt_utc8.strftime('%Y-%m-%d')
+                    else: # hourly
+                        time_key = dt_utc8.strftime('%Y-%m-%d %H:00')
+
+                    aggregation_key = (time_key, channel_id, user_id)
+                    aggregated_data[aggregation_key] += 1
+            
+            except (ValueError, IndexError):
+                self.logger.warning(f"DataManager-Export: 无法解析活动键 '{key}'，已跳过。")
+                continue
+        
+        self.logger.info(f"DataManager: [Guild {guild_id}] 扫描了 {keys_scanned} 个键，聚合了 {len(aggregated_data)} 条记录。")
+
+        if not aggregated_data:
+            return b'', '' # 返回空，表示没有数据
+
+        # 3. 使用 io.StringIO 和 csv 模块在内存中生成 CSV
+        output = io.StringIO()
+        writer = csv.writer(output)
+
+        # 写入表头
+        header = ['timestamp_utc8', 'channel_id', 'user_id', 'message_count']
+        writer.writerow(header)
+        
+        # 写入数据行
+        for (time_key, channel_id, user_id), count in aggregated_data.items():
+            writer.writerow([time_key, channel_id, user_id, count])
+            
+        # 4. 获取字节流并进行可选的压缩
+        csv_data = output.getvalue()
+        file_bytes = csv_data.encode('utf-8')
+
+        if use_compression:
+            final_bytes = gzip.compress(file_bytes)
+            filename = f"activity_export_{guild_id}_{aggregation_level}.csv.gz"
+        else:
+            final_bytes = file_bytes
+            filename = f"activity_export_{guild_id}_{aggregation_level}.csv"
+            
+        self.logger.info(f"DataManager: [Guild {guild_id}] CSV 生成完毕。文件名: {filename}, 大小: {len(final_bytes) / 1024:.2f} KB")
+
+        return final_bytes, filename

@@ -670,6 +670,71 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         )
         return this_dtos, total_dtos
 
+    @activity_group.command(name="导出数据", description="【管理员】将会员活动数据导出为 CSV 文件。")
+    @app_commands.describe(
+        aggregation_level="数据聚合的时间粒度。按天聚合文件更小，按小时聚合更详细。",
+        compression="是否对导出的 CSV 文件进行 Gzip 压缩，推荐在数据量大时使用。"
+    )
+    @app_commands.choices(
+        aggregation_level=[
+            app_commands.Choice(name="按天聚合 (推荐)", value="daily"),
+            app_commands.Choice(name="按小时聚合", value="hourly"),
+        ],
+        compression=[
+            app_commands.Choice(name="Gzip 压缩 (.csv.gz)", value="gzip"),
+            app_commands.Choice(name="不压缩 (.csv)", value="none"),
+        ]
+    )
+    @app_commands.checks.has_permissions(manage_roles=True)
+    async def export_data(self, interaction: discord.Interaction,
+                          aggregation_level: str,
+                          compression: str):
+        """
+        处理数据导出请求。这是一个高负载操作，会流式处理 Redis 数据。
+        """
+        if interaction.guild_id in self._backfill_locks:
+            await interaction.response.send_message("❌ 回填任务正在运行，为避免性能问题，请稍后再导出。", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        
+        self.logger.warning(f"用户 {interaction.user} (ID: {interaction.user.id}) 请求从服务器 {interaction.guild.name} 导出活动数据。聚合级别: {aggregation_level}, 压缩: {compression}")
+
+        try:
+            start_time = time.time()
+            use_compression = compression == "gzip"
+            
+            # 调用 DataManager 的核心导出功能
+            file_bytes, filename = await self.data_manager.generate_activity_csv(
+                interaction.guild_id,
+                aggregation_level,
+                use_compression
+            )
+            
+            duration = time.time() - start_time
+
+            if not file_bytes:
+                await interaction.followup.send("ℹ️ 在服务器中没有找到任何可导出的活动数据。", ephemeral=True)
+                return
+
+            # 使用 io.BytesIO 将字节流包装成文件对象
+            file_buffer = io.BytesIO(file_bytes)
+            discord_file = discord.File(fp=file_buffer, filename=filename)
+
+            # 发送消息和文件
+            await interaction.followup.send(
+                f"✅ **数据导出成功！**\n"
+                f"耗时: `{duration:.2f}` 秒。\n"
+                f"文件已生成，请查收。导出的数据仅包含 `时间点`, `频道ID`, `用户ID` 和 `消息数`，不含任何消息内容。",
+                file=discord_file,
+                ephemeral=True
+            )
+
+        except Exception as e:
+            self.logger.critical(f"导出服务器 {interaction.guild.id} 的活动数据时发生严重错误: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ **导出失败！** 发生了一个内部错误，请检查机器人后台日志。", ephemeral=True)
+
+
 
 async def setup(bot: RoleBot):
     """Cog的入口点。"""
