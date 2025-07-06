@@ -71,52 +71,53 @@ class FashionCog(FeatureCog, name="Fashion"):
         每日检查所有用户的幻化身份组是否仍然合法。
         此方法现在使用 role.members，确保检查所有持有者，而不再错误地依赖 timed_roles 数据。
         """
-        self.logger.info("开始检查幻化身份组合法性...")
-        processed_count = 0
-
-        for guild_id, safe_fashion_map in self.safe_fashion_map_cache.items():
-            guild = self.bot.get_guild(guild_id)
-            if not guild or not safe_fashion_map:
-                continue
-
-            # 创建一个 {fashion_id: base_id} 的反向查找表，方便快速查找
-            fashion_to_base_map = {
-                fashion_id: base_id
-                for base_id, fashion_ids in safe_fashion_map.items()
-                for fashion_id in fashion_ids
-            }
-
-            # 遍历缓存中所有已知的安全幻化身份组
-            for fashion_id, base_id in fashion_to_base_map.items():
-                fashion_role = guild.get_role(fashion_id)
-                if not fashion_role:
-                    continue
-
-                # 正确做法：遍历持有该幻化身份组的所有成员
-                for member in fashion_role.members:
-                    # 检查该成员是否拥有对应的基础身份组
-                    has_base_role = any(r.id == base_id for r in member.roles)
-
-                    if not has_base_role:
-                        try:
-                            # 如果没有基础组，则移除幻化组
-                            await member.remove_roles(fashion_role, reason="幻化基础身份组已丢失，自动移除")
-                            self.logger.info(
-                                f"用户 {member.display_name} ({member.id}) 在服务器 {guild.name} 失去了幻化组 '{fashion_role.name}' 的基础组，已移除幻化。")
-                            # 尝试私信用户
-                            await member.send(f"你在服务器 **{guild.name}** 的幻化身份组 `{fashion_role.name}` 已被移除，因为你不再拥有其对应的基础身份组。")
-                        except discord.Forbidden:
-                            # 无法私信或移除角色（可能机器人权限低于用户）
-                            self.logger.warning(f"无法为用户 {member.display_name} 移除不合格的幻化身份组 '{fashion_role.name}'，权限不足。")
-                        except discord.HTTPException as e:
-                            self.logger.error(f"移除用户 {member.display_name} 的幻化身份组时发生HTTP错误: {e}")
-
-                    # 添加延迟以避免 API 限速
-                    processed_count += 1
-                    if processed_count % 10 == 0:
-                        await asyncio.sleep(1)
-
-        self.logger.info("幻化身份组合法性检查完成。")
+        pass
+        # self.logger.info("开始检查幻化身份组合法性...")
+        # processed_count = 0
+        #
+        # for guild_id, safe_fashion_map in self.safe_fashion_map_cache.items():
+        #     guild = self.bot.get_guild(guild_id)
+        #     if not guild or not safe_fashion_map:
+        #         continue
+        #
+        #     # 创建一个 {fashion_id: base_id} 的反向查找表，方便快速查找
+        #     fashion_to_base_map = {
+        #         fashion_id: base_id
+        #         for base_id, fashion_ids in safe_fashion_map.items()
+        #         for fashion_id in fashion_ids
+        #     }
+        #
+        #     # 遍历缓存中所有已知的安全幻化身份组
+        #     for fashion_id, base_id in fashion_to_base_map.items():
+        #         fashion_role = guild.get_role(fashion_id)
+        #         if not fashion_role:
+        #             continue
+        #
+        #         # 正确做法：遍历持有该幻化身份组的所有成员
+        #         for member in fashion_role.members:
+        #             # 检查该成员是否拥有对应的基础身份组
+        #             has_base_role = any(r.id == base_id for r in member.roles)
+        #
+        #             if not has_base_role:
+        #                 try:
+        #                     # 如果没有基础组，则移除幻化组
+        #                     await member.remove_roles(fashion_role, reason="幻化基础身份组已丢失，自动移除")
+        #                     self.logger.info(
+        #                         f"用户 {member.display_name} ({member.id}) 在服务器 {guild.name} 失去了幻化组 '{fashion_role.name}' 的基础组，已移除幻化。")
+        #                     # 尝试私信用户
+        #                     await member.send(f"你在服务器 **{guild.name}** 的幻化身份组 `{fashion_role.name}` 已被移除，因为你不再拥有其对应的基础身份组。")
+        #                 except discord.Forbidden:
+        #                     # 无法私信或移除角色（可能机器人权限低于用户）
+        #                     self.logger.warning(f"无法为用户 {member.display_name} 移除不合格的幻化身份组 '{fashion_role.name}'，权限不足。")
+        #                 except discord.HTTPException as e:
+        #                     self.logger.error(f"移除用户 {member.display_name} 的幻化身份组时发生HTTP错误: {e}")
+        #
+        #             # 添加延迟以避免 API 限速
+        #             processed_count += 1
+        #             if processed_count % 10 == 0:
+        #                 await asyncio.sleep(1)
+        #
+        # self.logger.info("幻化身份组合法性检查完成。")
 
     @check_fashion_role_validity_task.before_loop
     async def before_fashion_task(self):
