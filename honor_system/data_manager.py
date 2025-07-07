@@ -62,6 +62,8 @@ class HonorDataManager:
             new_user_honor = UserHonor(user_id=user_id, honor_uuid=honor_def.uuid)
             db.add(new_user_honor)
             db.commit()
+            # 在返回对象之前，将其从Session中驱逐，使其不再受Session状态影响
+            db.expunge(honor_def)
             return honor_def
 
     def add_tracked_post(self, post_id: int, author_id: int, parent_channel_id: int):
