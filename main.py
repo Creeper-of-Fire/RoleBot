@@ -11,6 +11,7 @@ import config_data
 from activity_tracker.cog import TrackActivityCog
 from core.cog import CoreCog
 from fashion.cog import FashionCog
+from honor_system.cog import HonorCog
 from role_application.cog import RoleApplicationCog
 from role_sync.cog import RoleSyncCog
 from self_service.cog import SelfServiceCog
@@ -128,6 +129,7 @@ class CogManager:
             "role_sync": RoleSyncCog,
             "role_application": RoleApplicationCog,
             "track_activity": TrackActivityCog,
+            "honor_system": HonorCog,
         }
 
     async def load_all_enabled(self):

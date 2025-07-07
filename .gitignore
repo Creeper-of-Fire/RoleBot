@@ -6,3 +6,4 @@ __pycache__/
 .env
 deploy.env
 rolebot_image.tar
+data/honors.db

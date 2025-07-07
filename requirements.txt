@@ -9,6 +9,8 @@ aiohttp
 pytz
 python-dotenv
 redis[asyncio]
+alembic
+SQLAlchemy
 
 # 系统监测
 psutil

@@ -33,10 +33,25 @@ fi
 echo "--- [Remote] 正在使用 Docker Compose 进行最小化停机部署... ---"
 
 # --- 核心优化点 ---
-# 1. 先构建新镜像 (如果需要)。--no-cache 确保我们总是从最新代码构建。
+# 1. 先构建新镜像 (如果需要)。
 #    这一步在旧容器仍在运行时执行，不影响服务。
-echo "--- [Remote] 正在后台构建新镜像 (无缓存)... ---"
-docker-compose build --no-cache || { echo "Error: Docker Compose build failed."; exit 1; }
+echo "--- [Remote] 正在后台构建新镜像 (有缓存)... ---"
+docker-compose build || { echo "Error: Docker Compose build failed."; exit 1; }
+
+
+# ==============================================================================
+# ✨ 新增步骤: 运行数据库迁移 ✨
+# ==============================================================================
+echo "--- [Remote] 正在运行数据库迁移 (Alembic)... ---"
+# 我们使用 'docker-compose run' 来执行一次性任务。
+# 它会创建一个基于新构建的 'rolebot' 镜像的临时容器。
+# 因为 docker-compose.yml 中定义了 volumes，这个临时容器也会挂载 'rolebot_data' 卷，
+# 所以它能正确地访问到 'data/honors.db' 文件并对其进行迁移。
+# '--rm' 参数表示命令执行完毕后自动删除这个临时容器。
+docker-compose run --rm rolebot alembic upgrade head
+echo "--- [Remote] 数据库迁移完成。 ---"
+# ==============================================================================
+
 
 # 2. 然后用 'up' 命令来完成切换。
 #    'up -d' 会自动停止并替换同名旧容器，这个切换过程非常快。
