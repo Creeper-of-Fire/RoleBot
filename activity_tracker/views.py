@@ -15,7 +15,11 @@ if typing.TYPE_CHECKING:
 
 # --- 常量定义 ---
 MAX_CHANNELS_PER_PAGE = 10
-HEATMAP_EMOJIS = {0: '⬜', 1: '🟨', 6: '🟩', 16: '🟦', 31: '🟥'}
+HEATMAP_STEP1 = 1
+HEATMAP_STEP2 = 30
+HEATMAP_STEP3 = 75
+HEATMAP_STEP4 = 150
+HEATMAP_EMOJIS = {0: '⬜', HEATMAP_STEP1: '🟩', HEATMAP_STEP2: '🟦', HEATMAP_STEP3: '🟨', HEATMAP_STEP4: '🟥'}
 HEATMAP_THRESHOLDS = sorted(HEATMAP_EMOJIS.keys())
 
 
@@ -49,7 +53,12 @@ class ReportEmbeds:
 
         if not heatmap_output: return "暂无消息记录。"
 
-        legend = f"**图例:** {HEATMAP_EMOJIS[0]} 0 {HEATMAP_EMOJIS[1]} 1-5 {HEATMAP_EMOJIS[6]} 6-15 {HEATMAP_EMOJIS[16]} 16-30 {HEATMAP_EMOJIS[31]} 31+"
+        legend = (f"**图例:** "
+                  f"{HEATMAP_EMOJIS[0]} 0 "
+                  f"{HEATMAP_EMOJIS[HEATMAP_STEP1]} {HEATMAP_STEP1}-{HEATMAP_STEP2 - 1} "
+                  f"{HEATMAP_EMOJIS[HEATMAP_STEP2]} {HEATMAP_STEP2}-{HEATMAP_STEP3 - 1} "
+                  f"{HEATMAP_EMOJIS[HEATMAP_STEP3]} {HEATMAP_STEP3}-{HEATMAP_STEP4 - 1} "
+                  f"{HEATMAP_EMOJIS[HEATMAP_STEP4]} {HEATMAP_STEP4}+")
         return "\n" + "".join(heatmap_output) + "\n\n" + legend
 
     @classmethod
@@ -103,7 +112,7 @@ class PageJumpModal(ui.Modal, title="跳转到指定页面"):
             page_num = int(self.page_input.value)
             if 1 <= page_num <= self.total_pages:
                 self.jump_to_page = page_num - 1  # 转换为 0 索引
-                await interaction.response.defer() # 确认交互，让主视图处理更新
+                await interaction.response.defer()  # 确认交互，让主视图处理更新
             else:
                 await interaction.response.send_message(f"❌ 页码必须在 1 到 {self.total_pages} 之间。", ephemeral=True)
         except ValueError:
