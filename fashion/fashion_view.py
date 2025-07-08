@@ -78,10 +78,10 @@ class FashionManageView(PaginatedView):
         page_fashion_options = self.all_items[start:end]
 
         self.add_item(FashionRoleSelect(
-            self.cog, self.user, self.guild.id,
+            self.cog, self.guild.id,
             fashion_to_base_map=self.fashion_to_base_map,
             page_options_data=page_fashion_options,
-            all_role_ids=member_role_ids,
+            member_role_ids=member_role_ids,
             page_num=self.page, total_pages=self.total_pages,
         ))
 
@@ -100,16 +100,15 @@ class FashionManageView(PaginatedView):
 class FashionRoleSelect(ui.Select):
     """幻化身份组的选择菜单，会根据用户是否拥有基础组来显示锁定/解锁状态。"""
 
-    def __init__(self, cog: 'FashionCog', member: discord.Member, guild_id: int, fashion_to_base_map: Dict[int, List[int]],
+    def __init__(self, cog: 'FashionCog', guild_id: int, fashion_to_base_map: Dict[int, List[int]],
                  page_options_data: List[tuple[int, int]],
-                 all_role_ids: set[int], page_num: int, total_pages: int):
+                 member_role_ids: set[int], page_num: int, total_pages: int):
         self.cog = cog
-        self.member = member
         self.guild_id = guild_id
         self.fashion_to_base_map = fashion_to_base_map
         self.not_normal_role_ids = set(config_data.FASHION_NOT_NORMAL_ROLE_IDS)
 
-        sorted_page_options_data = sorted(page_options_data, key=lambda x: any(base_id in all_role_ids for base_id in self.fashion_to_base_map.get(x[0], [])),
+        sorted_page_options_data = sorted(page_options_data, key=lambda x: any(base_id in member_role_ids for base_id in self.fashion_to_base_map.get(x[0], [])),
                                           reverse=True)
 
         options = []
@@ -117,12 +116,12 @@ class FashionRoleSelect(ui.Select):
             fashion_name = cog.role_name_cache.get(fashion_id, f"未知(ID:{fashion_id})")
             required_base_ids = self.fashion_to_base_map.get(fashion_id, [])
 
-            is_unlocked = any(base_id in all_role_ids for base_id in required_base_ids)
+            is_unlocked = any(base_id in member_role_ids for base_id in required_base_ids)
 
             # --- 新增的过滤逻辑 ---
             # 如果幻化是锁定的，并且其所有解锁条件都是非普通身份组，且用户不具备本身份组，则不向该用户显示此选项
             if not is_unlocked:
-                is_member_have_role = any(fashion_id == role.id for role in self.member.roles)
+                is_member_have_role = fashion_id in member_role_ids
                 is_not_normal_only_unlock = required_base_ids and all(bid in self.not_normal_role_ids for bid in required_base_ids)
                 if is_not_normal_only_unlock and not is_member_have_role:
                     continue  # 跳过，不渲染此选项
@@ -131,12 +130,12 @@ class FashionRoleSelect(ui.Select):
             label_prefix = "✅ " if is_unlocked else "🔒 "
             description_text = ""
             if is_unlocked:
-                owned_base_ids = [bid for bid in required_base_ids if bid in all_role_ids]
+                owned_base_ids = [bid for bid in required_base_ids if bid in member_role_ids]
                 if owned_base_ids:
                     base_names = [cog.role_name_cache.get(bid, f"ID:{bid}") for bid in owned_base_ids]
                     description_text = f"由 {' 和 '.join(f'「{name}」' for name in base_names if name)}解锁"
             else:
-                display_base_ids = [bid for bid in required_base_ids if bid in all_role_ids]
+                display_base_ids = [bid for bid in required_base_ids]
                 if display_base_ids:
                     base_names = [cog.role_name_cache.get(bid, f"ID:{bid}") for bid in display_base_ids]
                     if len(base_names) == 1:
@@ -149,7 +148,7 @@ class FashionRoleSelect(ui.Select):
                     label=f"{label_prefix}{fashion_name}",
                     value=str(fashion_id),
                     description=description_text,
-                    default=(fashion_id in all_role_ids)
+                    default=(fashion_id in member_role_ids)
                 )
             )
 
@@ -162,7 +161,7 @@ class FashionRoleSelect(ui.Select):
         elif not options and page_options_data:
             placeholder = "幻化名称加载中..."
         elif not options:
-            has_any_base_role = any(base_id in all_role_ids for base_id in safe_fashion_map.keys())
+            has_any_base_role = any(base_id in member_role_ids for base_id in safe_fashion_map.keys())
             if not has_any_base_role:
                 placeholder = "你没有可幻化的基础身份组"
             else:
