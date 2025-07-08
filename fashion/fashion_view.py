@@ -58,11 +58,11 @@ class FashionManageView(PaginatedView):
         all_configured_base_ids = set(self.cog.safe_fashion_map_cache.get(self.guild.id, {}).keys())
         member_base_role_ids = member_role_ids.intersection(all_configured_base_ids)
 
-        booster_role_ids = set(getattr(config_data, "FASHION_BOOSTER_ROLE_IDS", []))
-        non_booster_base_role_ids = member_base_role_ids - booster_role_ids
+        not_normal_role_ids = set(config_data.FASHION_NOT_NORMAL_ROLE_IDS)
+        normal_base_role_ids = member_base_role_ids - not_normal_role_ids
 
-        # 如果用户没有任何非赞助的基础身份组，则显示指引
-        if not non_booster_base_role_ids:
+        # 如果用户没有任何普通的基础身份组，则显示指引
+        if not normal_base_role_ids:
             self.embed = self.cog.guide_embed
         else:
             self.embed = discord.Embed(title=f"👗 {self.user.display_name} 的幻化衣橱", color=Color.green())
@@ -78,7 +78,7 @@ class FashionManageView(PaginatedView):
         page_fashion_options = self.all_items[start:end]
 
         self.add_item(FashionRoleSelect(
-            self.cog, self.guild.id,
+            self.cog, self.user, self.guild.id,
             fashion_to_base_map=self.fashion_to_base_map,
             page_options_data=page_fashion_options,
             all_role_ids=member_role_ids,
@@ -90,7 +90,7 @@ class FashionManageView(PaginatedView):
         # --- 为所有情况添加指引链接按钮 ---
         if self.cog.guide_url:  # 只有当 URL 成功缓存时才添加按钮
             self.add_item(ui.Button(
-                label="跳转到 “" + self.cog.guide_embed.title + "”",
+                label=f"跳转到 “{self.cog.guide_embed.title}”",
                 style=discord.ButtonStyle.link,
                 url=self.cog.guide_url,
                 row=2  # 放在新的一行，避免与分页按钮挤占
@@ -100,12 +100,14 @@ class FashionManageView(PaginatedView):
 class FashionRoleSelect(ui.Select):
     """幻化身份组的选择菜单，会根据用户是否拥有基础组来显示锁定/解锁状态。"""
 
-    def __init__(self, cog: 'FashionCog', guild_id: int, fashion_to_base_map: Dict[int, List[int]], page_options_data: List[tuple[int, int]],
+    def __init__(self, cog: 'FashionCog', member: discord.Member, guild_id: int, fashion_to_base_map: Dict[int, List[int]],
+                 page_options_data: List[tuple[int, int]],
                  all_role_ids: set[int], page_num: int, total_pages: int):
         self.cog = cog
+        self.member = member
         self.guild_id = guild_id
         self.fashion_to_base_map = fashion_to_base_map
-        self.booster_role_ids = set(getattr(config_data, "FASHION_BOOSTER_ROLE_IDS", []))
+        self.not_normal_role_ids = set(config_data.FASHION_NOT_NORMAL_ROLE_IDS)
 
         sorted_page_options_data = sorted(page_options_data, key=lambda x: any(base_id in all_role_ids for base_id in self.fashion_to_base_map.get(x[0], [])),
                                           reverse=True)
@@ -118,24 +120,29 @@ class FashionRoleSelect(ui.Select):
             is_unlocked = any(base_id in all_role_ids for base_id in required_base_ids)
 
             # --- 新增的过滤逻辑 ---
-            # 如果幻化是锁定的，并且其所有解锁条件都是赞助身份组，则不向该用户显示此选项
+            # 如果幻化是锁定的，并且其所有解锁条件都是非普通身份组，且用户不具备本身份组，则不向该用户显示此选项
             if not is_unlocked:
-                is_booster_only_unlock = required_base_ids and all(bid in self.booster_role_ids for bid in required_base_ids)
-                if is_booster_only_unlock:
+                is_member_have_role = any(fashion_id == role.id for role in self.member.roles)
+                is_not_normal_only_unlock = required_base_ids and all(bid in self.not_normal_role_ids for bid in required_base_ids)
+                if is_not_normal_only_unlock and not is_member_have_role:
                     continue  # 跳过，不渲染此选项
             # --- 过滤逻辑结束 ---
 
             label_prefix = "✅ " if is_unlocked else "🔒 "
             description_text = ""
             if is_unlocked:
-                owned_base_id = next((bid for bid in required_base_ids if bid in all_role_ids), None)
-                base_name = cog.role_name_cache.get(owned_base_id, "未知基础组")
-                description_text = f"由「{base_name}」解锁"
+                owned_base_ids = [bid for bid in required_base_ids if bid in all_role_ids]
+                if owned_base_ids:
+                    base_names = [cog.role_name_cache.get(bid, f"ID:{bid}") for bid in owned_base_ids]
+                    description_text = f"由 {' 和 '.join(f'「{name}」' for name in base_names if name)}解锁"
             else:
-                display_base_ids = [bid for bid in required_base_ids if bid not in self.booster_role_ids]
+                display_base_ids = [bid for bid in required_base_ids if bid in all_role_ids]
                 if display_base_ids:
                     base_names = [cog.role_name_cache.get(bid, f"ID:{bid}") for bid in display_base_ids]
-                    description_text = f"需要拥有 {' 或 '.join(f'「{name}」' for name in base_names if name)}中任意一个"
+                    if len(base_names) == 1:
+                        description_text = f"需要 {' 或 '.join(f'「{name}」' for name in base_names if name)}"
+                    else:
+                        description_text = f"需要 {' 或 '.join(f'「{name}」' for name in base_names if name)}中任意一个"
 
             options.append(
                 discord.SelectOption(
@@ -201,7 +208,7 @@ class FashionRoleSelect(ui.Select):
                     self.cog.logger.warning(f"用户 {member.id} 尝试获取危险/不存在的幻化 {role_id}，已阻止。")
             else:
                 role_name = self.cog.role_name_cache.get(role_id, f"ID:{role_id}")
-                display_base_ids = [bid for bid in required_base_ids if bid not in self.booster_role_ids]
+                display_base_ids = [bid for bid in required_base_ids if bid not in self.not_normal_role_ids]
                 if display_base_ids:
                     base_names = [self.cog.role_name_cache.get(bid, f"ID:{bid}") for bid in display_base_ids]
                     failed_attempts.append(f"**{role_name}** (需要 {' 或 '.join(f'**{name}**' for name in base_names if name)} 中任意一个)")

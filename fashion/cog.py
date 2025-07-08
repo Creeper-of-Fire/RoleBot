@@ -17,6 +17,11 @@ if typing.TYPE_CHECKING:
     from main import RoleBot
     from core.cog import CoreCog
 
+FASHION_GUIDE_POST = {
+    "guild_id": 1134557553011998840,      # 指引帖子所在的服务器ID
+    "channel_id": 1392165885778722826,    # 指引帖子所在的频道ID
+    "post_id": 1392166511472283689,       # 指引帖子的消息ID
+}
 
 class FashionCog(FeatureCog, name="Fashion"):
     """管理所有幻化身份组相关的功能。"""
@@ -82,7 +87,7 @@ class FashionCog(FeatureCog, name="Fashion"):
     @tasks.loop(minutes=15)
     async def update_guide_embed_task(self):
         """每15分钟运行一次，获取并缓存幻化指引的Embed。"""
-        guide_info = getattr(config_data, "FASHION_GUIDE_POST", {})
+        guide_info = FASHION_GUIDE_POST
         if not all(guide_info.get(k) for k in ["guild_id", "channel_id", "post_id"]):
             # 如果配置不完整，则不执行任务
             if self.update_guide_embed_task.current_loop > 0:  # 首次不提示

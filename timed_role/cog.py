@@ -11,7 +11,7 @@ from discord.ext import tasks, commands
 
 import config
 from timed_role import timer
-from timed_role.buttons import TimedRolePanelButton, QueryTimeButton, ReturnTimedRoleButton
+from timed_role.buttons import TimedRolePanelButton
 from timed_role.timed_role_data_manager import TimedRoleDataManager
 from timed_role.timer import UTC8
 from utility.auth import is_role_dangerous
@@ -32,7 +32,7 @@ class TimedRolesCog(FeatureCog, name="TimedRoles"):
     """
 
     def get_main_panel_buttons(self) -> Optional[List[discord.ui.Button]]:
-        return [TimedRolePanelButton(self), ReturnTimedRoleButton(self), QueryTimeButton(self)]
+        return [TimedRolePanelButton(self)]
 
     def __init__(self, bot: RoleBot):
         super().__init__(bot)

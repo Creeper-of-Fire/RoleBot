@@ -1,14 +1,15 @@
 from __future__ import annotations
+
 from typing import TYPE_CHECKING
 
 import discord
-from discord import ui, Color
+from discord import ui
 
 import config
 from utility.auth import is_role_dangerous
 from utility.helpers import try_get_member, safe_defer
-from utility.role_service import update_member_roles
 from utility.paginated_view import PaginatedView
+from utility.role_service import update_member_roles
 
 if TYPE_CHECKING:
     from self_service.cog import SelfServiceCog
@@ -56,12 +57,20 @@ class SelfServiceManageView(PaginatedView):
         if not self.all_items and config.GUILD_CONFIGS.get(self.guild.id, {}).get("self_service_roles"): self.add_item(
             ui.Button(label="无可用自助组 (权限原因)", style=discord.ButtonStyle.secondary, disabled=True, row=0))
 
-        self._add_pagination_buttons(row=2)
+        self._add_pagination_buttons(row=3)
 
-        self.embed = discord.Embed(title=f"🛠️ {self.user.display_name} 的自助身份组", color=Color.gold())
+        self.embed = self.cog.guide_embed  # 直接从 cog 缓存读取指引 Embed
         if not self.all_items:
             self.embed.description = "此服务器没有可供您管理的自助身份组。"
         self.embed.set_footer(text=f"面板将在 {config.ROLE_MANAGER_CONFIG.get('private_panel_timeout_minutes', 3)} 分钟后失效。")
+
+        if self.cog.guide_url:  # 只有当 URL 成功缓存时才添加按钮
+            self.add_item(ui.Button(
+                label=f"跳转到 “{self.cog.guide_embed.title}”",
+                style=discord.ButtonStyle.link,
+                url=self.cog.guide_url,
+                row=4  # 放在新的一行，避免与分页按钮和身份组按钮挤占
+            ))
 
 
 class SelfServiceRoleButton(ui.Button):
@@ -94,9 +103,9 @@ class SelfServiceRoleButton(ui.Button):
 
         await update_member_roles(
             cog=self.cog,
-            member=member, 
-            to_add_ids={r.id for r in roles_to_add}, 
-            to_remove_ids={r.id for r in roles_to_remove}, 
+            member=member,
+            to_add_ids={r.id for r in roles_to_add},
+            to_remove_ids={r.id for r in roles_to_remove},
             reason="自助身份组操作"
         )
 
