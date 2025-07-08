@@ -6,6 +6,7 @@ import discord
 from discord import Color, ui
 
 import config
+import config_data
 from utility.auth import is_role_dangerous
 
 if typing.TYPE_CHECKING:
@@ -38,7 +39,6 @@ class FashionManageView(PaginatedView):
 
         for fashion_id, base_ids_set in temp_fashion_to_bases.items():
             self.fashion_to_base_map[fashion_id] = list(base_ids_set)
-            # 对于 all_fashion_options，我们仍然需要一个“代表性”的基础组用于排序和初步构建，这里选第一个
             representative_base_id = list(base_ids_set)[0]
             all_fashion_options.append((fashion_id, representative_base_id))
 
@@ -54,27 +54,47 @@ class FashionManageView(PaginatedView):
         if member is None:
             return
 
+        member_role_ids = {role.id for role in member.roles}
+        all_configured_base_ids = set(self.cog.safe_fashion_map_cache.get(self.guild.id, {}).keys())
+        member_base_role_ids = member_role_ids.intersection(all_configured_base_ids)
+
+        booster_role_ids = set(getattr(config_data, "FASHION_BOOSTER_ROLE_IDS", []))
+        non_booster_base_role_ids = member_base_role_ids - booster_role_ids
+
+        # 如果用户没有任何非赞助的基础身份组，则显示指引
+        if not non_booster_base_role_ids:
+            self.embed = self.cog.guide_embed
+        else:
+            self.embed = discord.Embed(title=f"👗 {self.user.display_name} 的幻化衣橱", color=Color.green())
+            self.embed.description = "在这里管理你的幻化外观吧！"
+
+        if not self.all_items:
+            # 如果服务器没有任何幻化项，则覆盖Embed描述
+            self.embed.description = "此服务器未配置幻化系统，或所有幻化身份组均不安全。"
+
+        self.embed.set_footer(text=f"面板将在 {config.ROLE_MANAGER_CONFIG.get('private_panel_timeout_minutes', 3)} 分钟后失效。")
+
         start, end = self.get_page_range()
         page_fashion_options = self.all_items[start:end]
-
-        all_role_ids = {role.id for role in member.roles}
 
         self.add_item(FashionRoleSelect(
             self.cog, self.guild.id,
             fashion_to_base_map=self.fashion_to_base_map,
             page_options_data=page_fashion_options,
-            all_role_ids=all_role_ids,
+            all_role_ids=member_role_ids,
             page_num=self.page, total_pages=self.total_pages,
         ))
 
         self._add_pagination_buttons(row=1)
 
-        self.embed = discord.Embed(title=f"👗 {self.user.display_name} 的幻化衣橱", color=Color.green())
-        if not self.all_items:
-            self.embed.description = "此服务器未配置幻化系统，或所有幻化身份组均不安全。"
-        else:
-            self.embed.description = "在这里管理你的幻化外观吧！"
-        self.embed.set_footer(text=f"面板将在 {config.ROLE_MANAGER_CONFIG.get('private_panel_timeout_minutes', 3)} 分钟后失效。")
+        # --- 为所有情况添加指引链接按钮 ---
+        if self.cog.guide_url:  # 只有当 URL 成功缓存时才添加按钮
+            self.add_item(ui.Button(
+                label="跳转到 “" + self.cog.guide_embed.title + "”",
+                style=discord.ButtonStyle.link,
+                url=self.cog.guide_url,
+                row=2  # 放在新的一行，避免与分页按钮挤占
+            ))
 
 
 class FashionRoleSelect(ui.Select):
@@ -85,47 +105,63 @@ class FashionRoleSelect(ui.Select):
         self.cog = cog
         self.guild_id = guild_id
         self.fashion_to_base_map = fashion_to_base_map
+        self.booster_role_ids = set(getattr(config_data, "FASHION_BOOSTER_ROLE_IDS", []))
 
         sorted_page_options_data = sorted(page_options_data, key=lambda x: any(base_id in all_role_ids for base_id in self.fashion_to_base_map.get(x[0], [])),
                                           reverse=True)
 
         options = []
-        for fashion_id, _ in sorted_page_options_data:  # base_id is not directly used for display anymore
+        for fashion_id, _ in sorted_page_options_data:
             fashion_name = cog.role_name_cache.get(fashion_id, f"未知(ID:{fashion_id})")
             required_base_ids = self.fashion_to_base_map.get(fashion_id, [])
 
             is_unlocked = any(base_id in all_role_ids for base_id in required_base_ids)
 
-            if fashion_name:
-                label_prefix = "✅ " if is_unlocked else "🔒 "
-                if is_unlocked:
-                    # Find which base role the user has that unlocks this fashion
-                    owned_base_id = next((bid for bid in required_base_ids if bid in all_role_ids), None)
-                    base_name = cog.role_name_cache.get(owned_base_id, "未知基础组")
-                    description_text = f"由「{base_name}」解锁"
-                else:
-                    base_names = [cog.role_name_cache.get(bid, f"ID:{bid}") for bid in required_base_ids]
+            # --- 新增的过滤逻辑 ---
+            # 如果幻化是锁定的，并且其所有解锁条件都是赞助身份组，则不向该用户显示此选项
+            if not is_unlocked:
+                is_booster_only_unlock = required_base_ids and all(bid in self.booster_role_ids for bid in required_base_ids)
+                if is_booster_only_unlock:
+                    continue  # 跳过，不渲染此选项
+            # --- 过滤逻辑结束 ---
+
+            label_prefix = "✅ " if is_unlocked else "🔒 "
+            description_text = ""
+            if is_unlocked:
+                owned_base_id = next((bid for bid in required_base_ids if bid in all_role_ids), None)
+                base_name = cog.role_name_cache.get(owned_base_id, "未知基础组")
+                description_text = f"由「{base_name}」解锁"
+            else:
+                display_base_ids = [bid for bid in required_base_ids if bid not in self.booster_role_ids]
+                if display_base_ids:
+                    base_names = [cog.role_name_cache.get(bid, f"ID:{bid}") for bid in display_base_ids]
                     description_text = f"需要拥有 {' 或 '.join(f'「{name}」' for name in base_names if name)}中任意一个"
 
-                options.append(
-                    discord.SelectOption(
-                        label=f"{label_prefix}{fashion_name}",
-                        value=str(fashion_id),
-                        description=description_text,
-                        default=(fashion_id in all_role_ids)
-                    )
+            options.append(
+                discord.SelectOption(
+                    label=f"{label_prefix}{fashion_name}",
+                    value=str(fashion_id),
+                    description=description_text,
+                    default=(fashion_id in all_role_ids)
                 )
+            )
 
-        placeholder = "选择你的幻化（✅=可佩戴, 🔒=未解锁）..."
-        if total_pages > 1: placeholder = f"幻化 (第 {page_num + 1}/{total_pages} 页, ✅=可佩戴, 🔒=未解锁)..."
-
+        # 优化后的占位符逻辑
+        placeholder = f"幻化 (第 {page_num + 1}/{total_pages} 页)" if total_pages > 1 else "选择你的幻化"
         safe_fashion_map = self.cog.safe_fashion_map_cache.get(guild_id, {})
-        if not page_options_data and not safe_fashion_map:
+
+        if not safe_fashion_map:
             placeholder = "本服未配置幻化系统"
-        elif not page_options_data and safe_fashion_map and not any(base_id in all_role_ids for _, base_id in page_options_data):
-            placeholder = "你没有可幻化的基础身份组"
         elif not options and page_options_data:
             placeholder = "幻化名称加载中..."
+        elif not options:
+            has_any_base_role = any(base_id in all_role_ids for base_id in safe_fashion_map.keys())
+            if not has_any_base_role:
+                placeholder = "你没有可幻化的基础身份组"
+            else:
+                placeholder = "本页无你的可用幻化"
+        else:
+            placeholder += " (✅=可佩戴, 🔒=未解锁)"
 
         super().__init__(
             placeholder=placeholder, min_values=0, max_values=len(options) if options else 1,
@@ -156,7 +192,7 @@ class FashionRoleSelect(ui.Select):
         failed_attempts = []
 
         for role_id in roles_to_add_ids:
-            required_base_ids = fashion_to_base_map.get(role_id)
+            required_base_ids = fashion_to_base_map.get(role_id, [])
             if required_base_ids and any(base_id in member_role_ids for base_id in required_base_ids):
                 role_obj = guild.get_role(role_id)
                 if role_obj and not is_role_dangerous(role_obj):
@@ -165,42 +201,42 @@ class FashionRoleSelect(ui.Select):
                     self.cog.logger.warning(f"用户 {member.id} 尝试获取危险/不存在的幻化 {role_id}，已阻止。")
             else:
                 role_name = self.cog.role_name_cache.get(role_id, f"ID:{role_id}")
-                base_names = [self.cog.role_name_cache.get(bid, f"ID:{bid}") for bid in required_base_ids]
-                failed_attempts.append(f"**{role_name}** (需要 {' 或 '.join(f'**{name}**' for name in base_names if name)} 中任意一个)")
+                display_base_ids = [bid for bid in required_base_ids if bid not in self.booster_role_ids]
+                if display_base_ids:
+                    base_names = [self.cog.role_name_cache.get(bid, f"ID:{bid}") for bid in display_base_ids]
+                    failed_attempts.append(f"**{role_name}** (需要 {' 或 '.join(f'**{name}**' for name in base_names if name)} 中任意一个)")
+                else:
+                    failed_attempts.append(f"**{role_name}** (不满足特殊解锁条件)")
 
         for role_id in roles_to_remove_ids:
             role_obj = guild.get_role(role_id)
             if role_obj: roles_to_actually_remove.append(role_obj)
 
-        await interaction.edit_original_response(content="# ✅ 正在尝试变更身份……")
-
-        # 使用新的服务函数来更新角色
-        await update_member_roles(
-            cog=self.cog,
-            member=member,
-            to_add_ids={r.id for r in roles_to_actually_add},
-            to_remove_ids={r.id for r in roles_to_actually_remove},
-            reason="自助幻化操作"
-        )
+        if roles_to_actually_add or roles_to_actually_remove:
+            await update_member_roles(
+                cog=self.cog,
+                member=member,
+                to_add_ids={r.id for r in roles_to_actually_add},
+                to_remove_ids={r.id for r in roles_to_actually_remove},
+                reason="自助幻化操作"
+            )
 
         if failed_attempts:
             warning_message = await interaction.followup.send(
                 f"❌ 操作部分成功。\n你无法佩戴以下幻化，因为你缺少必需的基础身份组：\n- " + "\n- ".join(failed_attempts),
                 ephemeral=True
             )
-            # 等待5秒
-            await asyncio.sleep(2)
-
-            # 删除后续消息
+            await asyncio.sleep(5)
             await warning_message.delete()
 
         refreshed_member = await try_get_member(guild, member.id)
         if refreshed_member:
             new_view = FashionManageView(self.cog, refreshed_member)
-            await new_view._rebuild_view()  # Ensure embed is created
+            await new_view._rebuild_view()
             if interaction.response.is_done():
                 await interaction.edit_original_response(content=None, embed=new_view.embed, view=new_view)
             else:
+                # This case is unlikely but safe to handle
                 await interaction.followup.send(content=None, embed=new_view.embed, view=new_view, ephemeral=True)
         else:
-            await interaction.edit_original_response(content=None, view=None, embed=None)
+            await interaction.edit_original_response(content="无法刷新你的信息，请重试。", view=None, embed=None)

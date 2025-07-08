@@ -2,12 +2,40 @@
 from __future__ import annotations
 
 import contextlib
-from typing import List, Optional
+from typing import List, Optional, TypeVar, Type
 
 from sqlalchemy import select, func
+from sqlalchemy.orm import class_mapper
 
 from .models import SessionLocal, HonorDefinition, UserHonor, TrackedPost
 
+T = TypeVar("T")
+
+
+def clone_orm_object(obj: T) -> T:
+    """
+    创建一个 SQLAlchemy ORM 对象的非持久化副本。
+    副本拥有与原对象相同的数据，但不与任何 Session 关联。
+    """
+    if obj is None:
+        return None
+
+    cls: Type[T] = obj.__class__
+    mapper = class_mapper(cls)
+
+    # 创建一个新的空实例
+    new_obj = cls()
+
+    # 遍历所有列属性并复制值
+    for prop in mapper.iterate_properties:
+        # 我们只关心映射到数据库列的属性
+        if hasattr(prop, 'columns'):
+            # 获取属性名
+            prop_name = prop.key
+            # 从原对象获取值并设置到新对象上
+            setattr(new_obj, prop_name, getattr(obj, prop_name))
+
+    return new_obj
 
 class HonorDataManager:
     @staticmethod
@@ -62,9 +90,8 @@ class HonorDataManager:
             new_user_honor = UserHonor(user_id=user_id, honor_uuid=honor_def.uuid)
             db.add(new_user_honor)
             db.commit()
-            # 在返回对象之前，将其从Session中驱逐，使其不再受Session状态影响
-            db.expunge(honor_def)
-            return honor_def
+
+            return clone_orm_object(honor_def)
 
     def add_tracked_post(self, post_id: int, author_id: int, parent_channel_id: int):
         """添加一条新的帖子记录"""
@@ -102,4 +129,13 @@ class HonorDataManager:
                 .where(UserHonor.user_id == user_id)
                 .options(joinedload(UserHonor.definition))
             ).scalars().all()
-            return honors
+            # 注意：这里的 'definition' 是关联对象，也需要处理。
+            # 为了安全，我们也克隆关联的对象。
+            safe_honors = []
+            for h in honors:
+                # 克隆 UserHonor 本身
+                safe_h = clone_orm_object(h)
+                # 克隆其关联的 HonorDefinition
+                safe_h.definition = clone_orm_object(h.definition)
+                safe_honors.append(safe_h)
+            return safe_honors
