@@ -12,6 +12,7 @@ from discord.ext import commands, tasks
 
 import config
 import config_data
+from core import command_group
 from role_sync.role_sync_data_manager import RoleSyncDataManager, create_rule_key
 from utility.auth import is_role_dangerous
 from utility.feature_cog import FeatureCog
@@ -194,8 +195,13 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
     async def before_daily_sync_task(self):
         await self.bot.wait_until_ready()
 
-    @app_commands.command(name="手动触发每日同步", description="立即执行一次每日身份组同步检查任务。")
-    @app_commands.guilds(*[discord.Object(id=gid) for gid in config.GUILD_IDS])
+    sync_group = app_commands.Group(
+        name=f"{config.COMMAND_GROUP_NAME}_同步", description="用户身份组同步相关指令",
+        guild_ids=[gid for gid in config.GUILD_IDS],
+        default_permissions=discord.Permissions(manage_roles=True)
+    )
+
+    @sync_group.command(name="手动触发每日同步", description="立即执行一次每日身份组C->D同步检查任务。")
     @app_commands.default_permissions(manage_roles=True)
     @app_commands.checks.has_permissions(manage_roles=True)
     async def manual_daily_sync(self, interaction: discord.Interaction):
@@ -236,11 +242,9 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
                 choices.append(app_commands.Choice(name=choice_name, value=rule_key))
         return choices[:25]
 
-    @app_commands.command(name="同步未记录成员", description="扫描缓存中的成员，为符合规则但未被记录的人执行同步（支持超时回退）。")
+    @sync_group.command(name="同步未记录成员", description="扫描缓存中的成员，为符合A->B规则但未被记录的人执行同步（支持超时回退）。")
     @app_commands.describe(rule="[可选] 选择要扫描的特定规则，不选则扫描所有规则。")
     @app_commands.autocomplete(rule=sync_rule_autocomplete)
-    @app_commands.guild_only()
-    @app_commands.default_permissions(manage_roles=True)
     @app_commands.checks.has_permissions(manage_roles=True)
     async def sync_unlogged_members(self, interaction: discord.Interaction, rule: Optional[str] = "all"):
         await interaction.response.defer(ephemeral=False)
@@ -397,20 +401,18 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
             final_embed.description += "\n(原始进度条消息已失效)"
             await interaction.channel.send(content=f"{user_mention} 你的扫描任务已完成！", embed=final_embed)
 
-    @app_commands.command(name="清理同步日志", description="清理A->B同步规则的日志记录。")
+    @app_commands.command(name="清理同步记录", description="清理A->B同步规则的记录。")
     @app_commands.describe(
-        action="要执行的操作：清除特定规则日志，清除所有日志。",
-        rule="[仅清除特定规则时需要] 选择要清除日志的规则。"
+        action="要执行的操作：清除特定规则记录，清除所有记录。",
+        rule="[仅清除特定规则时需要] 选择要清除记录的规则。"
     )
     @app_commands.choices(action=[
-        app_commands.Choice(name="清除特定规则的日志", value="clear_rule"),
-        app_commands.Choice(name="清除所有日志（删除文件）", value="clear_all"),
+        app_commands.Choice(name="清除特定规则的记录", value="clear_rule"),
+        app_commands.Choice(name="清除所有记录（删除文件）", value="clear_all"),
     ])
     @app_commands.autocomplete(rule=sync_rule_autocomplete)
-    @app_commands.guild_only()
-    @app_commands.default_permissions(manage_roles=True)
     @app_commands.checks.has_permissions(manage_roles=True)
-    async def manage_sync_log(self, interaction: discord.Interaction, action: str, rule: Optional[str] = None):
+    async def manage_sync_record(self, interaction: discord.Interaction, action: str, rule: Optional[str] = None):
         # --- 所有删除操作都需要确认 ---
         # 1. 准备确认消息和视图
         view = ConfirmationView(author=interaction.user)
@@ -423,7 +425,7 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
             confirm_message = f"你确定要清除规则 `{rule}` 的同步日志吗？\n\n**这将导致该规则下的所有成员在下次扫描时被重新同步。** 此操作不可撤销。"
 
         elif action == "clear_all":
-            confirm_message = "你确定要**清除所有同步日志**吗？\n\n**这将删除 `role_sync_log.json` 文件，所有规则都将重置为初始状态。** 此操作不可撤销！"
+            confirm_message = "你确定要**清除所有同步记录**吗？\n\n**这将删除 `role_sync_log.json` 文件，所有规则都将重置为初始状态。** 此操作不可撤销！"
 
         # 2. 发送确认请求
         await interaction.response.send_message(confirm_message, view=view, ephemeral=True)
@@ -442,18 +444,18 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
                     source_id, target_id = int(source_id_str), int(target_id_str)
                     success = await self.data_manager.clear_rule_log(interaction.guild_id, source_id, target_id)
                     if success:
-                        await interaction.followup.send(f"✅ 已成功清除规则 `{rule}` 的同步日志。", ephemeral=True)
+                        await interaction.followup.send(f"✅ 已成功清除规则 `{rule}` 的同步记录。", ephemeral=True)
                     else:
-                        await interaction.followup.send(f"ℹ️ 未找到规则 `{rule}` 的日志，无需操作。", ephemeral=True)
+                        await interaction.followup.send(f"ℹ️ 未找到规则 `{rule}` 的记录，无需操作。", ephemeral=True)
                 except ValueError:
                     await interaction.followup.send("❌ 无效的规则格式。", ephemeral=True)
 
             elif action == "clear_all":
                 success = await self.data_manager.clear_all_logs()
                 if success:
-                    await interaction.followup.send("🗑️ 已成功删除所有同步日志文件。", ephemeral=True)
+                    await interaction.followup.send("🗑️ 已成功删除所有同步记录文件。", ephemeral=True)
                 else:
-                    await interaction.followup.send("ℹ️ 日志文件不存在，无需操作。", ephemeral=True)
+                    await interaction.followup.send("ℹ️ 记录文件不存在，无需操作。", ephemeral=True)
         else:  # 用户点击了取消
             await interaction.followup.send("❌ 操作已取消。", ephemeral=True)
 

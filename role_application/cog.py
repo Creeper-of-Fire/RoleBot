@@ -1,8 +1,9 @@
 # role_application/cog.py
 
 from __future__ import annotations
-import typing
+
 import re
+import typing
 
 import discord
 from discord import app_commands, ui
@@ -206,9 +207,8 @@ class RoleApplicationCog(commands.Cog, name="RoleApplication"):
         self.bot.add_view(CommunityBuilderView())
         self.bot.add_view(CreatorApplicationView(self))
 
-    # 指令组
     application_group = app_commands.Group(
-        name="申请面板",
+        name=f"{config.COMMAND_GROUP_NAME}_申请面板",
         description="发送用于申请特殊身份组的面板",
         guild_ids=[gid for gid in config.GUILD_IDS],
         default_permissions=discord.Permissions(manage_roles=True),

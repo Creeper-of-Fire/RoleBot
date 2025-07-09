@@ -13,6 +13,7 @@ from discord import app_commands, Guild
 from discord.ext import commands
 
 import config
+import core.command_group
 from activity_tracker.data_manager import DataManager, BEIJING_TZ
 from activity_tracker.logic import ActivityProcessor
 from activity_tracker.views import ActivityRoleView, GenericHierarchicalPaginationView, ReportEmbeds
@@ -349,15 +350,13 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             if guild.id in self._backfill_locks: self._backfill_locks.remove(guild.id)
             self.logger.info(f"服务器 '{guild.name}' 的回填任务结束，内存锁已释放。")
 
-    # --- 斜杠指令组与指令 ---
-
     activity_group = app_commands.Group(
-        name="用户活跃度", description="用户活动追踪相关指令",
+        name=f"{config.COMMAND_GROUP_NAME}_活跃", description="用户活动追踪相关指令",
         guild_ids=[gid for gid in config.GUILD_IDS],
         default_permissions=discord.Permissions(manage_roles=True)
     )
 
-    @activity_group.command(name="发送活跃度身份组领取面板", description="发送一个活跃度角色申领面板。")
+    @activity_group.command(name="发送面板", description="发送一个活跃度角色申领面板。")
     @app_commands.checks.has_permissions(manage_roles=True)
     async def send_panel(self, interaction: discord.Interaction):
         await interaction.response.defer()
@@ -380,7 +379,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         embed.set_footer(text="所有操作仅您自己可见。")
         await interaction.followup.send(embed=embed, view=ActivityRoleView(self))
 
-    @activity_group.command(name="管理活动数据", description="【管理员】管理本服务器的活动数据。")
+    @activity_group.command(name="管理或删除活动数据", description="【管理员】管理本服务器的活动数据。")
     @app_commands.describe(action="要执行的操作。")
     @app_commands.choices(action=[
         app_commands.Choice(name="【推荐】强制结束并解锁回填任务", value="finalize_and_unlock"),
@@ -455,7 +454,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
                 continue
         return None
 
-    @activity_group.command(name="手动拉取历史消息", description="手动拉取指定时间范围/频道的历史消息以填充活动数据。")
+    @activity_group.command(name="回填", description="手动拉取指定时间范围/频道的历史消息以填充活动数据。")
     @app_commands.describe(
         start_date="开始日期 (格式: YYYY-MM-DD, MM-DD, 或 DD, 时区: UTC+8)。",
         end_date="结束日期 (同上, 默认为今天)。",
@@ -552,7 +551,9 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         embed.add_field(name="写入消息数", value=f"{added}", inline=True)
         return embed
 
-    @activity_group.command(name="统计活跃度", description="统计指定范围和指标的活跃度数据。")
+    role_group = core.command_group.RoleBotGroup.getRoleGroup()
+
+    @role_group.command(name="统计活跃度", description="统计指定范围和指标的活跃度数据。")
     @app_commands.describe(
         scope="统计范围：服务器、特定频道、或特定频道类别。",
         metric="统计指标：独立活跃用户数，或总消息数。",
@@ -569,7 +570,6 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             app_commands.Choice(name="总消息数", value="total_messages")
         ]
     )
-    @app_commands.checks.has_permissions(manage_roles=True)
     async def get_activity_stats(
             self, interaction: discord.Interaction, scope: str, metric: str,
             days_window: int = 7,
@@ -698,20 +698,21 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         #     return
 
         await interaction.response.defer(ephemeral=True, thinking=True)
-        
-        self.logger.warning(f"用户 {interaction.user} (ID: {interaction.user.id}) 请求从服务器 {interaction.guild.name} 导出活动数据。聚合级别: {aggregation_level}, 压缩: {compression}")
+
+        self.logger.warning(
+            f"用户 {interaction.user} (ID: {interaction.user.id}) 请求从服务器 {interaction.guild.name} 导出活动数据。聚合级别: {aggregation_level}, 压缩: {compression}")
 
         try:
             start_time = time.time()
             use_compression = compression == "gzip"
-            
+
             # 调用 DataManager 的核心导出功能
             file_bytes, filename = await self.data_manager.generate_activity_csv(
                 interaction.guild_id,
                 aggregation_level,
                 use_compression
             )
-            
+
             duration = time.time() - start_time
 
             if not file_bytes:
@@ -734,7 +735,6 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         except Exception as e:
             self.logger.critical(f"导出服务器 {interaction.guild.id} 的活动数据时发生严重错误: {e}", exc_info=True)
             await interaction.followup.send(f"❌ **导出失败！** 发生了一个内部错误，请检查机器人后台日志。", ephemeral=True)
-
 
 
 async def setup(bot: RoleBot):
