@@ -13,7 +13,7 @@ from core.cog import CoreCog
 from core.embed_link.embed_manager import EmbedLinkManager
 from fashion.cog import FashionCog
 from honor_system.cog import HonorCog
-from heartbeat.cog import HeartbeatInformationCog
+from information.cog import HeartbeatInformationCog
 from role_application.cog import RoleApplicationCog
 from role_sync.cog import RoleSyncCog
 from self_service.cog import SelfServiceCog

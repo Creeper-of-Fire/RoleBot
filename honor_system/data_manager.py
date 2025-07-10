@@ -1,4 +1,4 @@
-# honor_system/heartbeat_data_manager.py
+# honor_system/data_manager.py
 from __future__ import annotations
 
 import contextlib

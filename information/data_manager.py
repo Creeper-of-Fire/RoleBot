@@ -1,12 +1,14 @@
-# cogs/heartbeat/heartbeat_data_manager.py
+# cogs/information/data_manager.py
 
 import asyncio
 import json
 import logging
 from dataclasses import dataclass, asdict, field
+from datetime import datetime
 from typing import Dict, Optional, List
 
 CONFIG_FILE_PATH = "./data/heartbeat_info.json"
+
 
 # 使用 dataclass 来清晰地定义数据结构
 @dataclass
@@ -20,8 +22,9 @@ class HeartbeatInfo:
     target_message_id: int
     update_interval_seconds: int
     embed_mode: bool
+    last_update: datetime
     created_by: int
-    key: str = field(init=False) # key是target_message_id的字符串形式
+    key: str = field(init=False)  # key是target_message_id的字符串形式
 
     def __post_init__(self):
         """在初始化后自动生成key。"""
@@ -45,7 +48,7 @@ class HeartbeatDataManager:
         self.logger = logging.getLogger("HeartbeatDataManager")
         # 将心跳资讯存储在字典中，以目标消息ID作为键，方便快速查找
         self._heartbeats: Dict[str, HeartbeatInfo] = {}
-        self._lock = asyncio.Lock() # 用于文件I/O的异步锁
+        self._lock = asyncio.Lock()  # 用于文件I/O的异步锁
 
     async def load_data(self):
         """从JSON文件加载数据到内存。"""
@@ -54,7 +57,16 @@ class HeartbeatDataManager:
                 with open(CONFIG_FILE_PATH, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     # 将字典转换回 HeartbeatInfo 对象
-                    self._heartbeats = {key: HeartbeatInfo(**value) for key, value in data.items()}
+                    # 临时创建一个新的字典来存储加载的对象
+                    loaded_heartbeats = {}
+                    for key, value in data.items():
+                        # 在传递给构造函数前，从字典中移除 'key'
+                        value.pop('key', None)  # 使用.pop(key, None)是安全的，即使key不存在也不会报错
+
+                        # 现在调用构造函数就是安全的了
+                        loaded_heartbeats[key] = HeartbeatInfo(**value)
+
+                    self._heartbeats = loaded_heartbeats
                 self.logger.info(f"成功加载了 {len(self._heartbeats)} 条心跳资讯记录。")
             except FileNotFoundError:
                 self.logger.info(f"心跳资讯配置文件 {CONFIG_FILE_PATH} 未找到，将自动创建。")
