@@ -16,6 +16,7 @@ from utility.helpers import format_duration_hms
 def _last_update_of_message(message: discord.Message) -> datetime:
     return message.edited_at or message.created_at
 
+
 class HeartbeatInformationCog(commands.Cog, name="Heartbeat Information"):
     """一个用于创建和管理实时更新资讯的模块。"""
 
@@ -57,17 +58,29 @@ class HeartbeatInformationCog(commands.Cog, name="Heartbeat Information"):
                 color=discord.Color.blue()  # 您可以自定义颜色
             )
             # 添加作者和时间戳，让资讯更具上下文
-            embed.set_author(name=f"来自 {source_message.author.display_name} 的消息-同步模式", icon_url=source_message.author.display_avatar)
-            embed.set_footer(text=f"同步频率： {format_duration_hms(heartbeat_info.update_interval_seconds)} | 源消息编辑于")
+            embed.set_author(name=f"来自 {source_message.author.display_name} 的消息（同步）", url=source_message.jump_url,
+                             icon_url=source_message.author.display_avatar)
+            embed.set_footer(
+                text=f"消息同步 | 检测频率： {format_duration_hms(heartbeat_info.update_interval_seconds)} | 源消息编辑于")
             embed.timestamp = _last_update_of_message(source_message)
 
             return {"content": None, "embeds": [embed]}
         else:
             # 否则，使用默认行为：直接复制内容和Embeds
             new_embeds = [embed.copy() for embed in source_embeds]
+            if len(new_embeds) > 0:
+                first_embed = new_embeds[0]
+                old_author = first_embed.author
+
+                author_name = old_author.name or f"来自 {source_message.author.display_name} 的消息（同步）"
+                author_icon_url = old_author.icon_url or source_message.author.display_avatar
+                author_url = source_message.jump_url
+                first_embed.set_author(name=author_name, url=author_url, icon_url=author_icon_url)
+
             for new_embed in new_embeds:
                 if not new_embed.footer.text and not new_embed.timestamp:
-                    new_embed.set_footer(text=f"来自“消息同步” | 同步频率： {format_duration_hms(heartbeat_info.update_interval_seconds)} | 源消息编辑于")
+                    new_embed.set_footer(
+                        text=f"消息同步 | 检测频率： {format_duration_hms(heartbeat_info.update_interval_seconds)} | 源消息编辑于")
                     new_embed.timestamp = _last_update_of_message(source_message)
                     break
 
@@ -223,7 +236,7 @@ class HeartbeatInformationCog(commands.Cog, name="Heartbeat Information"):
             update_interval_seconds=interval_seconds,
             created_by=interaction.user.id,
             last_update=_last_update_of_message(source_message),
-            embed_mode=embed_mode
+            embed_mode=embed_mode,
         )
 
         # 使用辅助函数来获取要发送的内容

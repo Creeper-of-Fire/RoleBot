@@ -6,13 +6,13 @@ import logging
 from dataclasses import dataclass, asdict, field
 from datetime import datetime
 from typing import Dict, Optional, List
+from pydantic import BaseModel
 
 CONFIG_FILE_PATH = "./data/heartbeat_info.json"
 
 
-# 使用 dataclass 来清晰地定义数据结构
-@dataclass
-class HeartbeatInfo:
+
+class HeartbeatInfo(BaseModel):
     """存储单个心跳资讯的所有信息。"""
     source_guild_id: int
     source_channel_id: int
@@ -24,11 +24,10 @@ class HeartbeatInfo:
     embed_mode: bool
     last_update: datetime
     created_by: int
-    key: str = field(init=False)  # key是target_message_id的字符串形式
 
-    def __post_init__(self):
-        """在初始化后自动生成key。"""
-        self.key = str(self.target_message_id)
+    @property
+    def key(self):
+        return str(self.target_message_id)
 
     @property
     def source_url(self) -> str:
@@ -56,17 +55,7 @@ class HeartbeatDataManager:
             try:
                 with open(CONFIG_FILE_PATH, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                    # 将字典转换回 HeartbeatInfo 对象
-                    # 临时创建一个新的字典来存储加载的对象
-                    loaded_heartbeats = {}
-                    for key, value in data.items():
-                        # 在传递给构造函数前，从字典中移除 'key'
-                        value.pop('key', None)  # 使用.pop(key, None)是安全的，即使key不存在也不会报错
-
-                        # 现在调用构造函数就是安全的了
-                        loaded_heartbeats[key] = HeartbeatInfo(**value)
-
-                    self._heartbeats = loaded_heartbeats
+                    self._heartbeats = {key: HeartbeatInfo.model_validate(value) for key, value in data.items()}
                 self.logger.info(f"成功加载了 {len(self._heartbeats)} 条心跳资讯记录。")
             except FileNotFoundError:
                 self.logger.info(f"心跳资讯配置文件 {CONFIG_FILE_PATH} 未找到，将自动创建。")
@@ -80,7 +69,7 @@ class HeartbeatDataManager:
         async with self._lock:
             try:
                 # 将 HeartbeatInfo 对象转换为字典以便序列化
-                data_to_save = {key: asdict(info) for key, info in self._heartbeats.items()}
+                data_to_save = {key: info.model_dump(mode='json') for key, info in self._heartbeats.items()}
                 with open(CONFIG_FILE_PATH, 'w', encoding='utf-8') as f:
                     json.dump(data_to_save, f, indent=4)
             except Exception as e:
