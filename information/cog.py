@@ -61,7 +61,7 @@ class HeartbeatInformationCog(commands.Cog, name="Heartbeat Information"):
             embed.set_author(name=f"来自 {source_message.author.display_name} 的消息（同步）", url=source_message.jump_url,
                              icon_url=source_message.author.display_avatar)
             embed.set_footer(
-                text=f"消息同步 | 检测频率： {format_duration_hms(heartbeat_info.update_interval_seconds)} | 源消息编辑于")
+                text=f"消息同步 | 检测频率： {format_duration_hms(heartbeat_info.update_interval_seconds)} | 源消息更新于")
             embed.timestamp = _last_update_of_message(source_message)
 
             return {"content": None, "embeds": [embed]}
@@ -76,13 +76,9 @@ class HeartbeatInformationCog(commands.Cog, name="Heartbeat Information"):
                 author_icon_url = old_author.icon_url or source_message.author.display_avatar
                 author_url = source_message.jump_url
                 first_embed.set_author(name=author_name, url=author_url, icon_url=author_icon_url)
-
-            for new_embed in new_embeds:
-                if not new_embed.footer.text and not new_embed.timestamp:
-                    new_embed.set_footer(
-                        text=f"消息同步 | 检测频率： {format_duration_hms(heartbeat_info.update_interval_seconds)} | 源消息编辑于")
-                    new_embed.timestamp = _last_update_of_message(source_message)
-                    break
+                first_embed.set_footer(
+                    text=f"消息同步 | 检测频率： {format_duration_hms(heartbeat_info.update_interval_seconds)} | 源消息更新于")
+                first_embed.timestamp = _last_update_of_message(source_message)
 
             return {
                 "content": source_content if source_content else None,
