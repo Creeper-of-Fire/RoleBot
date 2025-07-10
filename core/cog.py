@@ -133,8 +133,7 @@ class CoreCog(commands.Cog, name="Core"):
             await manager.refresh_from_config()
         self.bot.logger.info(f"已完成对 {len(managers)} 个管理器的刷新。")
 
-
-    async def link_module_autocomplete(self,interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
+    async def link_module_autocomplete(self, interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
         """为配置指令提供模块键的自动补全。"""
         keys = EmbedLinkManager.get_registered_keys()
         return [

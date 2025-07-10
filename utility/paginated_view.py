@@ -2,83 +2,160 @@ from __future__ import annotations
 
 import math
 from abc import ABC, abstractmethod
-from typing import List, Any
+from typing import List, Any, Optional
 
 import discord
-from discord import ui, Color
+from discord import ui
 
-from utility.feature_cog import FeatureCog
+
+class PageJumpModal(ui.Modal, title="跳转到指定页面"):
+    """一个模态框，用于让用户输入并跳转到特定页面。"""
+
+    def __init__(self, total_pages: int):
+        super().__init__(timeout=120)
+        self.total_pages = total_pages
+        self.jump_to_page: Optional[int] = None
+
+        self.page_input = ui.TextInput(
+            label="输入页码",
+            placeholder=f"请输入 1 到 {self.total_pages} 之间的数字",
+            required=True,
+            min_length=1,
+            max_length=len(str(self.total_pages))
+        )
+        self.add_item(self.page_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        """处理模态框提交事件。"""
+        try:
+            page_num = int(self.page_input.value)
+            if 1 <= page_num <= self.total_pages:
+                self.jump_to_page = page_num - 1  # 转换为 0 索引
+                # 仅延迟响应，让主视图处理后续的界面更新
+                await interaction.response.defer()
+            else:
+                # 提示错误，且仅发送给用户看
+                await interaction.response.send_message(f"❌ 页码必须在 1 到 {self.total_pages} 之间。", ephemeral=True)
+        except ValueError:
+            await interaction.response.send_message("❌ 请输入有效的数字。", ephemeral=True)
 
 
 class PaginatedView(ui.View, ABC):
-    """一个支持分页的视图基类。"""
+    """
+    一个通用的、功能强大的分页视图基类。
+    遵循不存储 interaction 对象的最佳实践。
+    """
 
-    def __init__(self, cog: FeatureCog, user: discord.Member, items_per_page: int, timeout: float | None = 180.0):
+    def __init__(self, all_items: List[Any], items_per_page: int, *, timeout: float | None = 300.0):
         super().__init__(timeout=timeout)
-        self.cog = cog
-        self.user = user
-        self.guild = user.guild
+        self.all_items = all_items
         self.items_per_page = items_per_page
+
+        # 分页状态
         self.page = 0
-        self.total_pages = 0
-        self.all_items: List[Any] = []
-        self.embed = None
+        self.total_pages = math.ceil(len(self.all_items) / self.items_per_page) if self.items_per_page > 0 else 1
 
-    def _try_get_safe_member(self):
-        member = self.guild.get_member(self.user.id)
-        if not member:
-            self.cog.logger.warning(f"无法在 _rebuild_view 中找到用户 {self.user.id}。")
-            self.embed = discord.Embed(title="错误", description="无法加载您的信息，您可能已离开服务器。", color=Color.red())
-            self.add_item(ui.Button(label="错误", style=discord.ButtonStyle.danger, disabled=True))
-            self.stop()
-            return None
-        return member
+        # 消息引用，通过 start() 方法设置
+        self.message: Optional[discord.Message] = None
+        # Embed 内容，由 _rebuild_view() 设置
+        self.embed: Optional[discord.Embed] = None
 
-    def get_page_range(self):
+    def get_page_range(self) -> tuple[int, int]:
         """返回当前页的起始和结束索引"""
         start = self.page * self.items_per_page
         end = start + self.items_per_page
         return start, end
 
     @abstractmethod
-    async def _rebuild_view(self):
-        """子类必须实现此方法来构建/重建视图内容和Embed。"""
+    async def rebuild_view(self):
+        """
+        【子类必须实现】构建/重建视图内容和 Embed。
+        此方法需要：
+        1. 调用 self.clear_items()
+        2. 创建并设置 self.embed
+        3. 添加该页特有的组件 (Selects, Buttons, etc.)
+        4. 调用 self._add_pagination_buttons() 来添加分页控件
+        """
         raise NotImplementedError
-
-    def _update_page_info(self, all_items: List[Any]):
-        """根据所有项目更新分页信息。"""
-        self.all_items = all_items
-        self.total_pages = math.ceil(len(self.all_items) / self.items_per_page) if self.items_per_page > 0 else 1
 
     def _add_pagination_buttons(self, row: int):
         """添加分页控制按钮。"""
         if self.total_pages > 1:
-            self.add_item(PaginationButton(label="◀️ 上一页", custom_id="page_prev", disabled=self.page == 0, row=row))
-            self.add_item(ui.Button(label=f"第 {self.page + 1}/{self.total_pages} 页", style=discord.ButtonStyle.secondary, disabled=True, row=row))
-            self.add_item(PaginationButton(label="下一页 ▶️", custom_id="page_next", disabled=self.page >= self.total_pages - 1, row=row))
+            # 首页和上一页
+            self.add_item(ui.Button(label="⏮️", style=discord.ButtonStyle.secondary, disabled=self.page == 0, custom_id="page_first", row=row))
+            self.add_item(ui.Button(label="◀️", style=discord.ButtonStyle.primary, disabled=self.page == 0, custom_id="page_prev", row=row))
 
-    async def pagination_callback(self, interaction: discord.Interaction):
-        """处理分页按钮的点击事件。"""
+            # 页码显示和跳转
+            jump_button = ui.Button(label=f"{self.page + 1}/{self.total_pages}", style=discord.ButtonStyle.secondary, disabled=self.total_pages <= 1,
+                                    custom_id="page_jump", row=row)
+            self.add_item(jump_button)
+
+            # 下一页和末页
+            self.add_item(ui.Button(label="▶️", style=discord.ButtonStyle.primary, disabled=self.page >= self.total_pages - 1, custom_id="page_next", row=row))
+            self.add_item(
+                ui.Button(label="⏭️", style=discord.ButtonStyle.secondary, disabled=self.page >= self.total_pages - 1, custom_id="page_last", row=row))
+
+    async def _handle_pagination(self, interaction: discord.Interaction):
+        """处理所有分页按钮的点击事件。"""
         custom_id = interaction.data['custom_id']
-        if custom_id == "page_prev":
+
+        if custom_id == "page_first":
+            self.page = 0
+        elif custom_id == "page_prev":
             self.page -= 1
         elif custom_id == "page_next":
             self.page += 1
+        elif custom_id == "page_last":
+            self.page = self.total_pages - 1
+        elif custom_id == "page_jump":
+            modal = PageJumpModal(self.total_pages)
+            await interaction.response.send_modal(modal)
+            timed_out = await modal.wait()
+            if not timed_out and modal.jump_to_page is not None:
+                self.page = modal.jump_to_page
+                # 模态框已 defer，我们直接更新视图
+                await self.update_view(interaction)
+            return  # 跳转操作后提前返回，避免重复更新
 
-        await self._rebuild_view()
+        await self.update_view(interaction)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """检查是否是分页按钮的交互。"""
+        custom_id = interaction.data.get('custom_id')
+        if custom_id in ["page_first", "page_prev", "page_jump", "page_next", "page_last"]:
+            await self._handle_pagination(interaction)
+            return False  # 阻止按钮原有的 callback 执行
+        return True  # 其他按钮正常执行
+
+    async def update_view(self, interaction: discord.Interaction):
+        """使用新的交互对象，重建并编辑消息。"""
+        await self.rebuild_view()
         if self.is_finished():
-            await interaction.response.edit_message(content="操作已完成或出现错误。", view=None, embed=None)
-        else:
+            await interaction.edit_original_response(content="操作已完成或超时。", view=None, embed=None)
+            return
+
+        if interaction.response.is_done():
+            await interaction.edit_original_response(embed=self.embed, view=self)
+        # 如果 interaction 已经被响应 (例如，在 modal 之后)，我们直接编辑消息
+        elif self.message:
             await interaction.response.edit_message(embed=self.embed, view=self)
 
+    async def start(self, interaction: discord.Interaction, ephemeral: bool = False):
+        """使用初始交互对象发送消息并启动视图。"""
+        await self.rebuild_view()
 
-class PaginationButton(ui.Button):
-    """通用的分页按钮，将回调分发给父视图的 pagination_callback 方法。"""
+        if interaction.response.is_done():
+            self.message = await interaction.followup.send(embed=self.embed, view=self, ephemeral=ephemeral)
+        else:
+            await interaction.response.send_message(embed=self.embed, view=self, ephemeral=ephemeral)
+            self.message = await interaction.original_response()
 
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-    async def callback(self, interaction: discord.Interaction):
-        """将交互事件分发给父视图的分页回调。"""
-        if isinstance(self.view, PaginatedView):
-            await self.view.pagination_callback(interaction)
+    async def on_timeout(self):
+        """超时后禁用所有组件。"""
+        for item in self.children:
+            item.disabled = True
+        try:
+            if self.message:
+                await self.message.edit(view=self)
+        except discord.NotFound:
+            pass  # 消息可能已被删除

@@ -31,7 +31,7 @@ class EmbedLinkManager:
 
     # --- Class-level state ---
     _registry: Dict[str, EmbedLinkManager] = {}
-    _configs: Dict[str, Dict[str, int]] = {}
+    configs: Optional[Dict[str, Dict[str, int]]] = None
     _is_initialized: bool = False
     _lock = asyncio.Lock()  # 异步锁，用于保护文件I/O和初始化
 
@@ -71,7 +71,7 @@ class EmbedLinkManager:
         获取或创建并注册一个EmbedLinkManager实例。
         假定 initialize_all_managers() 已经被调用。
         """
-        if cls._configs is None:
+        if cls.configs is None:
             # 这个警告帮助开发者发现他们是否忘记了在 setup_hook 中初始化
             cls._logger.critical("EmbedLinkManager 在未初始化的情况下被调用！请在 Bot.setup_hook 中调用 initialize_all_managers()。")
 
@@ -118,7 +118,7 @@ class EmbedLinkManager:
             "post_id": message_id
         }
 
-        self.__class__._configs[self.key] = new_config
+        self.__class__.configs[self.key] = new_config
         await self.__class__._save_configs()
 
         self._logger.info(f"管理器 '{self.key}' 的配置已更新。正在立即刷新...")
@@ -126,8 +126,8 @@ class EmbedLinkManager:
 
     async def clear_config(self) -> None:
         """清除此管理器的配置并持久化。"""
-        if self.key in self.__class__._configs:
-            del self.__class__._configs[self.key]
+        if self.key in self.__class__.configs:
+            del self.__class__.configs[self.key]
             await self.__class__._save_configs()
             self._logger.info(f"管理器 '{self.key}' 的配置已清除。")
             await self.refresh_from_config()  # 刷新将使其回退到默认值
@@ -137,9 +137,10 @@ class EmbedLinkManager:
         根据当前类中存储的配置来刷新此实例的embed和url。
         此方法应由CoreCog的定时任务调用。
         """
-        config = self.__class__._configs.get(self.key)
+        config = self.__class__.configs.get(self.key)
         if not config:
             # 如果配置不存在，确保状态被重置
+            self._logger.error(f"管理器 '{self.key}' 的配置文件不存在")
             if self._embed is not None or self._url is not None:
                 self._embed = None
                 self._url = None
@@ -182,23 +183,23 @@ class EmbedLinkManager:
         从JSON文件加载所有配置。
         """
         async with cls._lock:
-            if cls._configs is not None:  # 防止重复初始化
+            if cls.configs is not None:  # 防止重复初始化
                 return
 
             try:
                 loop = asyncio.get_running_loop()
                 content = await loop.run_in_executor(None, cls._read_file_sync)
                 if content:
-                    cls._configs = json.loads(content)
-                    cls._logger.info(f"已成功从 {CONFIG_FILE_PATH} 加载 {len(cls._configs)} 条链接配置。")
+                    cls.configs = json.loads(content)
+                    cls._logger.info(f"已成功从 {CONFIG_FILE_PATH} 加载 {len(cls.configs)} 条链接配置。")
                 else:
-                    cls._configs = {}
+                    cls.configs = {}
             except FileNotFoundError:
                 cls._logger.info(f"配置文件 {CONFIG_FILE_PATH} 未找到，将创建新文件。")
-                cls._configs = {}
+                cls.configs = {}
             except json.JSONDecodeError:
                 cls._logger.error(f"无法解析 {CONFIG_FILE_PATH}。将使用空配置。")
-                cls._configs = {}
+                cls.configs = {}
 
     @classmethod
     def _read_file_sync(cls) -> str:
@@ -213,5 +214,5 @@ class EmbedLinkManager:
             # 使用 to_thread 避免阻塞事件循环
             await loop.run_in_executor(
                 None,
-                lambda: json.dump(cls._configs, open(CONFIG_FILE_PATH, 'w', encoding='utf-8'), indent=4)
+                lambda: json.dump(cls.configs, open(CONFIG_FILE_PATH, 'w', encoding='utf-8'), indent=4)
             )

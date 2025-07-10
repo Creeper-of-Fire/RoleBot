@@ -11,7 +11,7 @@ from utility.auth import is_role_dangerous
 
 if typing.TYPE_CHECKING:
     from fashion.cog import FashionCog
-from utility.helpers import try_get_member, safe_defer
+from utility.helpers import safe_defer
 from utility.role_service import update_member_roles
 from utility.paginated_view import PaginatedView
 
@@ -19,13 +19,14 @@ FASHION_ROLES_PER_PAGE = 25
 
 
 class FashionManageView(PaginatedView):
-    """用户私有的幻化身份组管理视图，继承自 PaginatedView。"""
+    """用户私有的幻化身份组管理视图，继承自新版 PaginatedView。"""
 
     def __init__(self, cog: 'FashionCog', user: discord.Member):
-        timeout_minutes = config.ROLE_MANAGER_CONFIG.get("private_panel_timeout_minutes", 3)
-        super().__init__(cog, user, items_per_page=FASHION_ROLES_PER_PAGE, timeout=timeout_minutes * 60)
         self.cog = cog
+        self.user = user
+        self.guild = user.guild
 
+        # 1. 准备数据
         safe_fashion_map = self.cog.safe_fashion_map_cache.get(self.guild.id, {})
         self.fashion_to_base_map: Dict[int, List[int]] = {}
         all_fashion_options = []
@@ -39,21 +40,34 @@ class FashionManageView(PaginatedView):
 
         for fashion_id, base_ids_set in temp_fashion_to_bases.items():
             self.fashion_to_base_map[fashion_id] = list(base_ids_set)
-            representative_base_id = list(base_ids_set)[0]
-            all_fashion_options.append((fashion_id, representative_base_id))
+            all_fashion_options.append((fashion_id, list(base_ids_set)[0]))
 
         all_fashion_options.sort(key=lambda x: self.cog.role_name_cache.get(x[0], ''))
-        self._update_page_info(all_fashion_options)
 
-        if not self.all_items:
+        if not all_fashion_options:
             self.cog.logger.info(f"服务器 {self.guild.id} 未配置幻化系统或无安全幻化组。")
 
-    async def _rebuild_view(self):
+        # 2. [改动] 调用父类构造函数，只传递数据，不传递 interaction/cog/user
+        timeout_minutes = config.ROLE_MANAGER_CONFIG.get("private_panel_timeout_minutes", 3)
+        super().__init__(
+            all_items=all_fashion_options,
+            items_per_page=FASHION_ROLES_PER_PAGE,
+            timeout=timeout_minutes * 60
+        )
+
+    # [改动] 实现新的抽象方法 _rebuild_view
+    async def rebuild_view(self):
         self.clear_items()
-        member = self._try_get_safe_member()
+
+        # 尝试安全地获取最新的成员对象
+        member = self.guild.get_member(self.user.id)
         if member is None:
+            self.embed = discord.Embed(title="错误", description="无法加载您的信息，您可能已离开服务器。", color=Color.red())
+            self.add_item(ui.Button(label="错误", style=discord.ButtonStyle.danger, disabled=True))
+            self.stop()
             return
 
+        # --- 以下是原来 _rebuild_view 的逻辑 ---
         member_role_ids = {role.id for role in member.roles}
         all_configured_base_ids = set(self.cog.safe_fashion_map_cache.get(self.guild.id, {}).keys())
         member_base_role_ids = member_role_ids.intersection(all_configured_base_ids)
@@ -61,7 +75,6 @@ class FashionManageView(PaginatedView):
         not_normal_role_ids = set(config_data.FASHION_NOT_NORMAL_ROLE_IDS)
         normal_base_role_ids = member_base_role_ids - not_normal_role_ids
 
-        # 如果用户没有任何普通的基础身份组，则显示指引
         if not normal_base_role_ids:
             self.embed = self.cog.guide_embed
         else:
@@ -69,7 +82,6 @@ class FashionManageView(PaginatedView):
             self.embed.description = "在这里管理你的幻化外观吧！"
 
         if not self.all_items:
-            # 如果服务器没有任何幻化项，则覆盖Embed描述
             self.embed.description = "此服务器未配置幻化系统，或所有幻化身份组均不安全。"
 
         self.embed.set_footer(text=f"面板将在 {config.ROLE_MANAGER_CONFIG.get('private_panel_timeout_minutes', 3)} 分钟后失效。")
@@ -85,15 +97,15 @@ class FashionManageView(PaginatedView):
             page_num=self.page, total_pages=self.total_pages,
         ))
 
+        # [改动] 从基类添加分页按钮
         self._add_pagination_buttons(row=1)
 
-        # --- 为所有情况添加指引链接按钮 ---
-        if self.cog.guide_url:  # 只有当 URL 成功缓存时才添加按钮
+        if self.cog.guide_url:
             self.add_item(ui.Button(
                 label=f"跳转到 “{self.cog.guide_embed.title}”",
                 style=discord.ButtonStyle.link,
                 url=self.cog.guide_url,
-                row=2  # 放在新的一行，避免与分页按钮挤占
+                row=2
             ))
 
 
@@ -108,7 +120,8 @@ class FashionRoleSelect(ui.Select):
         self.fashion_to_base_map = fashion_to_base_map
         self.not_normal_role_ids = set(config_data.FASHION_NOT_NORMAL_ROLE_IDS)
 
-        sorted_page_options_data = sorted(page_options_data, key=lambda x: any(base_id in member_role_ids for base_id in self.fashion_to_base_map.get(x[0], [])),
+        sorted_page_options_data = sorted(page_options_data,
+                                          key=lambda x: any(base_id in member_role_ids for base_id in self.fashion_to_base_map.get(x[0], [])),
                                           reverse=True)
 
         options = []
@@ -235,14 +248,5 @@ class FashionRoleSelect(ui.Select):
             await asyncio.sleep(5)
             await warning_message.delete()
 
-        refreshed_member = await try_get_member(guild, member.id)
-        if refreshed_member:
-            new_view = FashionManageView(self.cog, refreshed_member)
-            await new_view._rebuild_view()
-            if interaction.response.is_done():
-                await interaction.edit_original_response(content=None, embed=new_view.embed, view=new_view)
-            else:
-                # This case is unlikely but safe to handle
-                await interaction.followup.send(content=None, embed=new_view.embed, view=new_view, ephemeral=True)
-        else:
-            await interaction.edit_original_response(content="无法刷新你的信息，请重试。", view=None, embed=None)
+        if isinstance(self.view, PaginatedView):
+            await self.view.update_view(interaction)

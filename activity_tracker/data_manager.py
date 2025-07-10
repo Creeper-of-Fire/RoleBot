@@ -1,4 +1,4 @@
-# activity_tracker/data_manager.py
+# activity_tracker/heartbeat_data_manager.py
 
 from __future__ import annotations
 

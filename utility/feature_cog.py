@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 class CogABCMeta(commands.CogMeta, ABCMeta):
     pass
 
+
 class FeatureCog(commands.Cog, ABC, metaclass=CogABCMeta):
     """
     功能模块Cog的基类。
@@ -57,6 +58,7 @@ class FeatureCog(commands.Cog, ABC, metaclass=CogABCMeta):
         if core_cog:
             # 调用 CoreCog 的注册方法，把自己传进去
             core_cog.register_feature_cog(self)
+            self.logger.info(f"模块 {self.qualified_name} 已注册到 CoreCog")
         else:
             self.logger.error(f"无法找到 CoreCog。模块 {self.qualified_name} 的功能将受限，无法自动更新缓存。")
 

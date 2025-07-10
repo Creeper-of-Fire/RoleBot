@@ -13,6 +13,7 @@ from core.cog import CoreCog
 from core.embed_link.embed_manager import EmbedLinkManager
 from fashion.cog import FashionCog
 from honor_system.cog import HonorCog
+from heartbeat.cog import HeartbeatInformationCog
 from role_application.cog import RoleApplicationCog
 from role_sync.cog import RoleSyncCog
 from self_service.cog import SelfServiceCog
@@ -67,6 +68,7 @@ class RoleBot(commands.Bot):
 
     async def setup_hook(self):
         """在机器人登录前执行的异步设置。"""
+        await EmbedLinkManager.initialize_all_managers()
         await cog_manager.load_all_enabled()
         self.logger.info("开始同步应用命令...")
 
@@ -110,8 +112,6 @@ class RoleBot(commands.Bot):
                 except discord.HTTPException as e:
                     self.logger.error(f"同步命令到服务器 {guild_id} 失败: {e}")
 
-        await EmbedLinkManager.initialize_all_managers()
-
 
 # ===================================================================
 # Cog 管理器
@@ -133,6 +133,7 @@ class CogManager:
             "role_application": RoleApplicationCog,
             "track_activity": TrackActivityCog,
             "honor_system": HonorCog,
+            "heartbeat_information":HeartbeatInformationCog,
         }
 
     async def load_all_enabled(self):

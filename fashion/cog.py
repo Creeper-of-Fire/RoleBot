@@ -6,7 +6,6 @@ from typing import Optional, List, Dict
 import discord
 from discord import ui, Color
 from discord.ext import tasks, commands
-from typing_extensions import override
 
 import config_data
 from core.embed_link.embed_manager import EmbedLinkManager
@@ -166,7 +165,7 @@ class FashionPanelButton(ui.Button):
             await interaction.followup.send("错误：无法获取您的服务器成员信息。", ephemeral=True)
             return
         view = FashionManageView(self.cog, member)
-        await view._rebuild_view()
+        await view.rebuild_view()
         await interaction.followup.send(embed=view.embed, view=view, ephemeral=True)
 
 

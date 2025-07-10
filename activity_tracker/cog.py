@@ -16,7 +16,7 @@ import config
 import core.command_group
 from activity_tracker.data_manager import DataManager, BEIJING_TZ
 from activity_tracker.logic import ActivityProcessor
-from activity_tracker.views import ActivityRoleView, GenericHierarchicalPaginationView, ReportEmbeds
+from activity_tracker.views import ActivityRoleView, ReportEmbeds, UserReportDetailView
 from utility.views import ConfirmationView
 
 if typing.TYPE_CHECKING:
@@ -168,12 +168,13 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
 
         embed_template = ReportEmbeds.create_user_report_embed_template(member, days_window, report_data)
 
-        pagination_view = GenericHierarchicalPaginationView(
-            interaction=interaction, embed_template=embed_template,
+        pagination_view = UserReportDetailView(
+            embed_template=embed_template,
             sorted_display_data=sorted_display_data,
-            field_name="分频道消息数", value_suffix="条"
+            field_name="分频道消息数",
+            value_suffix="条"
         )
-        await pagination_view.start()
+        await pagination_view.start(interaction,ephemeral=True)
 
     async def handle_remove_role(self, interaction: discord.Interaction):
         """处理来自 ActivityRoleView 的“移除角色”按钮点击。"""
@@ -648,10 +649,13 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         embed_template.add_field(name=f"**总计{metric_name}**", value=f"`{total_stat}` {value_suffix}", inline=False)
         embed_template.set_footer(text=f"统计于 {datetime.now(BEIJING_TZ):%Y-%m-%d %H:%M:%S}")
 
-        view = GenericHierarchicalPaginationView(
-            interaction, embed_template, sorted_display_data, f"分频道{metric_name}", f"{value_suffix}"
+        view = UserReportDetailView(
+            embed_template=embed_template,
+            sorted_display_data=sorted_display_data,
+            field_name=f"分频道{metric_name}",
+            value_suffix=f"{value_suffix}"
         )
-        await view.start()
+        await view.start(interaction,ephemeral=True)
 
     async def get_redis_stats(self) -> typing.Optional[dict]:
         """【新增】公共接口，用于从其 DataManager 获取 Redis 统计信息。"""

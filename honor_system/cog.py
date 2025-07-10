@@ -5,6 +5,7 @@ import asyncio
 import datetime
 import time
 import typing
+from typing import Optional
 from zoneinfo import ZoneInfo
 
 import discord
@@ -363,7 +364,7 @@ class HonorCog(FeatureCog, name="Honor"):
     async def _backfill_honor_task(self, target_channel: discord.abc.Messageable, guild: discord.Guild):
         """【核心执行器】负责回填历史荣誉，是回填命令的唯一入口。"""
         start_time = time.time()
-        progress_message = None
+        progress_message: Optional[discord.Message] = None
 
         try:
             # 1. 聚合所有目标版块ID

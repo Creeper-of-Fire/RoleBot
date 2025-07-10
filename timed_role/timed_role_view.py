@@ -9,7 +9,7 @@ import config
 from timed_role import timer
 from timed_role.timer import get_daily_limit_seconds
 from utility.auth import is_role_dangerous
-from utility.helpers import try_get_member, safe_defer, format_duration_hms
+from utility.helpers import safe_defer, format_duration_hms
 from utility.paginated_view import PaginatedView
 from utility.role_service import update_member_roles
 
@@ -22,28 +22,37 @@ TIMED_ROLES_PER_PAGE = 25
 class TimedRoleManageView(PaginatedView):
     """用户私有的限时身份组管理视图。"""
 
-    def __init__(self, cog: TimedRolesCog, user: discord.Member, guild: discord.Guild):
-        timeout_minutes = config.ROLE_MANAGER_CONFIG.get("private_panel_timeout_minutes", 3)
-        super().__init__(cog, user, items_per_page=TIMED_ROLES_PER_PAGE, timeout=timeout_minutes * 60)
+    def __init__(self, cog: TimedRolesCog, user: discord.Member):
         self.cog = cog
-        self.guild = guild
+        self.user = user
+        self.guild = user.guild
 
-        self.all_timed_role_ids = self.cog.safe_timed_role_ids_cache.get(self.guild.id, [])
-        self._update_page_info(self.all_timed_role_ids)
-
-        if not self.all_items:
+        all_timed_role_ids = self.cog.safe_timed_role_ids_cache.get(self.guild.id, [])
+        if not all_timed_role_ids:
             self.cog.logger.info(f"服务器 {self.guild.id} 没有可供用户 {self.user.id} 管理的安全限时身份组。")
 
-    async def _rebuild_view(self):
+        timeout_minutes = config.ROLE_MANAGER_CONFIG.get("private_panel_timeout_minutes", 3)
+        # [改动] 调用父类构造函数，只传递数据
+        super().__init__(
+            all_items=all_timed_role_ids,
+            items_per_page=TIMED_ROLES_PER_PAGE,
+            timeout=timeout_minutes * 60
+        )
+
+    # [改动] 实现新的抽象方法 _rebuild_view
+    async def rebuild_view(self):
         self.clear_items()
-        member = self._try_get_safe_member()
+
+        member = self.guild.get_member(self.user.id)
         if member is None:
+            self.embed = discord.Embed(title="错误", description="无法加载您的信息，您可能已离开服务器。", color=Color.red())
+            self.add_item(ui.Button(label="错误", style=discord.ButtonStyle.danger, disabled=True))
+            self.stop()
             return
 
+        # --- 以下是原来 _rebuild_view 的逻辑 ---
         user_guild_data = self.cog.timed_role_data_manager._get_guild_user_data(self.user.id, self.guild.id)
         current_timed_role_ids = set(user_guild_data.get("current_timed_roles", []))
-
-        un_wear_role_ids = set(self.all_timed_role_ids) - current_timed_role_ids
 
         start, end = self.get_page_range()
         page_timed_role_ids = self.all_items[start:end]
@@ -53,47 +62,30 @@ class TimedRoleManageView(PaginatedView):
 
         self.add_item(ReturnTimedRoleButton(self.cog, row=1))
 
+        # [改动] 从基类添加分页按钮
         self._add_pagination_buttons(row=2)
 
         self.embed = discord.Embed(title=f"⏳ {self.user.display_name} 的限时身份组", color=Color.blurple())
 
-        # 动态获取服务器的总时长和剩余时长
         remaining_seconds = self.cog.timed_role_data_manager.get_remaining_seconds(member.id, self.guild.id)
         daily_limit_seconds = get_daily_limit_seconds(self.guild.id)
         used_seconds = daily_limit_seconds - remaining_seconds
 
-        # 在embed中显示总时长，让用户更清晰
-        self.embed.add_field(name="😺 今日总时长", value=format_duration_hms(daily_limit_seconds), inline=False)
-        self.embed.add_field(name="😼 今日已用时长", value=format_duration_hms(used_seconds), inline=False)
-        self.embed.add_field(name="🙀 今日剩余时长", value=format_duration_hms(remaining_seconds), inline=False)
-
-
+        self.embed.add_field(name="😺 今日总时长", value=format_duration_hms(daily_limit_seconds), inline=True)
+        self.embed.add_field(name="🙀 今日剩余时长", value=format_duration_hms(remaining_seconds), inline=True)
+        self.embed.add_field(name="😼 今日已用时长", value=format_duration_hms(used_seconds), inline=True)
 
         if current_timed_role_ids:
-            roles_text = "\n".join([f"<@&{rid}>" for rid in current_timed_role_ids if self.guild.get_role(rid)])
-            self.embed.add_field(name="当前持有：", value=f"{roles_text}", inline=False)
+            roles_text = " ".join([f"<@&{rid}>" for rid in current_timed_role_ids if self.guild.get_role(rid)])
+            self.embed.add_field(name="当前持有：", value=roles_text if roles_text else "无", inline=False)
         else:
             self.embed.add_field(name="当前持有：", value="你当前未持有任何限时身份组。", inline=False)
 
-        if un_wear_role_ids:
-            roles_text = "\n".join([f"<@&{rid}>" for rid in un_wear_role_ids if self.guild.get_role(rid)])
-            self.embed.add_field(name="还可佩戴：", value=f"{roles_text}", inline=False)
-
-
         reset_hour = config.ROLE_MANAGER_CONFIG.get("reset_hour_utc8", 16)
-
         if not self.all_items:
             self.embed.description = "此服务器没有可供您管理的限时身份组。"
-
-        self.embed.set_footer(text=f"每日UTC+8 {reset_hour}点重置时长 | 面板将在 {config.ROLE_MANAGER_CONFIG.get('private_panel_timeout_minutes', 3)} 分钟后失效。")
-
-    async def on_timeout(self):
-        """超时后禁用所有按钮。"""
-        for item in self.children:
-            item.disabled = True
-        # 如果 self.message 存在，可以编辑原始消息
-        if hasattr(self, 'message') and self.message:
-            await self.message.edit(view=self)
+        self.embed.set_footer(
+            text=f"每日UTC+8 {reset_hour}点重置时长 | 面板将在 {config.ROLE_MANAGER_CONFIG.get('private_panel_timeout_minutes', 3)} 分钟后失效。")
 
 
 class PrivateTimedRoleSelect(ui.Select):
@@ -141,14 +133,14 @@ class PrivateTimedRoleSelect(ui.Select):
         await interaction.edit_original_response(content="# ✅ 正在尝试变更身份……")
         if dangerous_attempted_names:
             await interaction.followup.send(f"❌ 操作失败：尝试获取的身份组 '{', '.join(dangerous_attempted_names)}' 包含敏感权限。", ephemeral=True)
-            await self._refresh_view(interaction, member)
+            await self._refresh_view(interaction)
             return
 
         # 3. 检查用户时长
         is_permanent_guild = timer.is_guild_permanent(guild.id)
         if roles_to_add_ids and not is_permanent_guild and self.cog.timed_role_data_manager.get_remaining_seconds(member.id, guild.id) <= 0:
             await interaction.followup.send("❌ 你今天的限时身份组使用时长已用尽，无法选择新的身份组。", ephemeral=True)
-            await self._refresh_view(interaction, member)
+            await self._refresh_view(interaction)
             return
 
         # 4. 更新身份组并处理数据
@@ -162,16 +154,11 @@ class PrivateTimedRoleSelect(ui.Select):
         elif all_current_selection_set != final_new_selection_set:
             await self.cog.timed_role_data_manager.claim_timed_roles(member.id, list(final_new_selection_set), guild.id)
 
-        await self._refresh_view(interaction, member)
+        await self._refresh_view(interaction)
 
-    async def _refresh_view(self, interaction: discord.Interaction, member: discord.Member):
-        refreshed_member = await try_get_member(member.guild, member.id)
-        if refreshed_member:
-            new_view = TimedRoleManageView(self.cog, refreshed_member, interaction.guild)
-            await new_view._rebuild_view()
-            await interaction.edit_original_response(content=None, embed=new_view.embed, view=new_view)
-        else:
-            await interaction.edit_original_response(content=None, view=None, embed=None)
+    async def _refresh_view(self, interaction: discord.Interaction):
+        if isinstance(self.view, PaginatedView):
+            await self.view.update_view(interaction)
 
 
 class ReturnTimedRoleButton(ui.Button):
@@ -205,10 +192,5 @@ class ReturnTimedRoleButton(ui.Button):
         await self._refresh_view(interaction, member)
 
     async def _refresh_view(self, interaction: discord.Interaction, member: discord.Member):
-        refreshed_member = await try_get_member(member.guild, member.id)
-        if refreshed_member:
-            new_view = TimedRoleManageView(self.cog, refreshed_member, interaction.guild)
-            await new_view._rebuild_view()
-            await interaction.edit_original_response(content=None, embed=new_view.embed, view=new_view)
-        else:
-            await interaction.edit_original_response(content=None, view=None, embed=None)
+        if isinstance(self.view, PaginatedView):
+            await self.view.update_view(interaction)

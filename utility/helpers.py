@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import discord
+import pytz
 
+BEIJING_TZ = pytz.timezone('Asia/Shanghai')
 
 async def safe_defer(interaction: discord.Interaction, *, thinking: bool = False):
     """安全地延迟响应一个交互，如果它还没有被响应。"""
@@ -31,12 +33,12 @@ def create_progress_bar(current: int, total: int, bar_length: int = 20) -> str:
 
 def format_duration_hms(total_seconds: int) -> str:
     """将总秒数格式化为 'X小时 Y分钟 Z秒' 的字符串。"""
-    if total_seconds <= 0: return "`0` 秒"
+    if total_seconds <= 0: return "0 秒"
     seconds, hours, minutes = int(total_seconds), 0, 0
     if seconds >= 3600: hours, seconds = divmod(seconds, 3600)
     if seconds >= 60: minutes, seconds = divmod(seconds, 60)
     parts = []
-    if hours > 0: parts.append(f"`{hours}` 小时")
-    if minutes > 0: parts.append(f"`{minutes}` 分钟")
-    if seconds > 0 or not parts: parts.append(f"`{seconds}` 秒")
+    if hours > 0: parts.append(f"{hours} 小时")
+    if minutes > 0: parts.append(f"{minutes} 分钟")
+    if seconds > 0 or not parts: parts.append(f"{seconds} 秒")
     return " ".join(parts)
