@@ -10,7 +10,7 @@ from discord.ext import commands, tasks
 
 import config
 from information.data_manager import HeartbeatDataManager, HeartbeatInfo
-from utility.helpers import format_duration_hms
+from utility.helpers import format_duration_hms, BEIJING_TZ
 
 
 def _last_update_of_message(message: discord.Message) -> datetime:
@@ -159,16 +159,17 @@ class HeartbeatInformationCog(commands.Cog, name="Heartbeat Information"):
         # 从数据文件移除
         info = await self.data_manager.remove_heartbeat(target_message_id)
 
-        # 尝试通知创建者
         if info:
             try:
-                creator = await self.bot.fetch_user(info.created_by)
-                await creator.send(f"⚠️ 您创建的一个心跳资讯已被自动移除。\n"
-                                   f"**原因**: {reason}\n"
-                                   f"**源消息**: <{info.source_url}>\n"
-                                   f"**目标位置**: <{info.target_url}>")
-            except (discord.NotFound, discord.Forbidden):
-                self.bot.logger.warning(f"无法通知心跳资讯 {key} 的创建者 (ID: {info.created_by})。")
+                channel_id = info.target_channel_id
+                message_id = info.target_message_id
+                channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
+                message = await channel.fetch_message(message_id)
+                message_content = message.content
+                await message.edit(
+                    content=f"⚠️ 本消息已停止同步，最后更新时间：{datetime.now(BEIJING_TZ)}。\n" + message_content)
+            except (discord.NotFound, discord.Forbidden, ValueError) as e:
+                self.bot.logger.warning(f"无法删除目标消息 {target_message_id}：{str(e)}")
 
     # --- Slash Commands ---
 
