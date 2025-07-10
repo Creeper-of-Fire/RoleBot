@@ -7,6 +7,7 @@ import platform
 import zipfile
 
 import config
+from core.embed_link.embed_manager import EmbedLinkManager
 
 try:
     import distro
@@ -63,9 +64,11 @@ class CoreCog(commands.Cog, name="Core"):
         self.role_name_cache: Dict[int, str] = {}
         self.feature_cogs: List[FeatureCog] = []
         self._update_all_caches_task.start()
+        self.update_registered_embeds_task.start()
 
     def cog_unload(self):
         self._update_all_caches_task.cancel()
+        self.update_registered_embeds_task.cancel()
 
     @tasks.loop(hours=1)
     async def _update_all_caches_task(self):
@@ -86,23 +89,6 @@ class CoreCog(commands.Cog, name="Core"):
                 self.logger.error(f"模块 {cog.qualified_name} 在更新缓存时发生错误: {result}", exc_info=result)
 
         self.logger.info("每小时全局安全缓存更新完毕。")
-
-    @_update_all_caches_task.before_loop
-    async def before_cache_update_task(self):
-        """在任务开始前，等待机器人就绪并执行一次初始缓存。"""
-        await self.bot.wait_until_ready()
-        # 确保在第一次循环前，所有 feature_cogs 都已注册
-        # setup_hook 是更稳妥的地方，但这里延迟一下也能工作
-        await asyncio.sleep(5)
-        self.logger.info("CoreCog 已就绪，准备执行首次缓存更新...")
-
-    def register_feature_cog(self, cog: FeatureCog):
-        """允许其他功能模块向核心Cog注册自己。"""
-        if asyncio.iscoroutinefunction(cog.update_safe_roles_cache):
-            self.feature_cogs.append(cog)
-            self.logger.info(f"功能模块 {cog.qualified_name} 已成功注册到 CoreCog。")
-        else:
-            self.logger.error(f"尝试注册的模块 {cog.qualified_name} 未实现 'update_safe_roles_cache' 异步方法，注册失败。")
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -133,6 +119,54 @@ class CoreCog(commands.Cog, name="Core"):
         # MainPanelView 的 __init__ 需要修改，以动态地从 bot 获取 cogs
         view = MainPanelView(self)
         await interaction.response.send_message(embed=embed, view=view)
+
+    @tasks.loop(minutes=15)
+    async def update_registered_embeds_task(self):
+        """定时刷新所有已注册的EmbedLinkManager。"""
+        self.bot.logger.info("开始刷新所有已注册的Embed链接...")
+        managers = EmbedLinkManager.get_all_managers()
+        if not managers:
+            self.bot.logger.info("没有已注册的Embed链接管理器，跳过刷新。")
+            return
+
+        for manager in managers:
+            await manager.refresh_from_config()
+        self.bot.logger.info(f"已完成对 {len(managers)} 个管理器的刷新。")
+
+
+    async def link_module_autocomplete(self,interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
+        """为配置指令提供模块键的自动补全。"""
+        keys = EmbedLinkManager.get_registered_keys()
+        return [
+            app_commands.Choice(name=key, value=key)
+            for key in keys if current.lower() in key.lower()
+        ]
+
+    @core_group.command(name="配置embed链接", description="配置一个模块使用的Discord消息链接")
+    @app_commands.describe(module="要配置的模块名", url="指向Discord消息的URL (留空以清除)")
+    @app_commands.autocomplete(module=link_module_autocomplete)
+    @app_commands.checks.has_permissions(manage_roles=True)
+    async def config_embed_link(self, interaction: discord.Interaction, module: str, url: typing.Optional[str] = None):
+        """配置或清除一个模块的消息链接。"""
+        manager = EmbedLinkManager.get_manager(module)
+        if not manager:
+            await interaction.response.send_message(f"❌ 错误：找不到名为 `{module}` 的模块。可用模块: `{'`, `'.join(EmbedLinkManager.get_registered_keys())}`",
+                                                    ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            if url:
+                await manager.set_from_url(url)
+                await interaction.edit_original_response(content=f"✅ 成功！模块 `{module}` 的链接已更新。新的Embed已加载。")
+            else:
+                await manager.clear_config()
+                await interaction.edit_original_response(content=f"🗑️ 成功！模块 `{module}` 的链接配置已被清除。它现在将显示默认内容。")
+        except ValueError as e:
+            await interaction.edit_original_response(content=f"❌ 错误: {e}")
+        except Exception as e:
+            self.bot.logger.error(f"配置模块 '{module}' 时发生未知错误: {e}")
+            await interaction.edit_original_response(content=f"❌ 发生未知错误，请检查日志。")
 
     @core_group.command(name="刷新成员缓存", description="【非常耗时！注意！】手动拉取服务器所有成员信息到机器人缓存中（带进度条）。")
     @app_commands.checks.has_permissions(manage_roles=True)
@@ -361,6 +395,24 @@ class CoreCog(commands.Cog, name="Core"):
         # 创建 discord.File 对象并发送
         backup_file = discord.File(memory_file, filename=filename)
         await interaction.followup.send(content=f"📦 {interaction.user.mention}，这是您请求的数据备份文件：", file=backup_file, ephemeral=False)
+
+    @update_registered_embeds_task.before_loop
+    @_update_all_caches_task.before_loop
+    async def before_cache_update_task(self):
+        """在任务开始前，等待机器人就绪并执行一次初始缓存。"""
+        await self.bot.wait_until_ready()
+        # 确保在第一次循环前，所有 feature_cogs 都已注册
+        # setup_hook 是更稳妥的地方，但这里延迟一下也能工作
+        await asyncio.sleep(5)
+        self.logger.info("CoreCog 已就绪，准备执行首次缓存更新...")
+
+    def register_feature_cog(self, cog: FeatureCog):
+        """允许其他功能模块向核心Cog注册自己。"""
+        if asyncio.iscoroutinefunction(cog.update_safe_roles_cache):
+            self.feature_cogs.append(cog)
+            self.logger.info(f"功能模块 {cog.qualified_name} 已成功注册到 CoreCog。")
+        else:
+            self.logger.error(f"尝试注册的模块 {cog.qualified_name} 未实现 'update_safe_roles_cache' 异步方法，注册失败。")
 
 
 async def setup(bot: commands.Bot):

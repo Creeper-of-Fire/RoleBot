@@ -10,6 +10,7 @@ import config
 import config_data
 from activity_tracker.cog import TrackActivityCog
 from core.cog import CoreCog
+from core.embed_link.embed_manager import EmbedLinkManager
 from fashion.cog import FashionCog
 from honor_system.cog import HonorCog
 from role_application.cog import RoleApplicationCog
@@ -108,6 +109,8 @@ class RoleBot(commands.Bot):
                     self.logger.info(f"已同步 {len(synced)} 个命令到服务器 {guild_id}")
                 except discord.HTTPException as e:
                     self.logger.error(f"同步命令到服务器 {guild_id} 失败: {e}")
+
+        await EmbedLinkManager.initialize_all_managers()
 
 
 # ===================================================================
