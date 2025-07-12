@@ -2,7 +2,7 @@
 import asyncio
 import re
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 
 import discord
 from discord import app_commands
@@ -10,10 +10,11 @@ from discord.ext import commands, tasks
 
 import config
 from information.data_manager import HeartbeatDataManager, HeartbeatInfo
-from utility.helpers import format_duration_hms, BEIJING_TZ
+from utility.helpers import format_duration_hms, BEIJING_TZ, create_jump_url
 
 
 def _last_update_of_message(message: discord.Message) -> datetime:
+    """获取消息的最后更新时间（编辑时间或创建时间）。"""
     return message.edited_at or message.created_at
 
 
@@ -23,14 +24,15 @@ class HeartbeatInformationCog(commands.Cog, name="Heartbeat Information"):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.data_manager = HeartbeatDataManager()
-        # 存储每个心跳资讯的动态任务
+        # 存储每个心跳资讯的动态任务 (键仍为 target_message_id 的字符串形式)
         self.active_tasks: Dict[str, tasks.Loop] = {}
 
     async def cog_load(self):
         """Cog加载时，加载数据并为现有记录启动任务。"""
         await self.data_manager.load_data()
         for info in self.data_manager.get_all_heartbeats():
-            self._start_heartbeat_task(info)
+            if info.target_message_id:  # 只有有目标消息ID的才启动心跳任务
+                self._start_heartbeat_task(info)
 
     async def cog_unload(self):
         """Cog卸载时，取消所有正在运行的任务。"""
@@ -38,16 +40,50 @@ class HeartbeatInformationCog(commands.Cog, name="Heartbeat Information"):
             task.cancel()
         self.active_tasks.clear()
 
+    async def _fetch_source_message(self, info: HeartbeatInfo) -> Optional[discord.Message]:
+        """根据HeartbeatInfo获取源消息，支持特定消息和频道最新消息。"""
+        try:
+            source_guild = self.bot.get_guild(info.source_guild_id) or await self.bot.fetch_guild(info.source_guild_id)
+            source_channel = source_guild.get_channel(info.source_channel_id) or await source_guild.fetch_channel(info.source_channel_id)
+
+            if info.is_channel_feed:
+                # 获取频道最新消息
+                async for msg in source_channel.history(limit=1):
+                    return msg
+                return None  # 频道无消息
+            elif info.source_message_id:
+                # 获取特定消息
+                return await source_channel.fetch_message(info.source_message_id)
+            else:
+                self.bot.logger.error(f"心跳资讯 {info.key} 配置错误：既不是频道订阅也不是特定消息。")
+                return None
+        except (discord.NotFound, discord.Forbidden):
+            raise  # 重新抛出以便上层处理，例如移除任务
+        except Exception as e:
+            self.bot.logger.error(f"获取源消息时发生未知错误 for {info.key}: {e}")
+            raise
+
     @staticmethod
-    def _prepare_target_message_kwargs(source_message: discord.Message, heartbeat_info: HeartbeatInfo) -> Dict[str, Any]:
+    def _prepare_target_message_kwargs(source_message: discord.Message, heartbeat_info: HeartbeatInfo, *, jump_url: Optional[str] = None) -> Dict[
+        str, Any]:
         """
         根据源消息和模式准备发送/编辑消息的关键字参数。
+        增加了标题处理。
 
         Returns:
             一个包含 'content' 和 'embeds' 键的字典。
         """
+        if jump_url:
+            _jump_url = jump_url
+        else:
+            _jump_url = source_message.jump_url
+
         source_embeds = source_message.embeds
         source_content = source_message.content
+        title_prefix = f"**{heartbeat_info.title}**\n" if heartbeat_info.title else ""
+
+        mode_type = "频道订阅" if heartbeat_info.is_channel_feed else "消息同步"
+        set_author_name = f"来自 {source_message.author.display_name} 的消息（同步）" if not heartbeat_info.is_channel_feed else f"来自 {source_message.channel.name} 的消息（同步）"
 
         # 这是新模式的核心逻辑
         if heartbeat_info.embed_mode and not source_embeds and source_content:
@@ -57,11 +93,13 @@ class HeartbeatInformationCog(commands.Cog, name="Heartbeat Information"):
                 description=source_content,
                 color=discord.Color.blue()  # 您可以自定义颜色
             )
+            if heartbeat_info.title:
+                embed.title = heartbeat_info.title  # 将标题设置到Embed的title
             # 添加作者和时间戳，让资讯更具上下文
-            embed.set_author(name=f"来自 {source_message.author.display_name} 的消息（同步）", url=source_message.jump_url,
+            embed.set_author(name=set_author_name, url=_jump_url,
                              icon_url=source_message.author.display_avatar)
             embed.set_footer(
-                text=f"消息同步 | 检测频率： {format_duration_hms(heartbeat_info.update_interval_seconds)} | 源消息更新于")
+                text=f"{mode_type} | 检测频率： {format_duration_hms(heartbeat_info.update_interval_seconds)} | 源消息更新于")
             embed.timestamp = _last_update_of_message(source_message)
 
             return {"content": None, "embeds": [embed]}
@@ -70,18 +108,25 @@ class HeartbeatInformationCog(commands.Cog, name="Heartbeat Information"):
             new_embeds = [embed.copy() for embed in source_embeds]
             if len(new_embeds) > 0:
                 first_embed = new_embeds[0]
+                # 更新Embed的作者信息和footer
                 old_author = first_embed.author
-
-                author_name = old_author.name or f"来自 {source_message.author.display_name} 的消息（同步）"
+                author_name = old_author.name or set_author_name
                 author_icon_url = old_author.icon_url or source_message.author.display_avatar
-                author_url = source_message.jump_url
+                author_url = _jump_url
                 first_embed.set_author(name=author_name, url=author_url, icon_url=author_icon_url)
                 first_embed.set_footer(
-                    text=f"消息同步 | 检测频率： {format_duration_hms(heartbeat_info.update_interval_seconds)} | 源消息更新于")
+                    text=f"{mode_type} | 检测频率： {format_duration_hms(heartbeat_info.update_interval_seconds)} | 源消息更新于")
                 first_embed.timestamp = _last_update_of_message(source_message)
 
+                # 如果有标题，尝试添加到Embed的title，如果已经有title，则考虑前缀
+                if heartbeat_info.title:
+                    if first_embed.title:
+                        first_embed.title = f"{heartbeat_info.title}: {first_embed.title}"
+                    else:
+                        first_embed.title = heartbeat_info.title
+
             return {
-                "content": source_content if source_content else None,
+                "content": title_prefix + source_content if source_content else title_prefix or None,
                 "embeds": new_embeds
             }
 
@@ -90,10 +135,12 @@ class HeartbeatInformationCog(commands.Cog, name="Heartbeat Information"):
 
         async def update_message():
             try:
-                source_guild = self.bot.get_guild(info.source_guild_id) or await self.bot.fetch_guild(info.source_guild_id)
-                source_channel = source_guild.get_channel(info.source_channel_id) or await source_guild.fetch_channel(info.source_channel_id)
-                source_message = await source_channel.fetch_message(info.source_message_id)
+                source_message = await self._fetch_source_message(info)
+                if not source_message:
+                    # 频道无消息或配置错误，跳过此次更新
+                    return
 
+                # 检查源消息是否更新
                 if _last_update_of_message(source_message) == info.last_update:
                     return
 
@@ -105,25 +152,34 @@ class HeartbeatInformationCog(commands.Cog, name="Heartbeat Information"):
                 edit_kwargs = self._prepare_target_message_kwargs(source_message, info)
 
                 # 更新消息
-                await target_message.edit(**edit_kwargs)
+                await target_message.edit(**edit_kwargs, allowed_mentions=discord.AllowedMentions.none())
+
+                # 更新HeartbeatInfo中的last_update并保存
+                info.last_update = _last_update_of_message(source_message)
+                await self.data_manager.update_heartbeat(info)
 
             except discord.NotFound:
-                # 如果源或目标消息被删除，则停止并移除此任务
-                self.bot.logger.warning(f"心跳资讯 {info.key} 的源或目标消息已不存在，将自动移除。")
-                await self._stop_and_remove_heartbeat(info.target_message_id, f"源或目标消息已删除")
+                # 如果源或目标消息/频道被删除，则停止并移除此任务
+                self.bot.logger.warning(f"心跳资讯 {info.target_message_id} (标题: {info.title}) 的源/目标实体已不存在，将自动移除。")
+                await self._stop_and_remove_heartbeat(info.target_message_id, f"源/目标实体已删除")
             except discord.Forbidden:
-                self.bot.logger.error(f"心跳资讯 {info.key} 更新失败：权限不足。将自动移除。")
+                self.bot.logger.error(f"心跳资讯 {info.target_message_id} (标题: {info.title}) 更新失败：权限不足。将自动移除。")
                 await self._stop_and_remove_heartbeat(info.target_message_id, f"机器人权限不足")
             except Exception as e:
-                self.bot.logger.error(f"更新心跳资讯 {info.key} 时发生未知错误: {e}")
+                self.bot.logger.error(f"更新心跳资讯 {info.target_message_id} (标题: {info.title}) 时发生未知错误: {e}")
 
         return update_message
 
     def _start_heartbeat_task(self, info: HeartbeatInfo):
         """根据HeartbeatInfo创建一个新的后台任务并启动它。"""
-        if info.key in self.active_tasks:
-            self.bot.logger.warning(f"尝试启动已存在的心跳任务: {info.key}。将先停止旧任务。")
-            self.active_tasks[info.key].cancel()
+        if not info.target_message_id:
+            self.bot.logger.warning(f"尝试启动无目标消息ID的心跳任务: {info.title}。跳过。")
+            return
+
+        key = str(info.target_message_id)
+        if key in self.active_tasks:
+            self.bot.logger.warning(f"尝试启动已存在的心跳任务: {info.title} (ID: {key})。将先停止旧任务。")
+            self.active_tasks[key].cancel()
 
         # 1. 创建任务的协程
         coro = self._create_task_coro(info)
@@ -139,9 +195,9 @@ class HeartbeatInformationCog(commands.Cog, name="Heartbeat Information"):
         new_task.before_loop(before_loop_waiter)
 
         # 4. 存储并直接启动任务
-        self.active_tasks[info.key] = new_task
+        self.active_tasks[key] = new_task
         new_task.start()
-        self.bot.logger.info(f"已调度心跳资讯任务: {info.key} (将在机器人ready后开始运行)，间隔: {info.update_interval_seconds}s")
+        self.bot.logger.info(f"已调度心跳资讯任务: {info.title} (ID: {key})，间隔: {info.update_interval_seconds}s")
 
     async def _stop_and_remove_heartbeat(self, target_message_id: int, reason: str):
         """停止任务，从数据管理器中移除记录，并尝试通知创建者。"""
@@ -156,16 +212,22 @@ class HeartbeatInformationCog(commands.Cog, name="Heartbeat Information"):
         info = await self.data_manager.remove_heartbeat(target_message_id)
 
         if info:
+            self.bot.logger.info(f"心跳资讯 {info.title} (ID: {key}) 因 '{reason}' 被移除。")
             try:
                 channel_id = info.target_channel_id
                 message_id = info.target_message_id
-                channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
-                message = await channel.fetch_message(message_id)
-                message_content = message.content
-                await message.edit(
-                    content=f"⚠️ 本消息已停止同步，最后更新时间：{datetime.now(BEIJING_TZ)}。\n" + message_content)
+                if channel_id and message_id:  # 确保有目标消息才尝试编辑
+                    channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
+                    message = await channel.fetch_message(message_id)
+                    current_content = message.content or ""
+                    await message.edit(
+                        content=f"⚠️ 本心跳资讯 (『{info.title}』) 已停止同步，最后更新时间：{datetime.now(BEIJING_TZ).strftime('%Y-%m-%d %H:%M:%S')}。\n" + current_content,
+                        embeds=[]  # 清除Embed
+                    )
             except (discord.NotFound, discord.Forbidden, ValueError) as e:
-                self.bot.logger.warning(f"无法删除目标消息 {target_message_id}：{str(e)}")
+                self.bot.logger.warning(f"无法编辑目标消息 {target_message_id} 告知停止：{str(e)}")
+        else:
+            self.bot.logger.warning(f"尝试移除不存在的心跳资讯 {key}")
 
     # --- Slash Commands ---
 
@@ -175,19 +237,20 @@ class HeartbeatInformationCog(commands.Cog, name="Heartbeat Information"):
         default_permissions=discord.Permissions(manage_messages=True)
     )
 
-    @information_group.command(name="添加", description="在当前频道创建一个实时更新的资讯消息")
+    @information_group.command(name="添加", description="在当前频道创建一个实时更新的资讯消息 (基于特定消息)")
     @app_commands.describe(
         source_url="要同步的源消息的URL",
+        title="资讯的标题 (用于识别)",
         interval_seconds="更新间隔（秒），最小为1",
         embed_mode="如果源消息只有文本，是否自动转换为Embed (默认为是)"
     )
-    @app_commands.default_permissions(manage_messages=True)
     @app_commands.checks.has_permissions(manage_messages=True)
-    async def heartbeat_create(
+    async def heartbeat_create_message(
             self,
             interaction: discord.Interaction,
             source_url: str,
-            interval_seconds: int,
+            title: str,
+            interval_seconds: int = 60,  # 默认间隔60秒
             embed_mode: bool = True
     ):
         await interaction.response.defer(ephemeral=True)
@@ -196,6 +259,14 @@ class HeartbeatInformationCog(commands.Cog, name="Heartbeat Information"):
 
         if interval_seconds < 1:
             await interaction.followup.send("❌ 错误：更新间隔不能小于1秒。", ephemeral=True)
+            return
+
+        if not title:
+            await interaction.followup.send("❌ 错误：标题不能为空。", ephemeral=True)
+            return
+
+        if self.data_manager.get_heartbeat_by_title(title, interaction.guild_id):
+            await interaction.followup.send(f"❌ 错误：本服务器已存在标题为 `{title}` 的资讯。", ephemeral=True)
             return
 
         # 解析URL
@@ -227,6 +298,7 @@ class HeartbeatInformationCog(commands.Cog, name="Heartbeat Information"):
             source_guild_id=source_guild_id,
             source_channel_id=source_channel_id,
             source_message_id=source_message_id,
+            is_channel_feed=False,  # 不是频道订阅
             target_guild_id=interaction.guild_id,
             target_channel_id=target_channel.id,
             target_message_id=target_message.id,
@@ -234,12 +306,13 @@ class HeartbeatInformationCog(commands.Cog, name="Heartbeat Information"):
             created_by=interaction.user.id,
             last_update=_last_update_of_message(source_message),
             embed_mode=embed_mode,
+            title=title
         )
 
         # 使用辅助函数来获取要发送的内容
         send_kwargs = self._prepare_target_message_kwargs(source_message, new_info)
 
-        await asyncio.sleep(1)
+        await asyncio.sleep(1)  # 稍作等待，确保消息已发送
 
         await target_message.edit(
             **send_kwargs,
@@ -251,12 +324,113 @@ class HeartbeatInformationCog(commands.Cog, name="Heartbeat Information"):
         # 启动后台更新任务
         self._start_heartbeat_task(new_info)
 
-        await interaction.followup.send(f"✅ 成功！心跳资讯已创建在 {target_channel.mention}。\n"
+        await interaction.followup.send(f"✅ 成功！心跳资讯『**{title}**』已创建在 {target_channel.mention}。\n"
                                         f"它将每 {interval_seconds} 秒更新一次。\n"
                                         f"资讯链接: {target_message.jump_url}", ephemeral=True)
 
+    @information_group.command(name="发送频道订阅", description="订阅一个频道，将其最新消息作为资讯实时更新")
+    @app_commands.describe(
+        source_channel_url="要订阅的源频道的URL",
+        title="资讯的标题 (用于识别)",
+        interval_seconds="更新间隔（秒），最小为1",
+        embed_mode="如果源消息只有文本，是否自动转换为Embed (默认为是)"
+    )
+    @app_commands.checks.has_permissions(manage_messages=True)
+    async def heartbeat_create_channel_feed(
+            self,
+            interaction: discord.Interaction,
+            source_channel_url: str,
+            title: str,
+            interval_seconds: int = 60,  # 默认间隔60秒
+            embed_mode: bool = True
+    ):
+        await interaction.response.defer(ephemeral=True)
+
+        target_channel = interaction.channel
+
+        if interval_seconds < 1:
+            await interaction.followup.send("❌ 错误：更新间隔不能小于1秒。", ephemeral=True)
+            return
+
+        if not title:
+            await interaction.followup.send("❌ 错误：标题不能为空。", ephemeral=True)
+            return
+
+        if self.data_manager.get_heartbeat_by_title(title, interaction.guild_id):
+            await interaction.followup.send(f"❌ 错误：本服务器已存在标题为 `{title}` 的资讯。", ephemeral=True)
+            return
+
+        # 解析URL，只需要频道ID
+        match = re.search(r'discord(?:app)?\.com/channels/(\d+)/(\d+)', source_channel_url)
+        if not match:
+            await interaction.followup.send("❌ 错误：无效的Discord频道URL格式。", ephemeral=True)
+            return
+
+        source_guild_id, source_channel_id = map(int, match.groups())
+
+        # 验证源频道
+        try:
+            source_guild = self.bot.get_guild(source_guild_id) or await self.bot.fetch_guild(source_guild_id)
+            source_channel = source_guild.get_channel(source_channel_id) or await source_guild.fetch_channel(source_channel_id)
+            if not isinstance(source_channel, (discord.TextChannel, discord.Thread)):
+                await interaction.followup.send(f"❌ 错误：`{source_channel.name}` 不是一个文本频道。", ephemeral=True)
+                return
+        except (discord.NotFound, discord.Forbidden) as e:
+            await interaction.followup.send(f"❌ 错误：无法访问源频道。请确保URL正确且机器人有权限访问。\n`{e}`", ephemeral=True)
+            return
+
+        # 获取源频道最新消息作为初始内容
+        initial_source_message = None
+        try:
+            async for msg in source_channel.history(limit=1):
+                initial_source_message = msg
+                break
+        except (discord.NotFound, discord.Forbidden) as e:
+            await interaction.followup.send(f"❌ 错误：无法获取源频道的最新消息。请确保机器人有权限读取。\n`{e}`", ephemeral=True)
+            return
+
+        if not initial_source_message:
+            await interaction.followup.send(f"⚠️ 注意：源频道 `{source_channel.name}` 当前没有消息，心跳资讯将在有新消息时开始更新。", ephemeral=True)
+
+        # 发送初始消息作为目标
+        try:
+            target_message: discord.Message = await target_channel.send(content="心跳资讯：正在准备消息中……")
+        except discord.Forbidden:
+            await interaction.followup.send(f"❌ 错误：机器人没有权限在 `{target_channel.name}` 频道发送消息。", ephemeral=True)
+            return
+
+        # 创建并存储记录
+        new_info = HeartbeatInfo(
+            source_guild_id=source_guild_id,
+            source_channel_id=source_channel_id,
+            source_message_id=None,  # 频道订阅模式下，不指定特定消息ID
+            is_channel_feed=True,  # 标记为频道订阅
+            target_guild_id=interaction.guild_id,
+            target_channel_id=target_channel.id,
+            target_message_id=target_message.id,
+            update_interval_seconds=interval_seconds,
+            created_by=interaction.user.id,
+            last_update=_last_update_of_message(initial_source_message) if initial_source_message else datetime.min,
+            embed_mode=embed_mode,
+            title=title
+        )
+
+        if initial_source_message:
+            send_kwargs = self._prepare_target_message_kwargs(initial_source_message, new_info)
+            await asyncio.sleep(1)  # 稍作等待
+            await target_message.edit(
+                **send_kwargs,
+                allowed_mentions=discord.AllowedMentions.none()
+            )
+
+        await self.data_manager.add_heartbeat(new_info)
+        self._start_heartbeat_task(new_info)
+
+        await interaction.followup.send(f"✅ 成功！频道订阅『**{title}**』已创建在 {target_channel.mention}。\n"
+                                        f"它将每 {interval_seconds} 秒更新一次 `{source_channel.name}` 频道的最新消息。\n"
+                                        f"资讯链接: {target_message.jump_url}", ephemeral=True)
+
     @information_group.command(name="列表", description="列出本服务器上所有正在运行的心跳资讯")
-    @app_commands.default_permissions(manage_messages=True)
     @app_commands.checks.has_permissions(manage_messages=True)
     async def heartbeat_list(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
@@ -275,13 +449,17 @@ class HeartbeatInformationCog(commands.Cog, name="Heartbeat Information"):
 
         description_lines = []
         for i, info in enumerate(server_heartbeats, 1):
-            mode_text = "自动Embed" if info.embed_mode else "直接同步"
+            mode_type = "频道订阅" if info.is_channel_feed else "消息同步"
+            # 兼容旧数据，如果target_message_id为空则不显示链接
+            target_link = f"[跳转到资讯]({info.target_url})" if info.target_message_id else "无目标消息"
+
             line = (
-                f"**{i}.** [跳转到资讯]({info.target_url}) (ID: `{info.target_message_id}`)\n"
-                f"   - **来源**: [点击查看]({info.source_url})\n"
-                f"   - **频道**: <#{info.target_channel_id}>\n"
+                f"**{i}.** **『{info.title or '无标题'}』** ({mode_type})\n"
+                f"   - **{target_link}** (ID: `{info.target_message_id or 'N/A'}`)\n"
+                f"   - **来源**: {f'[点击查看]({info.source_url})' if info.source_message_id else f'<#{info.source_channel_id}> (最新消息)'}\n"
+                f"   - **目标频道**: <#{info.target_channel_id}>\n"
                 f"   - **间隔**: {info.update_interval_seconds} 秒\n"
-                f"   - **模式**: {mode_text}\n"
+                f"   - **模式**: {'自动Embed' if info.embed_mode else '直接同步'}\n"
                 f"   - **创建者**: <@{info.created_by}>"
             )
             description_lines.append(line)
@@ -289,28 +467,108 @@ class HeartbeatInformationCog(commands.Cog, name="Heartbeat Information"):
         embed.description = "\n\n".join(description_lines)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
+    async def _autocomplete_heartbeat_titles(self, interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
+        """为心跳资讯标题提供自动补全。"""
+        all_heartbeats = self.data_manager.get_all_heartbeats()
+        # 仅显示当前服务器的资讯标题
+        server_heartbeats = [info for info in all_heartbeats if info.target_guild_id == interaction.guild_id]
+
+        titles = []
+        for info in server_heartbeats:
+            if info.title and current.lower() in info.title.lower():
+                titles.append(app_commands.Choice(name=info.title, value=info.title))
+
+        return titles[:25]  # Discord 限制为25个选项
+
     @information_group.command(name="移除", description="移除一个心跳资讯")
-    @app_commands.describe(target_message_id="要移除的资讯消息的ID")
-    @app_commands.default_permissions(manage_messages=True)
+    @app_commands.describe(title="要移除的资讯标题")
+    @app_commands.autocomplete(title=_autocomplete_heartbeat_titles)
     @app_commands.checks.has_permissions(manage_messages=True)
-    async def heartbeat_remove(self, interaction: discord.Interaction, target_message_id: str):
+    async def heartbeat_remove(self, interaction: discord.Interaction, title: str):
         await interaction.response.defer(ephemeral=True)
 
-        try:
-            msg_id_int = int(target_message_id)
-        except ValueError:
-            await interaction.followup.send("❌ 错误：消息ID必须是一个数字。", ephemeral=True)
+        info = self.data_manager.get_heartbeat_by_title(title, interaction.guild_id)
+        if not info:
+            await interaction.followup.send(f"❌ 错误：在本服务器上找不到标题为 `{title}` 的资讯。", ephemeral=True)
             return
 
-        info = self.data_manager.get_heartbeat(msg_id_int)
-        if not info or info.target_guild_id != interaction.guild_id:
-            await interaction.followup.send("❌ 错误：在本服务器上找不到具有该ID的心跳资讯。", ephemeral=True)
+        if not info.target_message_id:
+            # 理论上所有心跳资讯都应有 target_message_id，但为了安全考虑
+            await interaction.followup.send(f"❌ 错误：资讯『{title}』没有关联的目标消息ID，无法移除任务。", ephemeral=True)
             return
 
         # 停止任务并移除数据
-        await self._stop_and_remove_heartbeat(msg_id_int, f"由用户 {interaction.user} 手动移除")
+        await self._stop_and_remove_heartbeat(info.target_message_id, f"由用户 {interaction.user} 手动移除")
 
-        await interaction.followup.send(f"✅ 成功！ID为 `{target_message_id}` 的心跳资讯已被移除。", ephemeral=True)
+        await interaction.followup.send(f"✅ 成功！标题为『**{title}**』的资讯已被移除。", ephemeral=True)
+
+    information_general_group = app_commands.Group(
+        name=f"服务器资讯", description="调取并发送资讯",
+        guild_ids=[gid for gid in config.GUILD_IDS],
+        default_permissions=discord.Permissions(read_messages=True)
+    )
+
+    @information_general_group.command(name="调取", description="调取资讯，以私人形式展示")
+    @app_commands.describe(title="要发送的资讯标题")
+    @app_commands.autocomplete(title=_autocomplete_heartbeat_titles)
+    @app_commands.checks.has_permissions(read_messages=True)
+    async def send_info_once(self, interaction: discord.Interaction, title: str):
+        await self._send_info_once(interaction, title, is_private=True)
+
+    @information_general_group.command(name="发送", description="发送资讯，以公开形式展示")
+    @app_commands.describe(title="要发送的资讯标题")
+    @app_commands.autocomplete(title=_autocomplete_heartbeat_titles)
+    @app_commands.checks.has_permissions(read_messages=True)
+    async def send_info_once(self, interaction: discord.Interaction, title: str):
+        await self._send_info_once(interaction, title, is_private=False)
+
+    async def _send_info_once(self, interaction: discord.Interaction, title: str, *, is_private: bool):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        info = self.data_manager.get_heartbeat_by_title(title, interaction.guild_id)
+        if not info:
+            await interaction.followup.send(f"❌ 错误：在本服务器上找不到标题为 `{title}` 的资讯。", ephemeral=True)
+            return
+
+        source_message = None
+        try:
+            source_message = await self._fetch_source_message(info)
+            if not source_message:
+                await interaction.followup.send(f"⚠️ 无法获取资讯『{title}』的源内容 (频道可能无消息或消息已删除)。", ephemeral=True)
+                return
+        except (discord.NotFound, discord.Forbidden) as e:
+            await interaction.followup.send(f"❌ 错误：无法访问资讯『{title}』的源内容。请确保机器人有权限访问。\n`{e}`", ephemeral=True)
+            return
+        except Exception as e:
+            await interaction.followup.send(f"❌ 发生未知错误：无法获取资讯『{title}』的源内容。\n`{e}`", ephemeral=True)
+            return
+
+        # 准备发送参数
+        send_kwargs = self._prepare_target_message_kwargs(
+            source_message, info,
+            jump_url=create_jump_url(info.target_guild_id, info.target_channel_id, info.target_message_id))
+        # 调整 footer，表明这是一次性发送
+        if send_kwargs.get("embeds"):
+            for embed in send_kwargs["embeds"]:
+                embed.set_footer(text="资讯快照 | 源消息更新于")
+                embed.timestamp = _last_update_of_message(source_message)
+
+        if not is_private:
+            try:
+                await interaction.channel.send(
+                    **send_kwargs,
+                    allowed_mentions=discord.AllowedMentions.none()
+                )
+                await interaction.followup.send(f"✅ 成功发送资讯『**{title}**』到 {interaction.channel.mention}。", ephemeral=True)
+            except discord.Forbidden:
+                await interaction.followup.send(f"❌ 错误：机器人没有权限在 `{interaction.channel.name}` 频道发送消息。", ephemeral=True)
+            except Exception as e:
+                await interaction.followup.send(f"❌ 发送资讯时发生未知错误: {e}", ephemeral=True)
+        else:
+            try:
+                await interaction.edit_original_response(**send_kwargs)
+            except Exception as e:
+                await interaction.followup.send(f"❌ 发送资讯时发生未知错误: {e}", ephemeral=True)
 
 
 async def setup(bot: commands.Bot):

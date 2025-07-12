@@ -1,10 +1,13 @@
 # src/role_manager/utility/utility.py
 from __future__ import annotations
 
+from typing import Optional
+
 import discord
 import pytz
 
 BEIJING_TZ = pytz.timezone('Asia/Shanghai')
+
 
 async def safe_defer(interaction: discord.Interaction, *, thinking: bool = False):
     """安全地延迟响应一个交互，如果它还没有被响应。"""
@@ -21,6 +24,7 @@ async def try_get_member(guild: discord.Guild, member_id: int) -> discord.Member
     except discord.NotFound:
         return None
 
+
 def create_progress_bar(current: int, total: int, bar_length: int = 20) -> str:
     """创建一个文本格式的进度条。"""
     if total == 0:
@@ -29,6 +33,14 @@ def create_progress_bar(current: int, total: int, bar_length: int = 20) -> str:
     filled_length = int(bar_length * fraction)
     bar = '█' * filled_length + '░' * (bar_length - filled_length)
     return f"[{bar}] {fraction:.1%}"
+
+
+def create_jump_url(guild_id: int, channel_id: Optional[int] = None, message_id: Optional[int] = None) -> str:
+    if channel_id is None:
+        return f"https://discord.com/channels/{guild_id}"
+    if message_id is None:
+        return f"https://discord.com/channels/{guild_id}/{channel_id}"
+    return f"https://discord.com/channels/{guild_id}/{channel_id}/{message_id}"
 
 
 def format_duration_hms(total_seconds: int) -> str:

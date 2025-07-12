@@ -174,7 +174,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             field_name="分频道消息数",
             value_suffix="条"
         )
-        await pagination_view.start(interaction,ephemeral=True)
+        await pagination_view.start(interaction, ephemeral=True)
 
     async def handle_remove_role(self, interaction: discord.Interaction):
         """处理来自 ActivityRoleView 的“移除角色”按钮点击。"""
@@ -571,6 +571,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             app_commands.Choice(name="总消息数", value="total_messages")
         ]
     )
+    @app_commands.checks.has_permissions(read_messages=True)
     async def get_activity_stats(
             self, interaction: discord.Interaction, scope: str, metric: str,
             days_window: int = 7,
@@ -655,7 +656,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             field_name=f"分频道{metric_name}",
             value_suffix=f"{value_suffix}"
         )
-        await view.start(interaction,ephemeral=True)
+        await view.start(interaction, ephemeral=True)
 
     async def get_redis_stats(self) -> typing.Optional[dict]:
         """【新增】公共接口，用于从其 DataManager 获取 Redis 统计信息。"""
