@@ -33,14 +33,15 @@ class TimedRoleManageView(PaginatedView):
 
         timeout_minutes = config.ROLE_MANAGER_CONFIG.get("private_panel_timeout_minutes", 3)
         # [改动] 调用父类构造函数，只传递数据
+        get_all_timed_role_ids = lambda: all_timed_role_ids
         super().__init__(
-            all_items=all_timed_role_ids,
+            all_items_provider=get_all_timed_role_ids,
             items_per_page=TIMED_ROLES_PER_PAGE,
             timeout=timeout_minutes * 60
         )
 
     # [改动] 实现新的抽象方法 _rebuild_view
-    async def rebuild_view(self):
+    async def _rebuild_view(self):
         self.clear_items()
 
         member = self.guild.get_member(self.user.id)
@@ -54,8 +55,7 @@ class TimedRoleManageView(PaginatedView):
         user_guild_data = self.cog.timed_role_data_manager._get_guild_user_data(self.user.id, self.guild.id)
         current_timed_role_ids = set(user_guild_data.get("current_timed_roles", []))
 
-        start, end = self.get_page_range()
-        page_timed_role_ids = self.all_items[start:end]
+        page_timed_role_ids = self.get_page_items()
 
         self.add_item(PrivateTimedRoleSelect(self.cog, self.guild.id, page_timed_role_ids, current_timed_role_ids,
                                              page_num=self.page, total_pages=self.total_pages, row=0))

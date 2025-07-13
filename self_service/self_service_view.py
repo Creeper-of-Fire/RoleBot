@@ -31,14 +31,15 @@ class SelfServiceManageView(PaginatedView):
 
         timeout_minutes = config.ROLE_MANAGER_CONFIG.get("private_panel_timeout_minutes", 3)
         # [改动] 调用父类构造函数，只传递数据
+        get_all_self_service_role_ids= lambda: all_self_service_role_ids
         super().__init__(
-            all_items=all_self_service_role_ids,
+            all_items_provider=get_all_self_service_role_ids,
             items_per_page=SELF_SERVICE_ROLES_PER_PAGE,
             timeout=timeout_minutes * 60
         )
 
     # [改动] 实现新的抽象方法 _rebuild_view
-    async def rebuild_view(self):
+    async def _rebuild_view(self):
         self.clear_items()
 
         member = self.guild.get_member(self.user.id)
@@ -50,8 +51,8 @@ class SelfServiceManageView(PaginatedView):
 
         # --- 以下是原来 _rebuild_view 的逻辑 ---
         member_role_ids = {role.id for role in member.roles}
-        start, end = self.get_page_range()
-        page_ss_role_ids = self.all_items[start:end]
+
+        page_ss_role_ids = self.get_page_items()
 
         for i, role_id in enumerate(page_ss_role_ids):
             role = self.guild.get_role(role_id)
@@ -100,8 +101,7 @@ class SelfServiceRoleButton(ui.Button):
                 refreshed_member = await try_get_member(interaction.guild, member.id)
                 if refreshed_member:
                     new_view = SelfServiceManageView(self.cog, refreshed_member)
-                    await new_view.rebuild_view()
-                    await interaction.edit_original_response(embed=new_view.embed, view=new_view)
+                    await new_view.update_view(interaction)
                 return
         roles_to_add = []
         roles_to_remove = []

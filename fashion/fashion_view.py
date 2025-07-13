@@ -49,14 +49,15 @@ class FashionManageView(PaginatedView):
 
         # 2. [改动] 调用父类构造函数，只传递数据，不传递 interaction/cog/user
         timeout_minutes = config.ROLE_MANAGER_CONFIG.get("private_panel_timeout_minutes", 3)
+        get_all_fashion_options = lambda: all_fashion_options
         super().__init__(
-            all_items=all_fashion_options,
+            all_items_provider=get_all_fashion_options,
             items_per_page=FASHION_ROLES_PER_PAGE,
             timeout=timeout_minutes * 60
         )
 
     # [改动] 实现新的抽象方法 _rebuild_view
-    async def rebuild_view(self):
+    async def _rebuild_view(self):
         self.clear_items()
 
         # 尝试安全地获取最新的成员对象
@@ -86,8 +87,7 @@ class FashionManageView(PaginatedView):
 
         self.embed.set_footer(text=f"面板将在 {config.ROLE_MANAGER_CONFIG.get('private_panel_timeout_minutes', 3)} 分钟后失效。")
 
-        start, end = self.get_page_range()
-        page_fashion_options = self.all_items[start:end]
+        page_fashion_options = self.get_page_items()
 
         self.add_item(FashionRoleSelect(
             self.cog, self.guild.id,

@@ -2,37 +2,112 @@
 from __future__ import annotations
 
 import asyncio
-import datetime
-import time
-import typing
-from typing import Optional
-from zoneinfo import ZoneInfo
+from dataclasses import dataclass
+from typing import cast, Optional, TYPE_CHECKING, Dict, Literal, List
 
 import discord
-from discord import app_commands, ui
+from discord import ui, Color
 from discord.ext import commands
 
 import config_data
+from core.embed_link.embed_manager import EmbedLinkManager
 from utility.feature_cog import FeatureCog
+from utility.paginated_view import PaginatedView
+from .anniversary_module import HonorAnniversaryModuleCog
 from .data_manager import HonorDataManager
 from .models import HonorDefinition
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
     from main import RoleBot
 
+ShownMode = Literal["equipped", "unequipped_owned", "pure_achievement", "unearned", "unearned_do_not_shown"]
 
-# --- 视图定义 (无变动) ---
-class HonorManageView(ui.View):
+@dataclass
+class HonorShownData:
+    data: HonorDefinition
+    shown_mode: ShownMode
+
+
+# --- 视图定义 ---
+class HonorManageView(PaginatedView):
     def __init__(self, cog: 'HonorCog', member: discord.Member, guild: discord.Guild):
-        super().__init__(timeout=180)
         self.cog = cog
         self.member = member
         self.guild = guild
-        self.message: typing.Optional[discord.Message] = None
-        self.build_view()
+        data_provider = lambda: self.create_honor_shown_list()
+        super().__init__(
+            all_items_provider=data_provider,
+            items_per_page=10,
+            timeout=180
+        )
+        self.message: Optional[discord.Message] = None
 
-    def build_view(self):
+    async def on_honor_select(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        selected_honor_uuid = interaction.data["values"][0]
+
+        selected_honor_def = next(
+            (hd for hd in self.cog.data_manager.get_all_honor_definitions(self.guild.id)
+             if hd.uuid == selected_honor_uuid),
+            None
+        )
+
+        if not selected_honor_def or selected_honor_def.role_id is None:
+            await interaction.followup.send("❌ 选择的荣誉无效或未关联身份组。", ephemeral=True)
+            await self.update_view(interaction)
+            return
+
+        role_id_int: int = cast(int, selected_honor_def.role_id)
+        target_role = self.guild.get_role(role_id_int)
+        if not target_role:
+            await interaction.followup.send(f"⚠️ 荣誉 **{selected_honor_def.name}** 关联的身份组(ID:{selected_honor_def.role_id})已不存在。", ephemeral=True)
+            await self.update_view(interaction)
+            return
+
+        member_has_role = target_role in self.member.roles
+        try:
+            if member_has_role:
+                await self.member.remove_roles(target_role, reason=f"用户卸下荣誉: {selected_honor_def.name}")
+                await interaction.followup.send(f"☑️ 已卸下荣誉 **{selected_honor_def.name}** 并移除身份组。", ephemeral=True)
+            else:
+                await self.member.add_roles(target_role, reason=f"用户佩戴荣誉: {selected_honor_def.name}")
+                await interaction.followup.send(f"✅ 已佩戴荣誉 **{selected_honor_def.name}** 并获得身份组！", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.followup.send("❌ 操作失败！我没有足够的权限来为你添加/移除身份组。请确保我的角色高于此荣誉的身份组。", ephemeral=True)
+        except Exception as e:
+            self.cog.logger.error(f"佩戴/卸下荣誉身份组时发生错误: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ 发生未知错误，请联系管理员：`{e}`", ephemeral=True)
+
+        fresh_member = self.guild.get_member(self.member.id)
+        if fresh_member is None:  # 如果不在缓存中，从API获取
+            try:
+                fresh_member = await self.guild.fetch_member(self.member.id)
+            except discord.NotFound:
+                await interaction.followup.send("❌ 无法获取您的成员信息，操作失败。", ephemeral=True)
+                return
+
+        # 更新视图内部的成员引用，确保后续 _rebuild_view 使用最新数据
+        self.member = fresh_member
+
+        await self.update_view(interaction)
+
+    async def _rebuild_view(self):
         self.clear_items()
+
+        current_page_honor_data = self.get_page_items()
+        main_honor_embed = self.create_honor_embed(self.member, current_page_honor_data)
+        self.embed = [main_honor_embed, self.cog.guide_manager.embed]
+
+        self._add_pagination_buttons(row=1)
+
+        if self.cog.guide_manager.url:
+            self.add_item(ui.Button(
+                label=f"跳转到 “{self.cog.guide_manager.embed.title}”",
+                style=discord.ButtonStyle.link,
+                url=self.cog.guide_manager.url,
+                row=2
+            ))
+
         user_honors_earned = self.cog.data_manager.get_user_honors(self.member.id)
         if not user_honors_earned:
             return
@@ -61,60 +136,112 @@ class HonorManageView(ui.View):
             min_values=1,
             max_values=1,
             options=options,
-            custom_id="honor_select"
+            custom_id="honor_select",
+            row=0
         )
         honor_select.callback = self.on_honor_select
+
         self.add_item(honor_select)
 
-    async def on_honor_select(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        selected_honor_uuid = interaction.data["values"][0]
+    def create_honor_shown_list(self) -> List[HonorShownData]:
+        guild = self.guild
+        member = self.member
+        honor_shown_list: List[HonorShownData] = []
+        all_definitions = self.cog.data_manager.get_all_honor_definitions(guild.id)
+        user_honor_instances = self.cog.data_manager.get_user_honors(member.id)
+        member_role_ids = {role.id for role in member.roles}
+        owned_honor_definitions_map = {uh.honor_uuid: uh.definition for uh in user_honor_instances}
 
-        selected_honor_def = next(
-            (hd for hd in self.cog.data_manager.get_all_honor_definitions(self.guild.id)
-             if hd.uuid == selected_honor_uuid),
-            None
-        )
-
-        if not selected_honor_def or selected_honor_def.role_id is None:
-            await interaction.followup.send("❌ 选择的荣誉无效或未关联身份组。", ephemeral=True)
-            await self.update_display(interaction)
-            return
-
-        role_id_int: int = typing.cast(int, selected_honor_def.role_id)
-        target_role = self.guild.get_role(role_id_int)
-        if not target_role:
-            await interaction.followup.send(f"⚠️ 荣誉 **{selected_honor_def.name}** 关联的身份组(ID:{selected_honor_def.role_id})已不存在。", ephemeral=True)
-            await self.update_display(interaction)
-            return
-
-        member_has_role = target_role in self.member.roles
-        try:
-            if member_has_role:
-                await self.member.remove_roles(target_role, reason=f"用户卸下荣誉: {selected_honor_def.name}")
-                await interaction.followup.send(f"☑️ 已卸下荣誉 **{selected_honor_def.name}** 并移除身份组。", ephemeral=True)
+        for definition in all_definitions:
+            if definition.uuid in owned_honor_definitions_map:
+                if definition.role_id is not None:
+                    if definition.role_id in member_role_ids:
+                        honor_shown_list.append(HonorShownData(definition, "equipped"))
+                    else:
+                        honor_shown_list.append(HonorShownData(definition, "unequipped_owned"))
+                else:
+                    honor_shown_list.append(HonorShownData(definition, "pure_achievement"))
             else:
-                await self.member.add_roles(target_role, reason=f"用户佩戴荣誉: {selected_honor_def.name}")
-                await interaction.followup.send(f"✅ 已佩戴荣誉 **{selected_honor_def.name}** 并获得身份组！", ephemeral=True)
-        except discord.Forbidden:
-            await interaction.followup.send("❌ 操作失败！我没有足够的权限来为你添加/移除身份组。请确保我的角色高于此荣誉的身份组。", ephemeral=True)
-        except Exception as e:
-            self.cog.logger.error(f"佩戴/卸下荣誉身份组时发生错误: {e}", exc_info=True)
-            await interaction.followup.send(f"❌ 发生未知错误，请联系管理员：`{e}`", ephemeral=True)
+                if not definition.hidden_until_earned:
+                    honor_shown_list.append(HonorShownData(definition, "unearned"))
 
-        self.member = await self.guild.fetch_member(self.member.id)
-        await self.update_display(interaction)
+        # 【排序逻辑】对列表进行排序，确保显示顺序一致
+        def sort_key(honor_data: HonorShownData):
+            """定义排序的规则。"""
+            # 1. 定义显示模式的优先级顺序
+            order = {
+                "equipped": 0,
+                "unequipped_owned": 1,
+                "pure_achievement": 2,
+                "unearned": 3,
+            }
+            # 2. 返回一个元组，Python 会依次比较元组中的元素
+            #    首先按荣誉类型（已佩戴 > 未佩戴 > ...）排序
+            #    如果类型相同，则按荣誉名称的字母顺序排序（不区分大小写）
+            return order.get(honor_data.shown_mode, 99), honor_data.data.name.lower()
 
-    async def update_display(self, interaction: discord.Interaction):
-        self.build_view()
-        embed = self.cog.create_honor_embed(self.member, self.guild)
-        await interaction.edit_original_response(embed=embed, view=self)
+        honor_shown_list.sort(key=sort_key)
 
-    async def on_timeout(self):
-        if self.message:
-            for item in self.children:
-                item.disabled = True
-            await self.message.edit(content="*这个荣誉面板已超时，请重新使用 `/荣誉面板` 命令。*", view=self)
+        return honor_shown_list
+
+    # --- 荣誉展示与管理 ---
+    def create_honor_embed(self, member: discord.Member, current_page_honor_data: List[HonorShownData]) -> discord.Embed:
+        """
+        根据当前页面需要显示的 HonorShownData 列表，创建并返回一个 Embed。
+        """
+        embed = discord.Embed(title=f"{member.display_name}的荣誉墙", color=member.color)
+        if member.display_avatar:
+            embed.set_thumbnail(url=member.display_avatar.url)
+
+        # 分类当前页数据
+        equipped_honors_lines, unequipped_owned_honors_lines = [], []
+        pure_achievement_honors_lines, unearned_honors_lines = [], []
+
+        for honor_data in current_page_honor_data:
+            definition = honor_data.data
+            honor_line_text = f"**{definition.name}**\n*└ {definition.description}*"
+            if definition.role_id is not None:
+                honor_line_text = f"<@&{definition.role_id}>\n*└ {definition.description}*"
+
+            if honor_data.shown_mode == "equipped":
+                equipped_honors_lines.append(honor_line_text)
+            elif honor_data.shown_mode == "unequipped_owned":
+                unequipped_owned_honors_lines.append(honor_line_text)
+            elif honor_data.shown_mode == "pure_achievement":
+                pure_achievement_honors_lines.append(honor_line_text)
+            elif honor_data.shown_mode == "unearned":
+                unearned_honors_lines.append(honor_line_text)
+
+        # 总体描述逻辑
+        # self.all_items 此时已是最新数据，可以直接使用
+        user_honor_count = sum(1 for item in self.all_items if item.shown_mode != "unearned")
+        all_visible_honors_count = len(self.all_items)
+        public_unearned_honors_count = all_visible_honors_count - user_honor_count
+
+        if not user_honor_count and not public_unearned_honors_count:
+            embed.description = "目前没有可用的荣誉定义。请联系管理员添加。"
+        elif not user_honor_count and public_unearned_honors_count:
+            embed.description = "你还没有获得任何荣誉哦！查看下方待解锁荣誉，多多参与社区活动吧！"
+        elif user_honor_count == all_visible_honors_count:
+            embed.description = "🎉 你已经解锁了所有可用的（或可见的）荣誉！恭喜你！"
+        else:
+            embed.description = "你已获得部分荣誉。请查看下方已佩戴、未佩戴的荣誉，或探索待解锁的更多荣誉。"
+
+        # 添加字段
+        if equipped_honors_lines:
+            embed.add_field(name="✅ 已佩戴荣誉", value="\n\n".join(equipped_honors_lines), inline=False)
+        if unequipped_owned_honors_lines:
+            embed.add_field(name="☑️ 未佩戴荣誉 (可佩戴身份组)", value="\n\n".join(unequipped_owned_honors_lines), inline=False)
+        if pure_achievement_honors_lines:
+            embed.add_field(name="✨ 纯粹成就荣誉 (无身份组)", value="\n\n".join(pure_achievement_honors_lines), inline=False)
+        if unearned_honors_lines:
+            embed.add_field(name="💡 待解锁荣誉", value="\n\n".join(unearned_honors_lines), inline=False)
+
+        if not (equipped_honors_lines or unequipped_owned_honors_lines or pure_achievement_honors_lines or unearned_honors_lines):
+            embed.add_field(name="\u200b", value="*本页暂无荣誉显示。*", inline=False)
+
+        embed.set_footer(text=f"第 {self.page + 1}/{self.total_pages} 页 | 佩戴/卸下荣誉需使用下方的下拉选择器进行操作。")
+        return embed
 
 
 # --- 主Cog ---
@@ -123,15 +250,24 @@ class HonorCog(FeatureCog, name="Honor"):
 
     def __init__(self, bot: RoleBot):
         super().__init__(bot)  # 调用父类 (FeatureCog) 的构造函数
-        self.data_manager = HonorDataManager()
-        self.running_backfill_tasks: typing.Dict[int, asyncio.Task] = {}
+        self.data_manager = HonorDataManager.getDataManager(logger=self.logger)
+        self.running_backfill_tasks: Dict[int, asyncio.Task] = {}
         # 安全缓存，用于存储此模块管理的所有身份组ID
         self.safe_honor_role_ids: set[int] = set()
 
         self.bot.loop.create_task(self.synchronize_all_honor_definitions())
 
-    # --- FeatureCog 接口实现 ---
+        self.guide_manager = EmbedLinkManager.get_or_create(
+            key="honor_celebrate_guide",
+            bot=self.bot,
+            default_embed=discord.Embed(
+                title="🎊 当前进行中的荣誉获取活动",
+                description="管理员尚未配置，或正在加载中。",
+                color=Color.orange()
+            )
+        )
 
+    # --- FeatureCog 接口实现 ---
     async def update_safe_roles_cache(self):
         """
         [接口实现] 从荣誉定义中更新此模块管理的安全身份组缓存。
@@ -157,7 +293,7 @@ class HonorCog(FeatureCog, name="Honor"):
         self.safe_honor_role_ids = new_cache
         self.logger.info(f"模块 '{self.qualified_name}' 安全缓存更新完毕，共加载 {len(self.safe_honor_role_ids)} 个身份组。")
 
-    def get_main_panel_buttons(self) -> typing.Optional[typing.List[discord.ui.Button]]:
+    def get_main_panel_buttons(self) -> Optional[List[discord.ui.Button]]:
         """
         [接口实现] 返回一个用于主面板的 "我的荣誉墙" 按钮。
         """
@@ -165,17 +301,20 @@ class HonorCog(FeatureCog, name="Honor"):
         async def honor_panel_callback(interaction: discord.Interaction):
             # 这是原 /荣誉面板 命令的所有逻辑
             await interaction.response.defer(ephemeral=True)
-            member = typing.cast(discord.Member, interaction.user)
-            guild = typing.cast(discord.Guild, interaction.guild)
+            member = cast(discord.Member, interaction.user)
+            guild = cast(discord.Guild, interaction.guild)
 
-            await self._check_and_grant_anniversary_honor(member, guild)
+            # --- 调用子模块进行检查 ---
+            anniversary_cog: Optional[HonorAnniversaryModuleCog] = self.bot.get_cog("HonorAnniversaryModule")
+            if anniversary_cog:
+                # 调用子模块执行其独立的检查逻辑
+                await anniversary_cog.check_and_grant_anniversary_honor(member, guild)
+            else:
+                self.logger.warning("无法找到 HonorAnniversaryModule 来检查周年荣誉。")
 
-            embed = self.create_honor_embed(member, guild)
             view = HonorManageView(self, member, guild)
 
-            # 使用 followup 发送，因为已经 defer
-            message = await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-            view.message = message
+            await view.start(interaction, ephemeral=True)
 
         honor_button = ui.Button(
             label="我的荣誉墙（临时测试）",
@@ -205,12 +344,17 @@ class HonorCog(FeatureCog, name="Honor"):
                         db_def.role_id = config_def.get('role_id')
                         db_def.icon_url = config_def.get('icon_url')
                         db_def.guild_id = guild_id
+                        db_def.hidden_until_earned = config_def.get('hidden_until_earned')
                         db_def.is_archived = False
                     else:
                         new_def = HonorDefinition(
-                            uuid=config_def['uuid'], guild_id=guild_id, name=config_def['name'],
-                            description=config_def['description'], role_id=config_def.get('role_id'),
+                            uuid=config_def['uuid'],
+                            guild_id=guild_id,
+                            name=config_def['name'],
+                            description=config_def['description'],
+                            role_id=config_def.get('role_id'),
                             icon_url=config_def.get('icon_url'),
+                            hidden_until_earned=config_def.get('hidden_until_earned'),
                         )
                         db.add(new_def)
                         self.logger.info(f"  -> 已创建新荣誉: {config_def['name']}")
@@ -222,403 +366,6 @@ class HonorCog(FeatureCog, name="Honor"):
                 db.query(HonorDefinition).filter(HonorDefinition.uuid.in_(uuids_to_archive)).update({"is_archived": True})
             db.commit()
         self.logger.info("HonorCog: 荣誉定义同步完成。")
-
-    # --- 核心荣誉授予逻辑 ---
-    async def _process_thread_for_honor(self, thread: discord.Thread):
-        """
-        【核心处理逻辑】处理单个帖子，检查并授予相应的荣誉。
-        此函数被 on_thread_create 和回填命令共同调用。
-        """
-        if not isinstance(thread.parent, discord.ForumChannel):
-            return
-
-        # 有时 owner 是 None，特别是在处理旧帖子时
-        try:
-            author = thread.owner
-        except (discord.NotFound, AttributeError):
-            self.logger.warning(f"无法获取帖子 T:{thread.id} 的所有者，跳过荣誉处理。")
-            return
-
-        if not author or author.bot:
-            return
-
-        # 1. 处理基础活动荣誉
-        event_cfg = config_data.HONOR_CONFIG.get(thread.guild.id, {}).get("event_honor", {})
-        if event_cfg.get("enabled") and thread.parent.id in event_cfg.get("target_forum_ids", []):
-            # 使用帖子的创建时间而不是当前时间，以确保回填的准确性
-            thread_creation_time_utc = thread.created_at
-            tz = ZoneInfo("Asia/Shanghai")
-            thread_creation_time_local = thread_creation_time_utc.astimezone(tz)
-
-            start_time = datetime.datetime.fromisoformat(event_cfg["start_time"]).replace(tzinfo=tz)
-            end_time = datetime.datetime.fromisoformat(event_cfg["end_time"]).replace(tzinfo=tz)
-
-            if start_time <= thread_creation_time_local <= end_time:
-                honor_uuid_to_grant = event_cfg.get("honor_uuid")
-                if honor_uuid_to_grant:
-                    granted_honor_def = self.data_manager.grant_honor(author.id, honor_uuid_to_grant)
-                    if granted_honor_def:
-                        self.logger.info(f"[活动荣誉] 用户 {author} ({author.id}) 因帖子 T:{thread.id} 获得了荣誉 '{granted_honor_def.name}'")
-
-        # 2. 处理高级里程碑荣誉
-        milestone_cfg = config_data.HONOR_CONFIG.get(thread.guild.id, {}).get("milestone_honor", {})
-        if milestone_cfg.get("enabled") and thread.parent.id in milestone_cfg.get("target_forum_ids", []):
-            # a. 记录帖子 (如果不存在)
-            self.data_manager.add_tracked_post(thread.id, author.id, thread.parent.id)
-
-            # b. 检查里程碑
-            post_count = self.data_manager.get_user_post_count(author.id)
-            milestones = milestone_cfg.get("milestones", {})
-
-            # 倒序检查
-            for count_req_str, honor_uuid in sorted(milestones.items(), key=lambda item: int(item[0]), reverse=True):
-                count_req = int(count_req_str)
-                if post_count >= count_req:
-                    granted_honor_def = self.data_manager.grant_honor(author.id, honor_uuid)
-                    if granted_honor_def:
-                        self.logger.info(f"[里程碑荣誉] 用户 {author} ({author.id}) 发帖数达到 {count_req}，获得了荣誉 '{granted_honor_def.name}'")
-                    # 找到第一个达成的里程碑并授予后就停止
-                    break
-
-    async def _check_and_grant_anniversary_honor(self, member: discord.Member, guild: discord.Guild):
-        """
-        【按需检查】检查用户是否符合周年纪念荣誉的条件。
-        此函数在用户与荣誉系统交互时被调用。
-        """
-        # 1. 获取配置
-        guild_config = config_data.HONOR_CONFIG.get(guild.id, {})
-        anniversary_cfg = guild_config.get("anniversary_honor", {})
-
-        if not anniversary_cfg.get("enabled") or not anniversary_cfg.get("honor_uuid"):
-            return  # 功能未启用或未配置荣誉UUID
-
-        honor_uuid = anniversary_cfg["honor_uuid"]
-
-        # 2. 检查用户是否已拥有此荣誉
-        user_honors = self.data_manager.get_user_honors(member.id)
-        if any(uh.honor_uuid == honor_uuid for uh in user_honors):
-            return  # 已拥有，无需再检查
-
-        # 3. 确定用于比较的加入时间
-        join_date_to_check: Optional[datetime.datetime] = None
-
-        # 3a. 优先从我们的数据库记录中查找
-        db_record = self.data_manager.get_join_record(member.id, guild.id)
-        if db_record:
-            join_date_to_check = db_record.joined_at
-
-        # 3b. 如果数据库没有，从 Discord member 对象获取 (实时 fallback)
-        elif member.joined_at:
-            join_date_to_check = member.joined_at
-            # 将获取到的信息存回数据库，以便下次使用
-            self.data_manager.upsert_join_record(member.id, guild.id, member.joined_at)
-
-        if not join_date_to_check:
-            # 既没记录，也无法从 member 对象获取，放弃
-            return
-
-        # 4. 比较时间并授予荣誉
-        try:
-            tz = ZoneInfo(anniversary_cfg.get("timezone", "UTC"))
-            cutoff_date = datetime.datetime.fromisoformat(anniversary_cfg["cutoff_date"]).replace(tzinfo=tz)
-        except (KeyError, ValueError) as e:
-            self.logger.error(f"周年纪念荣誉配置错误 (cutoff_date/timezone): {e}")
-            return
-
-        # 确保比较时双方都是 aware datetime 或都是 naive datetime (这里都是 aware)
-        join_date_to_check_aware = join_date_to_check.astimezone(tz)
-
-        if join_date_to_check_aware < cutoff_date:
-            granted_def = self.data_manager.grant_honor(member.id, honor_uuid)
-            if granted_def:
-                self.logger.info(f"[周年荣誉] 用户 {member} ({member.id}) 因加入时间早于 {cutoff_date.date()} 而获得荣誉 '{granted_def.name}'")
-
-    anniversary_group = app_commands.Group(name="anniversary", description="管理周年纪念荣誉的数据",
-                                           guild_only=True,
-                                           default_permissions=discord.Permissions(manage_roles=True))
-
-    @anniversary_group.command(name="scan_members", description="扫描服务器所有成员的加入时间并存入数据库。")
-    @app_commands.checks.has_permissions(manage_roles=True)
-    async def scan_members_joined_at(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        guild = typing.cast(discord.Guild, interaction.guild)
-
-        self.logger.info(f"[{guild.name}] 开始执行成员加入时间全量扫描...")
-
-        # 机器人已经将成员缓存，直接使用 guild.members
-        all_members = guild.members
-        total_members = len(all_members)
-
-        records_to_upsert = []
-        for member in all_members:
-            if not member.bot and member.joined_at:
-                records_to_upsert.append({
-                    "user_id": member.id,
-                    "guild_id": guild.id,
-                    "joined_at": member.joined_at
-                })
-
-        if not records_to_upsert:
-            await interaction.followup.send("🤷‍♂️ 没有找到任何可以记录的成员信息。")
-            return
-
-        try:
-            self.data_manager.bulk_upsert_join_records(records_to_upsert)
-            self.logger.info(f"[{guild.name}] 成员扫描完成，成功写入/更新 {len(records_to_upsert)} 条记录。")
-            await interaction.followup.send(f"✅ **成员扫描完成！**\n成功处理并存储了 **{len(records_to_upsert)}** / {total_members} 位成员的加入时间信息。")
-        except Exception as e:
-            self.logger.error(f"[{guild.name}] 批量写入加入记录时出错: {e}", exc_info=True)
-            await interaction.followup.send(f"❌ **操作失败！**\n在写入数据库时发生错误: `{e}`")
-
-    @anniversary_group.command(name="scan_channel", description="扫描欢迎频道的历史消息来补全加入时间数据。")
-    @app_commands.describe(channel="选择包含系统欢迎消息的频道")
-    @app_commands.checks.has_permissions(manage_roles=True)
-    async def scan_welcome_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        guild = typing.cast(discord.Guild, interaction.guild)
-
-        self.logger.info(f"[{guild.name}] 开始扫描频道 #{channel.name} 的历史欢迎消息...")
-
-        records_to_upsert = []
-        processed_count = 0
-        try:
-            async for message in channel.history(limit=None):
-                processed_count += 1
-                if message.type == discord.MessageType.new_member:
-                    # message.author 是加入的用户
-                    # message.created_at 是消息创建时间，即加入时间
-                    if not message.author.bot:
-                        records_to_upsert.append({
-                            "user_id": message.author.id,
-                            "guild_id": guild.id,
-                            "joined_at": message.created_at
-                        })
-                # 短暂更新状态，让用户知道机器人没死
-                if processed_count % 500 == 0:
-                    await interaction.edit_original_response(content=f"⏳ 正在扫描... 已处理 {processed_count} 条消息，找到 {len(records_to_upsert)} 条加入记录。")
-
-            if not records_to_upsert:
-                await interaction.followup.send(
-                    f"🤷‍♂️ **扫描完成！**\n在频道 **#{channel.name}** 中处理了 {processed_count} 条消息，但没有找到任何有效的系统欢迎消息。")
-                return
-
-            self.data_manager.bulk_upsert_join_records(records_to_upsert)
-            self.logger.info(f"[{guild.name}] 欢迎频道扫描完成，成功写入/更新 {len(records_to_upsert)} 条记录。")
-            await interaction.followup.send(
-                f"✅ **频道扫描完成！**\n总共处理了 {processed_count} 条消息，从中提取并存储了 **{len(records_to_upsert)}** 条加入记录。")
-
-        except discord.Forbidden:
-            await interaction.followup.send(f"❌ **权限不足！**\n我没有权限读取频道 **#{channel.name}** 的历史消息。请确保我拥有 `阅读消息历史` 权限。")
-        except Exception as e:
-            self.logger.error(f"[{guild.name}] 扫描欢迎频道时出错: {e}", exc_info=True)
-            await interaction.followup.send(f"❌ **操作失败！**\n在扫描过程中发生错误: `{e}`")
-
-    @commands.Cog.listener()
-    async def on_thread_create(self, thread: discord.Thread):
-        """监听新帖子创建事件，实时授予荣誉"""
-        await self._process_thread_for_honor(thread)
-
-    # --- 荣誉展示与管理 ---
-    def create_honor_embed(self, member: discord.Member, guild: discord.Guild) -> discord.Embed:
-        all_definitions = self.data_manager.get_all_honor_definitions(guild.id)
-        user_honor_instances = self.data_manager.get_user_honors(member.id)
-        member_role_ids = {role.id for role in member.roles}
-        owned_honor_definitions_map = {uh.honor_uuid: uh.definition for uh in user_honor_instances}
-
-        equipped_honors_lines, unequipped_owned_honors_lines = [], []
-        pure_achievement_honors_lines, unearned_honors_lines = [], []
-
-        for definition in all_definitions:
-            honor_line_text = f"**{definition.name}**\n*└ {definition.description}*"
-            if definition.role_id is not None:
-                honor_line_text = f"<@&{definition.role_id}>\n*└ {definition.description}*"
-
-            if definition.uuid in owned_honor_definitions_map:
-                if definition.role_id is not None:
-                    if definition.role_id in member_role_ids:
-                        equipped_honors_lines.append(honor_line_text)
-                    else:
-                        unequipped_owned_honors_lines.append(honor_line_text)
-                else:
-                    pure_achievement_honors_lines.append(honor_line_text)
-            else:
-                unearned_honors_lines.append(honor_line_text)
-
-        embed = discord.Embed(title=f"{member.display_name}的荣誉墙", color=member.color)
-        if member.display_avatar:
-            embed.set_thumbnail(url=member.display_avatar.url)
-
-        if not user_honor_instances and not all_definitions:
-            embed.description = "目前没有可用的荣誉定义。请联系管理员添加。"
-        elif not user_honor_instances:
-            embed.description = "你还没有获得任何荣誉哦！查看下方待解锁荣誉，多多参与社区活动吧！"
-        elif all_definitions and len(user_honor_instances) == len(all_definitions) and not unearned_honors_lines:
-            embed.description = "🎉 你已经解锁了所有可用的荣誉！恭喜你！"
-        else:
-            embed.description = "你已获得部分荣誉。请查看下方已佩戴、未佩戴的荣誉，或探索待解锁的更多荣誉。"
-
-        if equipped_honors_lines:
-            embed.add_field(name="✅ 已佩戴荣誉", value="\n\n".join(equipped_honors_lines), inline=False)
-        if unequipped_owned_honors_lines:
-            embed.add_field(name="☑️ 未佩戴荣誉 (可佩戴身份组)", value="\n\n".join(unequipped_owned_honors_lines), inline=False)
-        if pure_achievement_honors_lines:
-            embed.add_field(name="✨ 纯粹成就荣誉 (无身份组)", value="\n\n".join(pure_achievement_honors_lines), inline=False)
-        if unearned_honors_lines:
-            embed.add_field(name="💡 待解锁荣誉", value="\n\n".join(unearned_honors_lines), inline=False)
-
-        embed.set_footer(text="佩戴/卸下荣誉需使用下方的下拉选择器进行操作。")
-        return embed
-
-    # --- 新增：历史荣誉回填功能 ---
-    @app_commands.command(name="回填荣誉", description="扫描论坛历史帖子并根据当前规则补发荣誉。")
-    @app_commands.guild_only()
-    @app_commands.checks.has_permissions(manage_roles=True)
-    async def rescan_honors(self, interaction: discord.Interaction):
-        """扫描历史帖子以补发荣誉，并提供进度。"""
-        await interaction.response.defer(ephemeral=True)
-        guild = typing.cast(discord.Guild, interaction.guild)
-
-        # 并发控制：如果已有任务在运行，取消它
-        if guild.id in self.running_backfill_tasks:
-            old_task = self.running_backfill_tasks[guild.id]
-            if not old_task.done():
-                self.logger.warning(f"服务器 {guild.name} 请求新的回填任务，正在取消旧任务...")
-                old_task.cancel()
-                try:
-                    await old_task
-                except asyncio.CancelledError:
-                    pass  # 预料之中的取消
-                await interaction.edit_original_response(content="⚠️ 已取消上一个正在进行的回填任务，即将开始新的任务...")
-                await asyncio.sleep(2)  # 给用户一点反应时间
-
-        # 创建并注册新任务
-        await interaction.edit_original_response(content="回填任务已开始。")
-        task = self.bot.loop.create_task(self._backfill_honor_task(interaction.channel, guild))
-        self.running_backfill_tasks[guild.id] = task
-
-    async def _backfill_honor_task(self, target_channel: discord.abc.Messageable, guild: discord.Guild):
-        """【核心执行器】负责回填历史荣誉，是回填命令的唯一入口。"""
-        start_time = time.time()
-        progress_message: Optional[discord.Message] = None
-
-        try:
-            # 1. 聚合所有目标版块ID
-            guild_config = config_data.HONOR_CONFIG.get(guild.id, {})
-            event_cfg = guild_config.get("event_honor", {})
-            milestone_cfg = guild_config.get("milestone_honor", {})
-
-            target_forum_ids = set()
-            if event_cfg.get("enabled"):
-                target_forum_ids.update(event_cfg.get("target_forum_ids", []))
-            if milestone_cfg.get("enabled"):
-                target_forum_ids.update(milestone_cfg.get("target_forum_ids", []))
-
-            if not target_forum_ids:
-                await target_channel.send("❌ **任务中止**：在配置中没有找到任何需要扫描的目标论坛版块。")
-                return
-
-            # 2. 获取所有帖子
-            self.logger.info(f"[{guild.name}] 开始回填荣誉任务。目标版块ID: {target_forum_ids}")
-            initial_embed = discord.Embed(title="⏳ 荣誉回填任务初始化中...", description="正在收集中... 请稍候。", color=discord.Color.blue())
-            progress_message = await target_channel.send(embed=initial_embed)
-
-            all_threads = []
-            for forum_id in target_forum_ids:
-                forum = guild.get_channel(forum_id) or await guild.fetch_channel(forum_id)
-                if not isinstance(forum, discord.ForumChannel):
-                    self.logger.warning(f"[{guild.name}] 配置的ID {forum_id} 不是一个有效的论坛版块，已跳过。")
-                    continue
-
-                forum = typing.cast(discord.ForumChannel, forum)
-
-                # 获取活跃帖子
-                all_threads.extend(forum.threads)
-                # 获取归档帖子
-                try:
-                    async for thread in forum.archived_threads(limit=None):
-                        all_threads.append(thread)
-                except discord.Forbidden:
-                    self.logger.error(f"无法获取版块 '{forum.name}' 的归档帖子，权限不足。")
-
-            total_threads = len(all_threads)
-            self.logger.info(f"[{guild.name}] 共找到 {total_threads} 个帖子需要处理。")
-
-            # 3. 循环处理并更新进度
-            processed_count = 0
-            last_update_time = time.time()
-
-            for thread in all_threads:
-                try:
-                    await self._process_thread_for_honor(thread)
-                except Exception as e:
-                    self.logger.error(f"处理帖子 T:{thread.id} 时发生错误: {e}", exc_info=True)
-
-                processed_count += 1
-
-                # 每5秒或处理了20个帖子后更新一次进度，避免过于频繁的API调用
-                if time.time() - last_update_time > 5 or processed_count % 20 == 0:
-                    progress_embed = self._create_backfill_progress_embed(
-                        guild, start_time, total_threads, processed_count, thread.parent.name
-                    )
-                    await progress_message.edit(embed=progress_embed)
-                    last_update_time = time.time()
-                    await asyncio.sleep(0.1)  # 短暂让步，避免速率限制
-
-            # 4. 发送最终报告
-            duration = time.time() - start_time
-            final_embed = self._create_backfill_final_embed(guild, duration, total_threads)
-            await progress_message.edit(embed=final_embed)
-            self.logger.info(f"[{guild.name}] 荣誉回填任务完成。耗时 {duration:.2f} 秒，处理了 {total_threads} 个帖子。")
-
-        except asyncio.CancelledError:
-            self.logger.warning(f"[{guild.name}] 回填任务被手动取消。")
-            if progress_message:
-                await progress_message.edit(content="🛑 **任务已取消**。", embed=None, view=None)
-        except Exception as e:
-            self.logger.critical(f"[{guild.name}] 回填任务发生严重错误: {e}", exc_info=True)
-            if progress_message:
-                error_embed = discord.Embed(
-                    title="❌ 任务异常中断",
-                    description=f"在执行过程中发生严重错误，任务已停止。\n```\n{e}\n```",
-                    color=discord.Color.red()
-                )
-                await progress_message.edit(embed=error_embed)
-        finally:
-            # 任务结束（无论成功、失败或取消），都从字典中移除
-            _ = self.running_backfill_tasks.pop(guild.id, None)
-
-    @staticmethod
-    def _create_backfill_progress_embed(guild: discord.Guild, start_time: float, total: int, current: int, current_forum: str) -> discord.Embed:
-        """创建进度更新的 Embed"""
-        progress = current / total if total > 0 else 0
-        bar_length = 20
-        filled_length = int(bar_length * progress)
-        bar = '█' * filled_length + '─' * (bar_length - filled_length)
-
-        elapsed_time = time.time() - start_time
-
-        embed = discord.Embed(
-            title=f"⚙️ 正在回填 {guild.name} 的荣誉...",
-            description=f"进度: **{current} / {total}** ({progress:.1%})\n`{bar}`",
-            color=discord.Color.gold()
-        )
-        embed.add_field(name="当前扫描版块", value=f"#{current_forum}", inline=True)
-        embed.add_field(name="已用时", value=f"{int(elapsed_time)} 秒", inline=True)
-        embed.set_footer(text="正在扫描所有历史帖子，这可能需要一些时间...")
-        return embed
-
-    @staticmethod
-    def _create_backfill_final_embed(guild: discord.Guild, duration: float, total_processed: int) -> discord.Embed:
-        """创建任务完成的 Embed"""
-        embed = discord.Embed(
-            title=f"✅ {guild.name} 荣誉回填完成",
-            description="已根据最新规则扫描所有相关历史帖子，并补发了应得的荣誉。",
-            color=discord.Color.green()
-        )
-        embed.add_field(name="总处理帖子数", value=str(total_processed), inline=True)
-        embed.add_field(name="总耗时", value=f"{duration:.2f} 秒", inline=True)
-        embed.set_footer(text="现在用户的荣誉数据已是最新状态。")
-        return embed
 
 
 async def setup(bot: commands.Bot):

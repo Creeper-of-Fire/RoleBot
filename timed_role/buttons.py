@@ -27,5 +27,4 @@ class TimedRolePanelButton(ui.Button):
             await interaction.followup.send("错误：无法获取您的服务器成员信息。", ephemeral=True)
             return
         view = TimedRoleManageView(self.cog, member)
-        await view.rebuild_view()
-        await interaction.followup.send(embed=view.embed, view=view, ephemeral=True)
+        await view.update_view(interaction)

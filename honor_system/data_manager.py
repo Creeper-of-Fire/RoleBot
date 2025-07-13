@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import contextlib
 import datetime
-from typing import List, Optional, TypeVar, Type
+import logging
+from typing import List, Optional, TypeVar, Type, Self
 
 from sqlalchemy import select, func
 from sqlalchemy.dialects.sqlite import insert
@@ -39,7 +40,19 @@ def clone_orm_object(obj: T) -> T:
 
     return new_obj
 
+
 class HonorDataManager:
+    def __init__(self, logger: logging.Logger):
+        self.logger = logger
+
+    _honor_data_manager: Optional[Self] = None
+
+    @classmethod
+    def getDataManager(cls, logger) -> Self:
+        if not cls._honor_data_manager:
+            cls._honor_data_manager = cls(logger=logger)
+        return cls._honor_data_manager
+
     @staticmethod
     @contextlib.contextmanager
     def get_db():
@@ -168,20 +181,44 @@ class HonorDataManager:
         if not records:
             return
 
-        with self.get_db() as db:
-            # 准备 upsert 语句 (INSERT ... ON CONFLICT DO ...)
-            stmt = insert(JoinRecord).values(records)
+        # 定义 SQLite 默认的 SQL 变量限制
+        # 虽然有些编译版本可能是 32766，但为了兼容性，使用 999 是更安全的默认值。
+        SQLITE_MAX_VARIABLES = 999
+        # 每个记录有 3 个字段 (user_id, guild_id, joined_at)
+        VARIABLES_PER_RECORD = 3
+        # 计算每个批次最多能处理的记录数
+        # 999 / 3 = 333
+        BATCH_SIZE = SQLITE_MAX_VARIABLES // VARIABLES_PER_RECORD
 
-            # 定义冲突时的更新操作
-            # 如果 (user_id, guild_id) 已存在，则只有当新提供的 joined_at
-            # (stmt.excluded.joined_at) 早于数据库中已有的 joined_at
-            # (JoinRecord.joined_at) 时，才执行更新。
-            update_stmt = stmt.on_conflict_do_update(
-                index_elements=['user_id', 'guild_id'],
-                set_=dict(joined_at=stmt.excluded.joined_at),
-                where=(stmt.excluded.joined_at < JoinRecord.joined_at)
-            )
+        # 确保至少处理一个记录，即使 BATCH_SIZE 计算为 0（虽然通常不会）
+        if BATCH_SIZE == 0:
+            BATCH_SIZE = 1
 
-            db.execute(update_stmt)
-            db.commit()
+        self.logger.info(f"开始批量处理 {len(records)} 条加入记录，每批次 {BATCH_SIZE} 条。")
 
+        # 将大的记录列表分割成小的批次
+        for i in range(0, len(records), BATCH_SIZE):
+            batch = records[i:i + BATCH_SIZE]
+            with self.get_db() as db:
+                try:
+                    # 准备 upsert 语句
+                    stmt = insert(JoinRecord).values(batch)
+
+                    # 定义冲突时的更新操作
+                    # 如果 (user_id, guild_id) 已存在，则只有当新提供的 joined_at
+                    # (stmt.excluded.joined_at) 早于数据库中已有的 joined_at
+                    # (JoinRecord.joined_at) 时，才执行更新。
+                    update_stmt = stmt.on_conflict_do_update(
+                        index_elements=['user_id', 'guild_id'],
+                        set_=dict(joined_at=stmt.excluded.joined_at),
+                        where=(stmt.excluded.joined_at < JoinRecord.joined_at)
+                    )
+
+                    db.execute(update_stmt)
+                    db.commit()
+                    self.logger.info(f"成功处理批次 {i // BATCH_SIZE + 1} ({len(batch)} 条记录)。")
+                except Exception as e:
+                    db.rollback()
+                    self.logger.error(f"处理批次 {i // BATCH_SIZE + 1} 时发生错误: {e}", exc_info=True)
+                    # 如果发生错误，可以决定是继续处理下一批还是中止
+                    # 这里选择继续处理，以最大化成功写入的记录

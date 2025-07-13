@@ -3,9 +3,9 @@
 import asyncio
 import json
 import logging
-from dataclasses import dataclass, asdict, field
 from datetime import datetime
 from typing import Dict, Optional, List
+
 from pydantic import BaseModel
 
 CONFIG_FILE_PATH = "./data/heartbeat_info.json"

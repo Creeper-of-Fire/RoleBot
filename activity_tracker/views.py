@@ -109,14 +109,15 @@ class UserReportDetailView(PaginatedView):
         self.value_suffix = value_suffix
 
         # 调用父类的构造函数，传入核心分页所需数据
+        get_sorted_display_data = lambda: sorted_display_data
         super().__init__(
-            all_items=sorted_display_data,
+            all_items_provider=get_sorted_display_data,
             items_per_page=MAX_CHANNELS_PER_PAGE,
             timeout=timeout
         )
 
     # 实现抽象方法 _rebuild_view
-    async def rebuild_view(self):
+    async def _rebuild_view(self):
         """构建/重建视图内容和 Embed。"""
         self.clear_items()  # 清空旧的组件
 
@@ -127,8 +128,7 @@ class UserReportDetailView(PaginatedView):
             self.embed.remove_field(-1)
 
         # 获取当前页的数据
-        start, end = self.get_page_range()
-        page_items: list[SortedDisplayItem] = self.all_items[start:end]
+        page_items: list[SortedDisplayItem] = self.get_page_items()
 
         # 动态生成分页字段的标题
         field_title = f"{self.field_name} (第 {self.page + 1}/{self.total_pages} 页)"

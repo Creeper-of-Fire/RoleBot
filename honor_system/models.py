@@ -49,6 +49,8 @@ class HonorDefinition(Base):
     role_id: Mapped[int | None] = mapped_column(BigInteger)
     # 荣誉图标的URL，可以没有
     icon_url: Mapped[str | None] = mapped_column(String(255))
+    # 是否在未获得时隐藏，默认隐藏
+    hidden_until_earned: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     # 标记该荣誉是否已在配置中弃用，但为了保留用户历史记录而不删除
     is_archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -85,6 +87,7 @@ class TrackedPost(Base):
     author_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True, comment="发帖人 ID")
     parent_channel_id: Mapped[int] = mapped_column(BigInteger, nullable=False, comment="帖子所在的父频道 ID")
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=lambda: datetime.datetime.now(datetime.UTC))
+
 
 class JoinRecord(Base):
     """记录用户的准确加入时间，作为荣誉发放的数据源"""
