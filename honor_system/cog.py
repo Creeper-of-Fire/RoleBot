@@ -43,52 +43,81 @@ class HonorManageView(PaginatedView):
         self.message: Optional[discord.Message] = None
 
     async def on_honor_select(self, interaction: discord.Interaction):
+        """
+        处理多选荣誉下拉框的交互。
+        通过比较用户提交的“期望状态”和当前的“实际状态”，来计算需要添加和移除的角色。
+        """
         await interaction.response.defer(ephemeral=True)
-        selected_honor_uuid = interaction.data["values"][0]
 
-        selected_honor_def = next(
-            (hd for hd in self.cog.data_manager.get_all_honor_definitions(self.guild.id)
-             if hd.uuid == selected_honor_uuid),
-            None
-        )
+        # 1. 获取用户提交的“期望状态”（即所有被选中的荣誉UUID）
+        desired_honor_uuids = set(interaction.data.get("values", []))
 
-        if not selected_honor_def or selected_honor_def.role_id is None:
-            await interaction.followup.send("❌ 选择的荣誉无效或未关联身份组。", ephemeral=True)
-            await self.update_view(interaction)
+        # 2. 获取当前用户所有可佩戴的荣誉和其实际佩戴的荣誉
+        all_wearable_honors = [
+            uh.definition for uh in self.cog.data_manager.get_user_honors(self.member.id)
+            if uh.definition.role_id is not None
+        ]
+
+        if not all_wearable_honors:
+            await interaction.followup.send("你当前没有可佩戴的荣誉。", ephemeral=True)
             return
 
-        role_id_int: int = cast(int, selected_honor_def.role_id)
-        target_role = self.guild.get_role(role_id_int)
-        if not target_role:
-            await interaction.followup.send(f"⚠️ 荣誉 **{selected_honor_def.name}** 关联的身份组(ID:{selected_honor_def.role_id})已不存在。", ephemeral=True)
-            await self.update_view(interaction)
+        wearable_honor_map = {h.uuid: h for h in all_wearable_honors}
+
+        member_role_ids = {role.id for role in self.member.roles}
+        # 计算出当前实际佩戴的、且由本系统管理的荣誉角色ID
+        current_role_ids = {
+            h.role_id for h in all_wearable_honors if h.role_id in member_role_ids
+        }
+
+        # 3. 计算出用户期望佩戴的荣誉角色ID
+        desired_role_ids = {
+            wearable_honor_map[uuid].role_id
+            for uuid in desired_honor_uuids if uuid in wearable_honor_map and wearable_honor_map[uuid].role_id is not None
+        }
+
+        # 4. 通过集合运算，计算出需要添加和移除的角色
+        roles_to_add_ids = desired_role_ids - current_role_ids
+        roles_to_remove_ids = current_role_ids - desired_role_ids
+
+        roles_to_add = [self.guild.get_role(rid) for rid in roles_to_add_ids]
+        roles_to_remove = [self.guild.get_role(rid) for rid in roles_to_remove_ids]
+
+        # 过滤掉已不存在的角色
+        roles_to_add = [r for r in roles_to_add if r is not None]
+        roles_to_remove = [r for r in roles_to_remove if r is not None]
+
+        if not roles_to_add and not roles_to_remove:
+            await interaction.followup.send("☑️ 你的荣誉佩戴状态没有变化。", ephemeral=True)
             return
 
-        member_has_role = target_role in self.member.roles
+        # 5. 执行操作并发送反馈
         try:
-            if member_has_role:
-                await self.member.remove_roles(target_role, reason=f"用户卸下荣誉: {selected_honor_def.name}")
-                await interaction.followup.send(f"☑️ 已卸下荣誉 **{selected_honor_def.name}** 并移除身份组。", ephemeral=True)
-            else:
-                await self.member.add_roles(target_role, reason=f"用户佩戴荣誉: {selected_honor_def.name}")
-                await interaction.followup.send(f"✅ 已佩戴荣誉 **{selected_honor_def.name}** 并获得身份组！", ephemeral=True)
+            if roles_to_add:
+                await self.member.add_roles(*roles_to_add, reason="用户佩戴荣誉")
+            if roles_to_remove:
+                await self.member.remove_roles(*roles_to_remove, reason="用户卸下荣誉")
+
+            # 构建详细的反馈消息
+            response_lines = ["✅ **荣誉身份组已更新！**"]
+            if roles_to_add:
+                response_lines.append(f"**新增佩戴**: {', '.join([r.mention for r in roles_to_add])}")
+            if roles_to_remove:
+                response_lines.append(f"**卸下荣誉**: {', '.join([r.mention for r in roles_to_remove])}")
+
+            await interaction.followup.send("\n".join(response_lines), ephemeral=True)
+
         except discord.Forbidden:
-            await interaction.followup.send("❌ 操作失败！我没有足够的权限来为你添加/移除身份组。请确保我的角色高于此荣誉的身份组。", ephemeral=True)
+            await interaction.followup.send(
+                "❌ **操作失败！**\n我没有足够的权限来为你添加/移除身份组。请确保我的机器人角色在身份组列表中的位置高于所有荣誉身份组。", ephemeral=True)
         except Exception as e:
-            self.cog.logger.error(f"佩戴/卸下荣誉身份组时发生错误: {e}", exc_info=True)
+            self.cog.logger.error(f"批量佩戴/卸下荣誉时发生错误: {e}", exc_info=True)
             await interaction.followup.send(f"❌ 发生未知错误，请联系管理员：`{e}`", ephemeral=True)
 
-        fresh_member = self.guild.get_member(self.member.id)
-        if fresh_member is None:  # 如果不在缓存中，从API获取
-            try:
-                fresh_member = await self.guild.fetch_member(self.member.id)
-            except discord.NotFound:
-                await interaction.followup.send("❌ 无法获取您的成员信息，操作失败。", ephemeral=True)
-                return
-
-        # 更新视图内部的成员引用，确保后续 _rebuild_view 使用最新数据
-        self.member = fresh_member
-
+        # 6. 更新视图以反映最新状态
+        fresh_member = self.guild.get_member(self.member.id) or await self.guild.fetch_member(self.member.id)
+        if fresh_member:
+            self.member = fresh_member
         await self.update_view(interaction)
 
     async def _rebuild_view(self):
@@ -98,61 +127,75 @@ class HonorManageView(PaginatedView):
         main_honor_embed = self.create_honor_embed(self.member, current_page_honor_data)
         self.embed = [main_honor_embed, self.cog.guide_manager.embed]
 
-        self._add_pagination_buttons(row=1)
+        self._add_pagination_buttons(row=2)  # 将翻页按钮下移一行，给选择器和指南按钮留出空间
 
         if self.cog.guide_manager.url:
             self.add_item(ui.Button(
                 label=f"跳转到 “{self.cog.guide_manager.embed.title}”",
                 style=discord.ButtonStyle.link,
                 url=self.cog.guide_manager.url,
-                row=2
+                row=1
             ))
 
+        # --- Select Menu 构建逻辑 ---
         user_honors_earned = self.cog.data_manager.get_user_honors(self.member.id)
-        if not user_honors_earned:
-            return
+        wearable_honors = [uh for uh in user_honors_earned if uh.definition.role_id is not None]
+
+        if not wearable_honors:
+            return  # 如果没有任何可佩戴的荣誉，则不显示下拉框
 
         member_role_ids = {role.id for role in self.member.roles}
         options = []
-        for uh_instance in user_honors_earned:
+        for uh_instance in wearable_honors:
             honor_def = uh_instance.definition
-            if honor_def.role_id is None:
-                continue
-
             is_equipped_now = honor_def.role_id in member_role_ids
-            equip_emoji = "✅" if is_equipped_now else "🔘"
 
             options.append(discord.SelectOption(
-                label=f"{equip_emoji} {honor_def.name}",
-                description=honor_def.description[:80],
-                value=honor_def.uuid
+                label=honor_def.name,
+                description=honor_def.description[:90],  # 描述可以长一点
+                value=honor_def.uuid,
+                emoji="✅" if is_equipped_now else "⬜",
+                default=is_equipped_now  # <-- 关键：设置默认选中状态
             ))
 
         if not options:
             return
 
         honor_select = ui.Select(
-            placeholder="选择一个荣誉来佩戴或卸下身份组...",
-            min_values=1,
-            max_values=1,
+            placeholder="选择你想佩戴的荣誉身份组...",
+            min_values=0,  # 允许用户取消所有选择
+            max_values=len(options),  # 最多可选所有项
             options=options,
-            custom_id="honor_select",
+            custom_id="honor_select",  # 最好用新的custom_id以避免冲突
             row=0
         )
         honor_select.callback = self.on_honor_select
-
         self.add_item(honor_select)
 
     def create_honor_shown_list(self) -> List[HonorShownData]:
         guild = self.guild
         member = self.member
         honor_shown_list: List[HonorShownData] = []
-        all_definitions = self.cog.data_manager.get_all_honor_definitions(guild.id)
+
+        # --- 获取有序的荣誉定义列表 ---
+        # data_manager 返回的列表顺序依赖于数据库查询结果，不一定是我们想要的。
+        # 我们需要从 config_data 直接获取原始定义的顺序。
+        guild_config = config_data.HONOR_CONFIG.get(guild.id, {})
+        all_config_definitions_raw = guild_config.get("definitions", [])
+
+        # 为了能快速查找，创建一个 UUID 到原始顺序索引的映射
+        config_uuid_order_map = {
+            definition['uuid']: index
+            for index, definition in enumerate(all_config_definitions_raw)
+        }
+
+
+        all_definitions_from_db = self.cog.data_manager.get_all_honor_definitions(guild.id)
         user_honor_instances = self.cog.data_manager.get_user_honors(member.id)
         member_role_ids = {role.id for role in member.roles}
         owned_honor_definitions_map = {uh.honor_uuid: uh.definition for uh in user_honor_instances}
 
-        for definition in all_definitions:
+        for definition in all_definitions_from_db:
             if definition.uuid in owned_honor_definitions_map:
                 if definition.role_id is not None:
                     if definition.role_id in member_role_ids:
@@ -175,10 +218,16 @@ class HonorManageView(PaginatedView):
                 "pure_achievement": 2,
                 "unearned": 3,
             }
+
+            # --- 第二排序标准 ---
+            # 从我们创建的映射中获取该荣誉在配置文件中的原始索引。
+            # 如果万一找不到（理论上不应该发生），给一个很大的默认值，让它排在最后。
+            original_order_index = config_uuid_order_map.get(honor_data.data.uuid, 999)
+
             # 2. 返回一个元组，Python 会依次比较元组中的元素
             #    首先按荣誉类型（已佩戴 > 未佩戴 > ...）排序
-            #    如果类型相同，则按荣誉名称的字母顺序排序（不区分大小写）
-            return order.get(honor_data.shown_mode, 99), honor_data.data.name.lower()
+            #    如果类型相同，则按其在配置文件中的原始顺序排序
+            return order.get(honor_data.shown_mode, 99), original_order_index
 
         honor_shown_list.sort(key=sort_key)
 
@@ -248,7 +297,7 @@ class HonorManageView(PaginatedView):
 class HonorCog(FeatureCog, name="Honor"):
     """管理荣誉系统"""
 
-    def __init__(self, bot: RoleBot):
+    def __init__(self, bot: 'RoleBot'):
         super().__init__(bot)  # 调用父类 (FeatureCog) 的构造函数
         self.data_manager = HonorDataManager.getDataManager(logger=self.logger)
         self.running_backfill_tasks: Dict[int, asyncio.Task] = {}
@@ -368,7 +417,7 @@ class HonorCog(FeatureCog, name="Honor"):
         self.logger.info("HonorCog: 荣誉定义同步完成。")
 
 
-async def setup(bot: commands.Bot):
+async def setup(bot: 'RoleBot'):
     """Cog的入口点。"""
     import os
     if not os.path.exists('data'):

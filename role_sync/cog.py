@@ -32,7 +32,7 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
     - 手动同步：通过命令为所有拥有身份组E的用户授予身份组F。
     """
 
-    def __init__(self, bot: RoleBot):
+    def __init__(self, bot: 'RoleBot'):
         super().__init__(bot)
         self.data_manager = RoleSyncDataManager()
         # 缓存安全的同步规则
@@ -460,6 +460,6 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
             await interaction.followup.send("❌ 操作已取消。", ephemeral=True)
 
 
-async def setup(bot: commands.Bot):
+async def setup(bot: 'RoleBot'):
     """Cog的入口点。"""
     await bot.add_cog(RoleSyncCog(bot))

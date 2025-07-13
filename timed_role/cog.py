@@ -34,7 +34,7 @@ class TimedRolesCog(FeatureCog, name="TimedRoles"):
     def get_main_panel_buttons(self) -> Optional[List[discord.ui.Button]]:
         return [TimedRolePanelButton(self)]
 
-    def __init__(self, bot: RoleBot):
+    def __init__(self, bot: 'RoleBot'):
         super().__init__(bot)
         self.timed_role_data_manager = TimedRoleDataManager()
         self.safe_timed_role_ids_cache: Dict[int, List[int]] = {}
@@ -174,6 +174,6 @@ class TimedRolesCog(FeatureCog, name="TimedRoles"):
         await self.bot.wait_until_ready()
 
 
-async def setup(bot: commands.Bot):
+async def setup(bot: 'RoleBot'):
     """Cog的入口点。"""
     await bot.add_cog(TimedRolesCog(bot))

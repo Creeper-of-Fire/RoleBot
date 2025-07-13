@@ -21,7 +21,7 @@ if typing.TYPE_CHECKING:
 class HonorPostModuleCog(commands.Cog, name="HonorPostModule"):
     """【荣誉子模块】管理与成员发帖相关的荣誉。"""
 
-    def __init__(self, bot: RoleBot):
+    def __init__(self, bot: 'RoleBot'):
         self.running_backfill_tasks: typing.Dict[int, asyncio.Task] = {}
         self.logger = bot.logger
         self.bot = bot
@@ -240,6 +240,6 @@ class HonorPostModuleCog(commands.Cog, name="HonorPostModule"):
         embed.set_footer(text="现在用户的荣誉数据已是最新状态。")
         return embed
 
-async def setup(bot: commands.Bot):
+async def setup(bot: 'RoleBot'):
     """Cog的入口点。"""
     await bot.add_cog(HonorPostModuleCog(bot))

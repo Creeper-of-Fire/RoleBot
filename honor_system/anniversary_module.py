@@ -21,63 +21,91 @@ if typing.TYPE_CHECKING:
 class HonorAnniversaryModuleCog(commands.Cog, name="HonorAnniversaryModule"):
     """【荣誉子模块】管理与成员加入时间相关的荣誉。"""
 
-    def __init__(self, bot: RoleBot):
+    def __init__(self, bot: 'RoleBot'):
         self.logger = bot.logger
         self.bot = bot
         self.data_manager = HonorDataManager.getDataManager(logger=bot.logger)
 
     async def check_and_grant_anniversary_honor(self, member: discord.Member, guild: discord.Guild):
         """
-        【按需检查】检查用户是否符合周年纪念荣誉的条件。
+        【按需检查】检查用户是否符合多个周年纪念荣誉的条件。
         此函数在用户与荣誉系统交互时被调用。
+
+        新的配置结构示例 (在 config_data.py 中):
+        "anniversary_honor": {
+            "enabled": True,
+            "tiers": [
+                {
+                    "honor_uuid": "uuid-for-founder",
+                    "cutoff_date": "2021-01-01T00:00:00"
+                },
+                {
+                    "honor_uuid": "uuid-for-veteran",
+                    "cutoff_date": "2022-01-01T00:00:00"
+                }
+            ]
+        }
         """
         # 1. 获取配置
         guild_config = config_data.HONOR_CONFIG.get(guild.id, {})
         anniversary_cfg = guild_config.get("anniversary_honor", {})
 
-        if not anniversary_cfg.get("enabled") or not anniversary_cfg.get("honor_uuid"):
-            return  # 功能未启用或未配置荣誉UUID
+        # 检查功能是否启用以及是否配置了荣誉等级
+        if not anniversary_cfg.get("enabled") or not anniversary_cfg.get("tiers"):
+            return
 
-        honor_uuid = anniversary_cfg["honor_uuid"]
-
-        # 2. 检查用户是否已拥有此荣誉
-        user_honors = self.data_manager.get_user_honors(member.id)
-        if any(uh.honor_uuid == honor_uuid for uh in user_honors):
-            return  # 已拥有，无需再检查
-
-        # 3. 确定用于比较的加入时间
+        # 2. 确定用于比较的加入时间 (此部分逻辑不变)
         join_date_to_check: Optional[datetime.datetime] = None
-
-        # 3a. 优先从我们的数据库记录中查找
         db_record = self.data_manager.get_join_record(member.id, guild.id)
         if db_record:
             join_date_to_check = db_record.joined_at
-
-        # 3b. 如果数据库没有，从 Discord member 对象获取 (实时 fallback)
         elif member.joined_at:
             join_date_to_check = member.joined_at
-            # 将获取到的信息存回数据库，以便下次使用
             self.data_manager.upsert_join_record(member.id, guild.id, member.joined_at)
 
         if not join_date_to_check:
-            # 既没记录，也无法从 member 对象获取，放弃
             return
 
-        # 4. 比较时间并授予荣誉
+        # 3. 准备数据以便比较
         try:
             tz = ZoneInfo("Asia/Shanghai")
-            cutoff_date = datetime.datetime.fromisoformat(anniversary_cfg["cutoff_date"]).replace(tzinfo=tz)
-        except (KeyError, ValueError) as e:
-            self.logger.error(f"周年纪念荣誉配置错误 (cutoff_date): {e}")
+        except Exception as e:
+            self.logger.error(f"无法加载时区 'Asia/Shanghai': {e}")
             return
 
-        # 确保比较时双方都是 aware datetime 或都是 naive datetime (这里都是 aware)
         join_date_to_check_aware = join_date_to_check.astimezone(tz)
+        user_honors = self.data_manager.get_user_honors(member.id)
+        user_honor_uuids = {uh.honor_uuid for uh in user_honors}  # 使用集合以提高查找效率
 
-        if join_date_to_check_aware < cutoff_date:
-            granted_def = self.data_manager.grant_honor(member.id, honor_uuid)
-            if granted_def:
-                self.logger.info(f"[周年荣誉] 用户 {member} ({member.id}) 因加入时间早于 {cutoff_date.date()} 而获得荣誉 '{granted_def.name}'")
+        # 4. 遍历所有荣誉等级，检查并授予
+        for tier in anniversary_cfg["tiers"]:
+            honor_uuid = tier.get("honor_uuid")
+            cutoff_date_str = tier.get("cutoff_date")
+
+            # 检查当前等级的配置是否完整
+            if not honor_uuid or not cutoff_date_str:
+                self.logger.warning(f"周年纪念荣誉配置中存在无效的等级（缺少 honor_uuid 或 cutoff_date）: {tier}")
+                continue
+
+            # 检查用户是否已拥有此荣誉
+            if honor_uuid in user_honor_uuids:
+                continue  # 已拥有，检查下一个等级
+
+            # 解析截止日期
+            try:
+                cutoff_date = datetime.datetime.fromisoformat(cutoff_date_str).replace(tzinfo=tz)
+            except ValueError as e:
+                self.logger.error(f"周年纪念荣誉等级 'UUID {honor_uuid}' 的 cutoff_date 配置错误: {e}")
+                continue
+
+            # 比较时间并授予荣誉
+            if join_date_to_check_aware < cutoff_date:
+                granted_def = self.data_manager.grant_honor(member.id, honor_uuid)
+                if granted_def:
+                    self.logger.info(
+                        f"[周年荣誉] 用户 {member} ({member.id}) 因加入时间 ({join_date_to_check_aware.date()}) 早于 "
+                        f"{cutoff_date.date()} 而获得荣誉 '{granted_def.name}'"
+                    )
 
     anniversary_group = app_commands.Group(name="周年纪念荣誉", description="管理周年纪念荣誉的数据",
                                            guild_only=True,
@@ -174,6 +202,6 @@ class HonorAnniversaryModuleCog(commands.Cog, name="HonorAnniversaryModule"):
             await log_channel.send(f"❌ **操作失败！**\n在扫描过程中发生错误: `{e}`")
 
 
-async def setup(bot: commands.Bot):
+async def setup(bot: 'RoleBot'):
     """Cog的入口点。"""
     await bot.add_cog(HonorAnniversaryModuleCog(bot))

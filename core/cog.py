@@ -55,7 +55,7 @@ class CoreCog(commands.Cog, name="Core"):
     - 对其他模块的具体实现和配置保持无知。
     """
 
-    def __init__(self, bot: RoleBot):
+    def __init__(self, bot: 'RoleBot'):
         self.bot = bot
         self.logger = bot.logger
 
@@ -414,6 +414,6 @@ class CoreCog(commands.Cog, name="Core"):
             self.logger.error(f"尝试注册的模块 {cog.qualified_name} 未实现 'update_safe_roles_cache' 异步方法，注册失败。")
 
 
-async def setup(bot: commands.Bot):
+async def setup(bot: 'RoleBot'):
     """Cog的入口点。"""
     await bot.add_cog(CoreCog(bot))

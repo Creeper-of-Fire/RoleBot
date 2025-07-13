@@ -28,7 +28,7 @@ SELF_SERVICE_GUIDE_POST = {
 class SelfServiceCog(FeatureCog, name="SelfService"):
     """管理所有自助身份组相关的功能。"""
 
-    def __init__(self, bot: RoleBot):
+    def __init__(self, bot: 'RoleBot'):
         super().__init__(bot)
         self.safe_self_service_role_ids_cache: Dict[int, List[int]] = {}
         self.guide_manager = EmbedLinkManager.get_or_create(
@@ -93,6 +93,6 @@ class SelfServicePanelButton(ui.Button):
         view = SelfServiceManageView(self.cog, member)
         await view.update_view(interaction)
 
-async def setup(bot: commands.Bot):
+async def setup(bot: 'RoleBot'):
     """Cog的入口点。"""
     await bot.add_cog(SelfServiceCog(bot))

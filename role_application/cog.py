@@ -199,7 +199,7 @@ class CreatorApplicationView(ui.View):
 class RoleApplicationCog(commands.Cog, name="RoleApplication"):
     """处理特定身份组的申请和移除逻辑。"""
 
-    def __init__(self, bot: RoleBot):
+    def __init__(self, bot: 'RoleBot'):
         self.bot = bot
         self.logger = bot.logger
 
@@ -276,6 +276,6 @@ class RoleApplicationCog(commands.Cog, name="RoleApplication"):
     #     self.logger.info(f"用户 {interaction.user} 在服务器 {guild.name} 的频道 {interaction.channel.name} 发送了创作者申请面板。")
 
 
-async def setup(bot: commands.Bot):
+async def setup(bot: 'RoleBot'):
     """Cog的入口点。"""
     await bot.add_cog(RoleApplicationCog(bot))

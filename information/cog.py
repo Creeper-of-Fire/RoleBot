@@ -2,7 +2,7 @@
 import asyncio
 import re
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional,TYPE_CHECKING
 
 import discord
 from discord import app_commands, Embed
@@ -10,7 +10,11 @@ from discord.ext import commands, tasks
 
 import config
 from information.data_manager import HeartbeatDataManager, HeartbeatInfo
+
 from utility.helpers import format_duration_hms, BEIJING_TZ
+
+if TYPE_CHECKING:
+    from main import RoleBot
 
 INFORMATION_GROUP_NAME = "服务器资讯"
 
@@ -23,7 +27,7 @@ def _last_update_of_message(message: discord.Message) -> datetime:
 class HeartbeatInformationCog(commands.Cog, name="Heartbeat Information"):
     """一个用于创建和管理实时更新资讯的模块。"""
 
-    def __init__(self, bot: commands.Bot):
+    def __init__(self, bot: 'RoleBot'):
         self.bot = bot
         self.data_manager = HeartbeatDataManager()
         # 存储每个心跳资讯的动态任务 (键仍为 target_message_id 的字符串形式)
@@ -86,6 +90,7 @@ class HeartbeatInformationCog(commands.Cog, name="Heartbeat Information"):
 
         source_embeds = source_message.embeds
         source_content = source_message.content
+        source_attachments = source_message.attachments
 
         mode_type = "频道订阅" if heartbeat_info.is_channel_feed else "消息同步"
         set_author_name = f"来自 {source_message.author.display_name} 的消息（同步）" if not heartbeat_info.is_channel_feed else f"来自 {source_message.channel.name} 的消息（同步）"
@@ -101,11 +106,23 @@ class HeartbeatInformationCog(commands.Cog, name="Heartbeat Information"):
             )
             new_content = None
             new_embeds: List[discord.Embed] = [content_embed]
-            new_embeds = new_embeds + copy_embeds
+            new_embeds.extend(copy_embeds)
         else:
             title_prefix = f"**{heartbeat_info.title}**\n" if heartbeat_info.title else ""
             new_content = title_prefix + source_content if source_content else title_prefix or None
             new_embeds = copy_embeds
+
+        if source_attachments:
+            attachments_text = "\n".join([f"📄 [{att.filename}]({att.url})" for att in source_attachments])
+            if len(attachments_text) > 1024:
+                attachments_text = attachments_text[:1020] + "..."
+
+            if not new_embeds:
+                new_embeds.append(discord.Embed(color=discord.Color.blue()))
+
+            if len(new_embeds[0].fields) < 25:
+                new_embeds[0].add_field(name="附件", value=attachments_text, inline=False)
+
 
         if len(new_embeds) > 0:
             first_embed = new_embeds[0]
@@ -125,6 +142,18 @@ class HeartbeatInformationCog(commands.Cog, name="Heartbeat Information"):
                     first_embed.title = f"{heartbeat_info.title}: {first_embed.title}"
                 else:
                     first_embed.title = heartbeat_info.title
+
+        # --- 3. 最终的超限检查与“牺牲”逻辑 ---
+        if len(new_embeds) > 10:
+            # 创建一个专门的警告Embed
+            warning_embed = discord.Embed(
+                title="⚠️ 内容超限，部分信息未显示",
+                description=f"源消息包含的内容过多（超过10个Embed），因此仅显示前9个。\n\n"
+                            f"**[点击此处查看完整原始消息]({_jump_url})**",
+                color=discord.Color.orange()  # 使用醒目的橙色
+            )
+            # 牺牲：保留前9个，然后将警告Embed作为第10个
+            new_embeds = new_embeds[:9] + [warning_embed]
 
         return new_content, new_embeds
 
@@ -576,6 +605,6 @@ class HeartbeatInformationCog(commands.Cog, name="Heartbeat Information"):
                 await interaction.followup.send(f"❌ 发送资讯时发生未知错误: {e}", ephemeral=True)
 
 
-async def setup(bot: commands.Bot):
+async def setup(bot: 'RoleBot'):
     """Cog的入口点。"""
     await bot.add_cog(HeartbeatInformationCog(bot))

@@ -28,7 +28,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
     【控制器】协调 DataManager, ActivityProcessor 和 Views 来实现活动追踪功能。
     """
 
-    def __init__(self, bot: RoleBot):
+    def __init__(self, bot: 'RoleBot'):
         self.bot = bot
         self.logger = bot.logger
         self.config = config.ACTIVITY_TRACKER_CONFIG
@@ -742,6 +742,6 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             await interaction.followup.send(f"❌ **导出失败！** 发生了一个内部错误，请检查机器人后台日志。", ephemeral=True)
 
 
-async def setup(bot: RoleBot):
+async def setup(bot: 'RoleBot'):
     """Cog的入口点。"""
     await bot.add_cog(TrackActivityCog(bot))
