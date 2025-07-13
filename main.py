@@ -1,6 +1,7 @@
 # main.py
 import asyncio
 import logging
+from typing import Dict, List, Type
 
 import discord
 from discord.ext import commands
@@ -124,7 +125,7 @@ class CogManager:
         # 修复：直接存储 config 模块本身，而不是尝试将其当作字典
         self.config = config_module
         # 定义一个 cog 名称到其类定义的映射，方便动态加载
-        self.cog_map = {
+        self.cog_map: Dict[str, Type[commands.Cog] | List[Type[commands.Cog]]] = {
             "core": CoreCog,
             "self_service": SelfServiceCog,
             "fashion": FashionCog,
@@ -133,7 +134,7 @@ class CogManager:
             "role_application": RoleApplicationCog,
             "track_activity": TrackActivityCog,
             "honor_system": HonorCog,
-            "heartbeat_information":HeartbeatInformationCog,
+            "heartbeat_information": HeartbeatInformationCog,
         }
 
     async def load_all_enabled(self):
@@ -142,20 +143,35 @@ class CogManager:
         for cog_name, cog_config in config.COGS.items():
             if cog_config.get('enabled', False):
                 if cog_name in self.cog_map:
-                    await self.load_cog(cog_name)
+                    await self.load_module(cog_name)
                 else:
                     self.bot.logger.warning(f"模块 {cog_name} 在配置中启用但未在 cog_map 中注册")
 
-    async def load_cog(self, cog_name: str):
-        """加载指定的 Cog"""
-        try:
-            cog_class = self.cog_map[cog_name]
-            # 调用 discord.py 的原生方法添加 Cog 实例
-            await self.bot.add_cog(cog_class(self.bot))
-            self.bot.logger.info(f"已加载模块: {cog_name}")
-        except Exception as e:
-            # 如果加载失败，打印详细的错误信息
-            self.bot.logger.error(f"加载模块 {cog_name} 失败: {e}", exc_info=True)
+    async def load_module(self, module_name: str):
+        """
+        加载一个功能模块，该模块可能包含一个或多个Cog。
+        """
+        cog_or_cogs = self.cog_map.get(module_name)
+        if not cog_or_cogs:
+            return
+
+        cogs_to_load = cog_or_cogs if isinstance(cog_or_cogs, list) else [cog_or_cogs]
+
+        self.bot.logger.info(f"开始加载模块 '{module_name}'...")
+        for cog_class in cogs_to_load:
+            try:
+                cog_instance_name = cog_class.__name__
+                if self.bot.get_cog(cog_instance_name) is not None:
+                    self.bot.logger.warning(f"Cog '{cog_instance_name}' 已加载，跳过。")
+                    continue
+
+                cog_instance = cog_class(self.bot)
+                await self.bot.add_cog(cog_instance)
+
+                self.bot.logger.info(f"  -> 已加载子Cog: {cog_instance_name}")
+
+            except Exception as e:
+                self.bot.logger.error(f"加载子Cog {cog_class.__name__} (属于模块 {module_name}) 失败: {e}", exc_info=True)
 
 
 # ===================================================================

@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import contextlib
+import datetime
 from typing import List, Optional, TypeVar, Type
 
 from sqlalchemy import select, func
+from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.orm import class_mapper
 
-from .models import SessionLocal, HonorDefinition, UserHonor, TrackedPost
+from .models import SessionLocal, HonorDefinition, UserHonor, TrackedPost, JoinRecord
 
 T = TypeVar("T")
 
@@ -139,3 +141,47 @@ class HonorDataManager:
                 safe_h.definition = clone_orm_object(h.definition)
                 safe_honors.append(safe_h)
             return safe_honors
+
+    def get_join_record(self, user_id: int, guild_id: int) -> Optional[JoinRecord]:
+        """获取单个用户的加入记录"""
+        with self.get_db() as db:
+            record = db.execute(
+                select(JoinRecord).where(
+                    JoinRecord.user_id == user_id,
+                    JoinRecord.guild_id == guild_id
+                )
+            ).scalar_one_or_none()
+            return record
+
+    def upsert_join_record(self, user_id: int, guild_id: int, joined_at: datetime.datetime) -> None:
+        """插入或更新单条加入记录。"""
+        self.bulk_upsert_join_records([
+            {"user_id": user_id, "guild_id": guild_id, "joined_at": joined_at}
+        ])
+
+    def bulk_upsert_join_records(self, records: List[dict]):
+        """
+        高效地批量插入或更新加入记录。
+        只在新的加入时间早于现有记录时才更新，确保保留最早的加入时间。
+        records: 一个字典列表，每个字典包含 'user_id', 'guild_id', 'joined_at'。
+        """
+        if not records:
+            return
+
+        with self.get_db() as db:
+            # 准备 upsert 语句 (INSERT ... ON CONFLICT DO ...)
+            stmt = insert(JoinRecord).values(records)
+
+            # 定义冲突时的更新操作
+            # 如果 (user_id, guild_id) 已存在，则只有当新提供的 joined_at
+            # (stmt.excluded.joined_at) 早于数据库中已有的 joined_at
+            # (JoinRecord.joined_at) 时，才执行更新。
+            update_stmt = stmt.on_conflict_do_update(
+                index_elements=['user_id', 'guild_id'],
+                set_=dict(joined_at=stmt.excluded.joined_at),
+                where=(stmt.excluded.joined_at < JoinRecord.joined_at)
+            )
+
+            db.execute(update_stmt)
+            db.commit()
+

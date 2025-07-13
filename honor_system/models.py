@@ -85,3 +85,16 @@ class TrackedPost(Base):
     author_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True, comment="发帖人 ID")
     parent_channel_id: Mapped[int] = mapped_column(BigInteger, nullable=False, comment="帖子所在的父频道 ID")
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=lambda: datetime.datetime.now(datetime.UTC))
+
+class JoinRecord(Base):
+    """记录用户的准确加入时间，作为荣誉发放的数据源"""
+    __tablename__ = "join_records"
+
+    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    guild_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+
+    joined_at: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=False, comment="用户加入服务器的时间 (UTC)")
+
+    __table_args__ = (
+        UniqueConstraint('user_id', 'guild_id', name='_user_guild_uc'),
+    )
