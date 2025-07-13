@@ -1,6 +1,7 @@
 # honor_system/anniversary_module.py
 from __future__ import annotations
 
+import asyncio
 import datetime
 import typing
 from typing import Optional
@@ -116,20 +117,22 @@ class HonorAnniversaryModuleCog(commands.Cog, name="HonorAnniversaryModule"):
             await interaction.followup.send(f"❌ **操作失败！**\n在写入数据库时发生错误: `{e}`")
 
     @anniversary_group.command(name="scan_channel", description="扫描欢迎频道的历史消息来补全加入时间数据。")
-    @app_commands.describe(channel="选择包含系统欢迎消息的频道")
+    @app_commands.describe(target_channel="选择包含系统欢迎消息的频道")
     @app_commands.checks.has_permissions(manage_roles=True)
-    async def scan_welcome_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
-        await interaction.response.defer(ephemeral=False, thinking=True)
+    async def scan_welcome_channel(self, interaction: discord.Interaction, target_channel: discord.TextChannel):
+        await interaction.response.defer(ephemeral=True, thinking=True)
         guild = typing.cast(discord.Guild, interaction.guild)
 
-        self.logger.info(f"[{guild.name}] 开始扫描频道 #{channel.name} 的历史欢迎消息...")
+        self.logger.info(f"[{guild.name}] 开始扫描频道 #{target_channel.name} 的历史欢迎消息...")
 
-        progress_message:discord.Message = await interaction.followup.send(f"[{guild.name}] 开始扫描频道 #{channel.name} 的历史欢迎消息...", ephemeral=False)
+        log_channel = guild.get_channel(interaction.channel_id) or await guild.fetch_channel(interaction.channel_id)
+
+        progress_message:discord.Message = await log_channel.send(f"[{guild.name}] 开始扫描频道 #{target_channel.name} 的历史欢迎消息...")
 
         records_to_upsert = []
         processed_count = 0
         try:
-            async for message in channel.history(limit=None):
+            async for message in target_channel.history(limit=None):
                 processed_count += 1
                 if message.type == discord.MessageType.new_member:
                     # message.author 是加入的用户
@@ -150,23 +153,25 @@ class HonorAnniversaryModuleCog(commands.Cog, name="HonorAnniversaryModule"):
                     if progress_message:
                         await progress_message.edit(content=None, embed=embed)
                     else:
-                        progress_message = await channel.send(content=None, embed=embed)
+                        progress_message = await log_channel.send(content=None, embed=embed)
+                if processed_count % 100 == 0:
+                    await asyncio.sleep(0.5)
 
             if not records_to_upsert:
-                await interaction.followup.send(
-                    f"🤷‍♂️ **扫描完成！**\n在频道 **#{channel.name}** 中处理了 {processed_count} 条消息，但没有找到任何有效的系统欢迎消息。")
+                await log_channel.send(
+                    f"🤷‍♂️ **扫描完成！**\n在频道 **#{target_channel.name}** 中处理了 {processed_count} 条消息，但没有找到任何有效的系统欢迎消息。")
                 return
 
             self.data_manager.bulk_upsert_join_records(records_to_upsert)
             self.logger.info(f"[{guild.name}] 欢迎频道扫描完成，成功写入/更新 {len(records_to_upsert)} 条记录。")
-            await interaction.followup.send(
+            await log_channel.send(
                 f"✅ **频道扫描完成！**\n总共处理了 {processed_count} 条消息，从中提取并存储了 **{len(records_to_upsert)}** 条加入记录。")
 
         except discord.Forbidden:
-            await interaction.followup.send(f"❌ **权限不足！**\n我没有权限读取频道 **#{channel.name}** 的历史消息。请确保我拥有 `阅读消息历史` 权限。")
+            await log_channel.send(f"❌ **权限不足！**\n我没有权限读取频道 **#{target_channel.name}** 的历史消息。请确保我拥有 `阅读消息历史` 权限。")
         except Exception as e:
             self.logger.error(f"[{guild.name}] 扫描欢迎频道时出错: {e}", exc_info=True)
-            await interaction.followup.send(f"❌ **操作失败！**\n在扫描过程中发生错误: `{e}`")
+            await log_channel.send(f"❌ **操作失败！**\n在扫描过程中发生错误: `{e}`")
 
 
 async def setup(bot: commands.Bot):
