@@ -74,6 +74,14 @@ class HonorDataManager:
             ).scalars().all()
             return definitions
 
+    def get_honor_definition_by_uuid(self, honor_uuid: str) -> Optional[HonorDefinition]:
+        """通过 UUID 获取单个荣誉定义。"""
+        with self.get_db() as db:
+            definition = db.execute(
+                select(HonorDefinition).where(HonorDefinition.uuid == honor_uuid)
+            ).scalar_one_or_none()
+            return clone_orm_object(definition)
+
     def grant_honor(self, user_id: int, honor_uuid: str) -> Optional[HonorDefinition]:
         """
         授予用户一个荣誉（通过荣誉UUID）。

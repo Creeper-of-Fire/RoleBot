@@ -14,6 +14,7 @@ from core.cog import CoreCog
 from core.embed_link.embed_manager import EmbedLinkManager
 from fashion.cog import FashionCog
 from honor_system.anniversary_module import HonorAnniversaryModuleCog
+from honor_system.claimable_honor_module import ClaimableHonorModuleCog
 from honor_system.cog import HonorCog
 from honor_system.post_module import HonorPostModuleCog
 from information.cog import HeartbeatInformationCog
@@ -122,7 +123,7 @@ class RoleBot(commands.Bot):
 class CogManager:
     """Cog管理器，负责根据配置动态加载、卸载和重载模块"""
 
-    def __init__(self, bot: commands.Bot, config_module):
+    def __init__(self, bot: 'RoleBot', config_module):
         self.bot = bot
         # 修复：直接存储 config 模块本身，而不是尝试将其当作字典
         self.config = config_module
@@ -135,7 +136,7 @@ class CogManager:
             "role_sync": RoleSyncCog,
             "role_application": RoleApplicationCog,
             "track_activity": TrackActivityCog,
-            "honor_system": [HonorCog, HonorAnniversaryModuleCog, HonorPostModuleCog],
+            "honor_system": [HonorCog, HonorAnniversaryModuleCog, HonorPostModuleCog, ClaimableHonorModuleCog],
             "heartbeat_information": HeartbeatInformationCog,
         }
 
