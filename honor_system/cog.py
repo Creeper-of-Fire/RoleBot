@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
 from typing import cast, Optional, TYPE_CHECKING, Dict, Literal, List
 
@@ -139,7 +140,10 @@ class HonorManageView(PaginatedView):
 
         # --- Select Menu 构建逻辑 ---
         user_honors_earned = self.cog.data_manager.get_user_honors(self.member.id)
-        wearable_honors = [uh for uh in user_honors_earned if uh.definition.role_id is not None]
+        wearable_honors = [
+            uh for uh in user_honors_earned
+            if uh.definition.role_id is not None and not uh.definition.is_archived
+        ]
 
         if not wearable_honors:
             return  # 如果没有任何可佩戴的荣誉，则不显示下拉框
@@ -166,7 +170,7 @@ class HonorManageView(PaginatedView):
             min_values=0,  # 允许用户取消所有选择
             max_values=len(options),  # 最多可选所有项
             options=options,
-            custom_id="honor_select",  # 最好用新的custom_id以避免冲突
+            custom_id="honor_select",
             row=0
         )
         honor_select.callback = self.on_honor_select
@@ -366,7 +370,7 @@ class HonorCog(FeatureCog, name="Honor"):
             await view.start(interaction, ephemeral=True)
 
         honor_button = ui.Button(
-            label="我的荣誉墙（临时测试）",
+            label="我的荣誉墙",
             style=discord.ButtonStyle.secondary,
             emoji="🏆",
             custom_id="honor_cog:show_honor_panel"
@@ -378,24 +382,53 @@ class HonorCog(FeatureCog, name="Honor"):
     async def synchronize_all_honor_definitions(self):
         await self.bot.wait_until_ready()
         self.logger.info("HonorCog: 开始同步所有服务器的荣誉定义...")
+
+        # 1. 收集配置文件中所有的 UUID，用于最后归档操作
         all_config_uuids = set()
         for guild_id, guild_config in config_data.HONOR_CONFIG.items():
             for honor_def in guild_config.get("definitions", []):
                 all_config_uuids.add(honor_def['uuid'])
+
+        # 2. 遍历配置，处理创建和更新
         with self.data_manager.get_db() as db:
             for guild_id, guild_config in config_data.HONOR_CONFIG.items():
                 self.logger.info(f"同步服务器 {guild_id} 的荣誉...")
                 for config_def in guild_config.get("definitions", []):
+                    # --- 新增的冲突处理逻辑 ---
+                    # 查找是否存在名称相同但 UUID 不同的旧定义
+                    conflicting_old_def = db.query(HonorDefinition).filter(
+                        HonorDefinition.guild_id == guild_id,
+                        HonorDefinition.name == config_def['name'],
+                        HonorDefinition.uuid != config_def['uuid']
+                    ).one_or_none()
+
+                    if conflicting_old_def:
+                        # 发现冲突，归档旧定义
+                        self.logger.warning(
+                            f"发现名称冲突: 荣誉 '{config_def['name']}' 已存在 (UUID: {conflicting_old_def.uuid})，"
+                            f"但新配置使用 UUID: {config_def['uuid']}。将归档旧定义。"
+                        )
+                        conflicting_old_def.is_archived = True
+                        # 可选：重命名以彻底解决 UNIQUE 约束，即使在归档状态下
+                        conflicting_old_def.name = f"{conflicting_old_def.name}_archived_{int(time.time())}"
+                        db.add(conflicting_old_def)
+                        db.flush()  # 立即将更改写入会话，以便后续操作不会再次冲突
+
+                    # --- 原有的同步逻辑 ---
+                    # 查找当前配置项对应的数据库记录 (通过 UUID)
                     db_def = db.query(HonorDefinition).filter_by(uuid=config_def['uuid']).one_or_none()
+
                     if db_def:
+                        # 记录存在，更新它
                         db_def.name = config_def['name']
                         db_def.description = config_def['description']
                         db_def.role_id = config_def.get('role_id')
                         db_def.icon_url = config_def.get('icon_url')
                         db_def.guild_id = guild_id
-                        db_def.hidden_until_earned = config_def.get('hidden_until_earned')
-                        db_def.is_archived = False
+                        db_def.hidden_until_earned = config_def.get('hidden_until_earned', True)  # 确保有默认值
+                        db_def.is_archived = False  # 确保它处于激活状态
                     else:
+                        # 记录不存在，创建它
                         new_def = HonorDefinition(
                             uuid=config_def['uuid'],
                             guild_id=guild_id,
@@ -403,17 +436,24 @@ class HonorCog(FeatureCog, name="Honor"):
                             description=config_def['description'],
                             role_id=config_def.get('role_id'),
                             icon_url=config_def.get('icon_url'),
-                            hidden_until_earned=config_def.get('hidden_until_earned'),
+                            hidden_until_earned=config_def.get('hidden_until_earned', True),  # 确保有默认值
                         )
                         db.add(new_def)
                         self.logger.info(f"  -> 已创建新荣誉: {config_def['name']}")
+
+            # 3. 归档在配置文件中已不存在的荣誉
             db_uuids_to_check = db.query(HonorDefinition.uuid).filter(HonorDefinition.is_archived == False).all()
             db_uuids_set = {uuid_tuple[0] for uuid_tuple in db_uuids_to_check}
             uuids_to_archive = db_uuids_set - all_config_uuids
+
             if uuids_to_archive:
                 self.logger.warning(f"发现 {len(uuids_to_archive)} 个需要归档的荣誉...")
-                db.query(HonorDefinition).filter(HonorDefinition.uuid.in_(uuids_to_archive)).update({"is_archived": True})
+                # 使用 in_ 操作批量更新
+                db.query(HonorDefinition).filter(HonorDefinition.uuid.in_(uuids_to_archive)).update({"is_archived": True}, synchronize_session=False)
+
+            # 最终提交所有更改
             db.commit()
+
         self.logger.info("HonorCog: 荣誉定义同步完成。")
 
 

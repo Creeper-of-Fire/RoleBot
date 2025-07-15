@@ -67,25 +67,21 @@ class ClaimableHonorView(ui.View):
         granted_def = self.data_manager.grant_honor(member.id, honor_uuid)
         if granted_def:
             await interaction.followup.send(f"🎉 恭喜你，成功领取荣誉 **{granted_def.name}**！", ephemeral=True)
-        else:
-            await interaction.followup.send(f"☑️ 你已拥有荣誉 **{honor_def.name}**。", ephemeral=True)
+        # else:
+        #     await interaction.followup.send(f"☑️ 你已拥有荣誉 **{honor_def.name}**。", ephemeral=True)
 
         # 2. 佩戴身份组 (如果尚未佩戴)
         if role.id not in [r.id for r in member.roles]:
             try:
                 await member.add_roles(role, reason="用户自助领取荣誉")
-                await interaction.followup.send(
-                    content=f"✅ 成功佩戴身份组：{role.mention}")
+                await interaction.followup.send(content=f"✅ 成功佩戴身份组：{role.mention}", ephemeral=True)
             except discord.Forbidden:
-                await interaction.followup.send(
-                    content=f"❌ **操作失败！**\n我没有足够的权限为你添加身份组 {role.mention}。")
+                await interaction.followup.send(content=f"❌ **操作失败！**\n我没有足够的权限为你添加身份组 {role.mention}。", ephemeral=True)
             except Exception as e:
                 self.cog.logger.error(f"为用户 {member} 添加角色 {role.name} 时出错: {e}", exc_info=True)
-                await interaction.followup.send(
-                    content=f"❌ 发生未知错误，请联系管理员。")
+                await interaction.followup.send(content=f"❌ 发生未知错误，请联系管理员。", ephemeral=True)
         else:
-            await interaction.followup.send(
-                content=f"你已经佩戴了身份组 {role.mention}，无需重复操作。")
+            await interaction.followup.send(content=f"你已经佩戴了身份组 {role.mention}，无需重复操作。", ephemeral=True)
 
     @ui.button(label="卸下身份组", style=discord.ButtonStyle.danger, custom_id="claim_honor:remove")
     async def remove_role(self, interaction: discord.Interaction, button: ui.Button):
@@ -157,7 +153,7 @@ class ClaimableHonorModuleCog(commands.Cog, name="ClaimableHonorModule"):
         self.logger.info(f"ClaimableHonorView 已注册。")
 
     claim_honor_group = app_commands.Group(
-        name="claim-honor",
+        name="自助领取荣誉面板",
         description="管理可自助领取的荣誉面板",
         guild_only=True,
         default_permissions=discord.Permissions(manage_roles=True)
@@ -190,7 +186,7 @@ class ClaimableHonorModuleCog(commands.Cog, name="ClaimableHonorModule"):
 
         return choices[:25]  # Discord 限制最多25个选项
 
-    @claim_honor_group.command(name="create", description="创建一个新的可自助领取荣誉面板。")
+    @claim_honor_group.command(name="发送面板", description="创建一个新的可自助领取荣誉面板。")
     @app_commands.describe(
         title="面板的标题",
         description="面板的描述文字，支持换行符 \\n",
