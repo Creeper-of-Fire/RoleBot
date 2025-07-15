@@ -1,6 +1,6 @@
-﻿# deploy_local_to_remote.ps1
+﻿# deploy.ps1
 # ==============================================================================
-# RoleBot 一键部署脚本 (本地文件传输模式 - 适用于临时测试或绕过Git)
+# RoleBot 一键部署脚本 (本地文件传输模式)
 #
 # 功能:
 # 1. 从 deploy.env 加载远程服务器的连接配置。
@@ -18,7 +18,7 @@
 # 1. 确保已在 deploy.env 和 .env 文件中填写正确的配置。
 # 2. 确保你的本地项目目录包含所有机器人所需的代码和配置文件。
 # 3. 在 PowerShell 中，导航到此脚本所在的目录 (通常是项目根目录)。
-# 4. 运行: .\deploy_local_to_remote.ps1
+# 4. 运行: .\deploy.ps1
 #
 # ==============================================================================
 
@@ -88,17 +88,16 @@ $excludeList = @(
     ".gitignore",
     ".venv",
     ".idea",
-    "*.zip",
     "*.db",
-    $zipFileName, # 排除自身
     "deploy.env", # 敏感信息，不应该打包进去
-    "deploy_local_to_remote.ps1", # 排除自身
-    "deploy_remote.sh", # 如果还有这个，也可以排除
+    $zipFileName, # 排除自身
+    "*.zip",  # 排除万一没有清理掉的zip
+    "deploy.ps1", # 排除自身
     "*.log" # 如果有日志文件
 )
 
 # ===============================================================
-# ✨ 核心修改：使用 7z.exe 替代 Compress-Archive ✨
+# ✨ 使用 7z.exe 替代 Compress-Archive ✨
 # ===============================================================
 try {
     Write-Host "   -> 正在创建 ZIP 文件: $zipFilePath" -ForegroundColor Gray
