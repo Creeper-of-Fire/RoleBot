@@ -31,17 +31,20 @@ $remoteProjectName = "RoleBot"  # 远程服务器上项目目录的名称
 # --- 1. 加载配置 ---
 Write-Host "⚙️ 正在加载部署配置..." -ForegroundColor Yellow
 
-$config = @{}
-try {
+$config = @{ }
+try
+{
     Get-Content ".\deploy.env" | ForEach-Object {
-        if ($_ -match '^(.*?)=(.*)') {
+        if ($_ -match '^(.*?)=(.*)')
+        {
             $key = $Matches[1].Trim()
             $value = $Matches[2].Trim()
             $config[$key] = $value
         }
     }
 }
-catch {
+catch
+{
     Write-Host "❌ 错误: 无法读取 'deploy.env' 文件。请确保它存在且格式正确。" -ForegroundColor Red
     exit 1
 }
@@ -58,14 +61,16 @@ Write-Host "ℹ️ 远程项目目录将被设置为: $remoteProjectDir" -Foregr
 # --- 2. 本地文件检查 ---
 Write-Host "🔍 正在检查本地SSH私钥和Docker Compose文件..." -ForegroundColor Cyan
 
-if (-not (Test-Path $sshKeyPath)) {
+if (-not (Test-Path $sshKeyPath))
+{
     Write-Host "❌ 错误: SSH 私钥文件未在 '$sshKeyPath' 找到。" -ForegroundColor Red
     Write-Host "   请检查 deploy.env 中的 SSH_PRIVATE_KEY_PATH 配置。" -ForegroundColor Gray
     exit 1
 }
 
 # 确保 docker-compose.yml 存在
-if (-not (Test-Path ".\docker-compose.yml")) {
+if (-not (Test-Path ".\docker-compose.yml"))
+{
     Write-Host "❌ 错误: 必需的 'docker-compose.yml' 文件不存在于当前目录。" -ForegroundColor Red
     exit 1
 }
@@ -91,7 +96,7 @@ $excludeList = @(
     "*.db",
     "deploy.env", # 敏感信息，不应该打包进去
     $zipFileName, # 排除自身
-    "*.zip",  # 排除万一没有清理掉的zip
+    "*.zip", # 排除万一没有清理掉的zip
     "deploy.ps1", # 排除自身
     "*.log" # 如果有日志文件
 )
@@ -99,7 +104,8 @@ $excludeList = @(
 # ===============================================================
 # ✨ 使用 7z.exe 替代 Compress-Archive ✨
 # ===============================================================
-try {
+try
+{
     Write-Host "   -> 正在创建 ZIP 文件: $zipFilePath" -ForegroundColor Gray
 
     # 7-Zip 命令的基本结构: 7z a <archive_name> <files_to_add> -xr!<exclude_pattern>
@@ -118,16 +124,16 @@ try {
     # **注意:** 确保 '7z.exe' 在你的系统 PATH 中。
     # 我们将命令和参数作为一个数组传递给 Start-Process，这样更可靠。
     $7zArguments = @(
-        "a",                           # add to archive
-        "-tzip",                       # output format is zip
-        "`"$zipFilePath`"",            # archive name (quoted for spaces)
-        "`"$sourceDir\*`"",           # files/directories to add (all contents of sourceDir, preserves structure)
-        "-r",                          # recurse subdirectories
+        "a", # add to archive
+        "-tzip", # output format is zip
+        "`"$zipFilePath`"", # archive name (quoted for spaces)
+        "`"$sourceDir\*`"", # files/directories to add (all contents of sourceDir, preserves structure)
+        "-r", # recurse subdirectories
         "-mx=9"                        # maximum compression
     ) + $sevenZipExcludeArgs           # add all exclude arguments
 
     # 打印将执行的命令（方便调试）
-    Write-Host "   -> 执行命令: 7z.exe $($7zArguments -join ' ')" -ForegroundColor DarkGray
+    Write-Host "   -> 执行命令: 7z.exe $( $7zArguments -join ' ' )" -ForegroundColor DarkGray
     $sevenZipExePath = "C:\Program Files\7-Zip\7z.exe"
     # 执行 7z.exe
     $process = Start-Process -FilePath $sevenZipExePath -ArgumentList $7zArguments -NoNewWindow -PassThru -ErrorAction Stop -Wait
@@ -135,7 +141,8 @@ try {
 
     Write-Host "✅ 项目文件打包成功。" -ForegroundColor Green
 }
-catch {
+catch
+{
     Write-Host "❌ 错误: 打包项目文件失败。请确保 7-Zip 已安装且 '7z.exe' 在系统 PATH 中。" -ForegroundColor Red
     $_ | Out-String
     exit 1
@@ -148,17 +155,20 @@ Write-Host "🚀 正在向服务器 ($sshHost) 传输压缩包..." -ForegroundCo
 
 $remoteZipPath = "$remoteProjectBaseDir/$zipFileName"
 
-try {
+try
+{
     Write-Host "   -> 正在传输 $zipFilePath 到 ${sshHost}:$remoteZipPath..." -ForegroundColor Gray
-    scp -i $sshKeyPath $zipFilePath "$($sshUser)@$($sshHost):$remoteZipPath"
+    scp -i $sshKeyPath $zipFilePath "$( $sshUser )@$( $sshHost ):$remoteZipPath"
     Write-Host "✅ 压缩包传输成功。" -ForegroundColor Green
 }
-catch {
+catch
+{
     Write-Host "❌ 错误: 传输压缩包失败。请检查SSH连接、权限或路径是否正确。" -ForegroundColor Red
     $_ | Out-String
     exit 1
 }
-finally {
+finally
+{
     # 传输完成后，删除本地的临时zip文件
     Remove-Item $zipFilePath -Force
     Write-Host "🗑️ 已删除本地临时压缩包: $zipFilePath" -ForegroundColor DarkGray
@@ -168,42 +178,71 @@ finally {
 Write-Host "🔧 正在连接到服务器并执行部署命令..." -ForegroundColor Cyan
 
 # 构建远程执行的命令字符串
-$remoteCommands = @(
-    "mkdir -p '$remoteProjectDir'", # 确保项目目录存在
-    "rm -rf '$remoteProjectDir/*' '$remoteProjectDir/.[!.]*'", # 清空旧文件 (保留隐藏目录如.git，但这里是无Git部署，所以直接清空)
-    "unzip -o '$remoteZipPath' -d '$remoteProjectDir'", # 解压压缩包到项目目录
-    "rm -f '$remoteZipPath'", # 删除远程临时压缩包
+$remoteScript = @"
+# 脚本开头设置 set -e，任何命令失败则立即退出
+set -e
 
-    "cd '$remoteProjectDir'", # 进入项目目录
+echo '--- [Remote] 1/6 : 清理并准备项目目录...'
+mkdir -p "$remoteProjectDir"
+cd "$remoteProjectDir"
 
-    "echo '--- [Remote] 正在构建新镜像...'",
-    "docker-compose build", # 构建新镜像
+echo "   -> 正在清理目录: `$(pwd)`"
+# 删除所有非隐藏文件和目录
+rm -rf ./*
+# 删除所有隐藏文件和目录 (除了 '.' 和 '..')
+rm -rf ./.[!.]* 2>/dev/null || true
 
-    "echo '--- [Remote] 正在运行数据库迁移 (Alembic)...'",
-    "docker-compose run --rm $dockerContainerName alembic upgrade head", # 运行迁移
+echo '   -> 正在解压新文件...'
+unzip -o "$remoteProjectBaseDir/$zipFileName" -d .
+rm -f "$remoteProjectBaseDir/$zipFileName"
 
-    "echo '--- [Remote] 正在启动新容器并替换旧容器...'",
-    "docker-compose up -d", # 启动新容器
+echo '--- [Remote] 2/6 : 构建 Docker 镜像...'
+docker-compose build
 
-    "echo '--- [Remote] 正在清理无用的 Docker 镜像...'",
-    "docker image prune -a -f", # 清理无用镜像
+echo '--- [Remote] 3/6 : 动态查找并运行所有数据库迁移 (Alembic)...'
+# 使用 find ... -print0 | while ... 的安全方式处理所有文件名
+find . -name "alembic.ini" -print0 | while IFS= read -r -d '' ini_file; do
+  # --- 关键修正区域开始 ---
+  # 1. 只获取目录路径，不再进行任何多余的计算
+  dir_path=`$(dirname "`$ini_file`")`
 
-    "echo '--- [Remote] 部署完成！---'"
-)
+  # 2. 直接使用 `$dir_path`，它将包含 `./honor_system` 这样的值
+  echo "---> 在 '`$dir_path`' 中发现 Alembic 配置，正在运行迁移..."
 
-$fullRemoteCommand = $remoteCommands -join " && " # 用 && 连接所有命令，确保按顺序执行
+  # 3. 直接将 `$dir_path` 用于 workdir，远程路径会是 /app/./honor_system，这是完全有效的
+  docker-compose run --rm --workdir "/app/`$dir_path`" $dockerContainerName alembic upgrade head
+  # --- 关键修正区域结束 ---
+done
+echo '--- [Remote] 所有 Alembic 迁移执行完毕。'
 
-try {
-    # 执行远程命令
-    ssh -i $sshKeyPath "$($sshUser)@$($sshHost)" "$fullRemoteCommand"
+echo '--- [Remote] 4/6 : 启动新容器并替换旧容器...'
+docker-compose up -d --remove-orphans
+
+echo '--- [Remote] 5/6 : 清理无用的 Docker 镜像...'
+docker image prune -a -f
+
+echo '--- [Remote] 6/6 : 部署成功完成！---'
+"@
+
+try
+{
+    # --- 关键修复 1: 设置输出编码为 UTF-8 ---
+    $OutputEncoding = [System.Text.Encoding]::UTF8
+
+    # --- 关键修复 2: 将 Windows 换行符 (`r`n) 转换为 Linux 换行符 (`n) ---
+    $linuxCompatibleScript = $remoteScript.Replace("`r`n", "`n")
+
+    # 将修复后的脚本通过管道传递给远程服务器的 bash 执行
+    $linuxCompatibleScript | ssh -i $sshKeyPath "$( $sshUser )@$( $sshHost )" "bash -s"
 
     Write-Host "🎉 部署成功完成！RoleBot 已在服务器上更新并启动。" -ForegroundColor Green
 
     # 实时查看 Docker 容器日志
     Write-Host "📋 正在实时查看 Docker 容器日志 (按 Ctrl+C 退出)..." -ForegroundColor Magenta
-    ssh -i $sshKeyPath "$($sshUser)@$($sshHost)" "docker logs -f $dockerContainerName"
+    ssh -i $sshKeyPath "$( $sshUser )@$( $sshHost )" "docker logs -f $dockerContainerName"
 }
-catch {
+catch
+{
     Write-Host "❌ 错误: 在服务器上执行部署命令时失败。" -ForegroundColor Red
     $_ | Out-String
     exit 1
