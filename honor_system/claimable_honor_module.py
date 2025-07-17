@@ -9,7 +9,7 @@ from discord.ext import commands
 
 import config_data
 from .cog import HonorCog, HonorManageView  # 导入主模块的Cog和View
-from .data_manager import HonorDataManager
+from .honor_data_manager import HonorDataManager
 from .json_data_manager import JsonDataManager
 
 if TYPE_CHECKING:

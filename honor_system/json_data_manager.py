@@ -24,7 +24,8 @@ class JsonDataManager:
             cls._instance = cls(logger)
         return cls._instance
 
-    def _ensure_data_file(self):
+    @staticmethod
+    def _ensure_data_file():
         os.makedirs(os.path.dirname(DATA_FILE_PATH), exist_ok=True)
         if not os.path.exists(DATA_FILE_PATH):
             with open(DATA_FILE_PATH, 'w', encoding='utf-8') as f:

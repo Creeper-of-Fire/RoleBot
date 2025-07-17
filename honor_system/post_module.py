@@ -12,7 +12,8 @@ from discord import app_commands
 from discord.ext import commands
 
 import config_data
-from .data_manager import HonorDataManager
+from activity_tracker_db.activity_data_manager import ActivityDataManager
+from .honor_data_manager import HonorDataManager
 
 if typing.TYPE_CHECKING:
     from main import RoleBot
@@ -25,7 +26,8 @@ class HonorPostModuleCog(commands.Cog, name="HonorPostModule"):
         self.running_backfill_tasks: typing.Dict[int, asyncio.Task] = {}
         self.logger = bot.logger
         self.bot = bot
-        self.data_manager = HonorDataManager.getDataManager(logger=self.logger)
+        self.honor_data_manager = HonorDataManager.getDataManager(logger=bot.logger)
+        self.activity_data_manager = ActivityDataManager.getDataManager(logger=bot.logger)
 
     # --- 核心荣誉授予逻辑 ---
     async def _process_thread_for_honor(self, thread: discord.Thread):
@@ -60,7 +62,7 @@ class HonorPostModuleCog(commands.Cog, name="HonorPostModule"):
             if start_time <= thread_creation_time_local <= end_time:
                 honor_uuid_to_grant = event_cfg.get("honor_uuid")
                 if honor_uuid_to_grant:
-                    granted_honor_def = self.data_manager.grant_honor(author.id, honor_uuid_to_grant)
+                    granted_honor_def = self.honor_data_manager.grant_honor(author.id, honor_uuid_to_grant)
                     if granted_honor_def:
                         self.logger.info(f"[活动荣誉] 用户 {author} ({author.id}) 因帖子 T:{thread.id} 获得了荣誉 '{granted_honor_def.name}'")
 
@@ -68,17 +70,17 @@ class HonorPostModuleCog(commands.Cog, name="HonorPostModule"):
         milestone_cfg = config_data.HONOR_CONFIG.get(thread.guild.id, {}).get("milestone_honor", {})
         if milestone_cfg.get("enabled") and thread.parent.id in milestone_cfg.get("target_forum_ids", []):
             # a. 记录帖子 (如果不存在)
-            self.data_manager.add_tracked_post(thread.id, author.id, thread.parent.id)
+            self.activity_data_manager.add_tracked_post(thread.id, author.id, thread.parent.id)
 
             # b. 检查里程碑
-            post_count = self.data_manager.get_user_post_count(author.id)
+            post_count = self.activity_data_manager.get_user_post_count(author.id)
             milestones = milestone_cfg.get("milestones", {})
 
             # 倒序检查
             for count_req_str, honor_uuid in sorted(milestones.items(), key=lambda item: int(item[0]), reverse=True):
                 count_req = int(count_req_str)
                 if post_count >= count_req:
-                    granted_honor_def = self.data_manager.grant_honor(author.id, honor_uuid)
+                    granted_honor_def = self.honor_data_manager.grant_honor(author.id, honor_uuid)
                     if granted_honor_def:
                         self.logger.info(f"[里程碑荣誉] 用户 {author} ({author.id}) 发帖数达到 {count_req}，获得了荣誉 '{granted_honor_def.name}'")
                     # 找到第一个达成的里程碑并授予后就停止

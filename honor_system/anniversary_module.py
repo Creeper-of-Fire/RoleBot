@@ -12,7 +12,8 @@ from discord import app_commands
 from discord.ext import commands
 
 import config_data
-from .data_manager import HonorDataManager
+from activity_tracker_db.activity_data_manager import ActivityDataManager
+from .honor_data_manager import HonorDataManager
 
 if typing.TYPE_CHECKING:
     from main import RoleBot
@@ -24,7 +25,8 @@ class HonorAnniversaryModuleCog(commands.Cog, name="HonorAnniversaryModule"):
     def __init__(self, bot: 'RoleBot'):
         self.logger = bot.logger
         self.bot = bot
-        self.data_manager = HonorDataManager.getDataManager(logger=bot.logger)
+        self.honor_data_manager = HonorDataManager.getDataManager(logger=bot.logger)
+        self.activity_data_manager = ActivityDataManager.getDataManager(logger=bot.logger)
 
     async def check_and_grant_anniversary_honor(self, member: discord.Member, guild: discord.Guild):
         """
@@ -56,12 +58,12 @@ class HonorAnniversaryModuleCog(commands.Cog, name="HonorAnniversaryModule"):
 
         # 2. 确定用于比较的加入时间 (此部分逻辑不变)
         join_date_to_check: Optional[datetime.datetime] = None
-        db_record = self.data_manager.get_join_record(member.id, guild.id)
+        db_record = self.activity_data_manager.get_join_record(member.id, guild.id)
         if db_record:
             join_date_to_check = db_record.joined_at
         elif member.joined_at:
             join_date_to_check = member.joined_at
-            self.data_manager.upsert_join_record(member.id, guild.id, member.joined_at)
+            self.activity_data_manager.upsert_join_record(member.id, guild.id, member.joined_at)
 
         if not join_date_to_check:
             return
@@ -74,7 +76,7 @@ class HonorAnniversaryModuleCog(commands.Cog, name="HonorAnniversaryModule"):
             return
 
         join_date_to_check_aware = join_date_to_check.astimezone(tz)
-        user_honors = self.data_manager.get_user_honors(member.id)
+        user_honors = self.honor_data_manager.get_user_honors(member.id)
         user_honor_uuids = {uh.honor_uuid for uh in user_honors}  # 使用集合以提高查找效率
 
         # 4. 遍历所有荣誉等级，检查并授予
@@ -100,7 +102,7 @@ class HonorAnniversaryModuleCog(commands.Cog, name="HonorAnniversaryModule"):
 
             # 比较时间并授予荣誉
             if join_date_to_check_aware < cutoff_date:
-                granted_def = self.data_manager.grant_honor(member.id, honor_uuid)
+                granted_def = self.honor_data_manager.grant_honor(member.id, honor_uuid)
                 if granted_def:
                     self.logger.info(
                         f"[周年荣誉] 用户 {member} ({member.id}) 因加入时间 ({join_date_to_check_aware.date()}) 早于 "
@@ -137,7 +139,7 @@ class HonorAnniversaryModuleCog(commands.Cog, name="HonorAnniversaryModule"):
             return
 
         try:
-            self.data_manager.bulk_upsert_join_records(records_to_upsert)
+            self.activity_data_manager.bulk_upsert_join_records(records_to_upsert)
             self.logger.info(f"[{guild.name}] 成员扫描完成，成功写入/更新 {len(records_to_upsert)} 条记录。")
             await interaction.followup.send(f"✅ **成员扫描完成！**\n成功处理并存储了 **{len(records_to_upsert)}** / {total_members} 位成员的加入时间信息。")
         except Exception as e:
@@ -190,7 +192,7 @@ class HonorAnniversaryModuleCog(commands.Cog, name="HonorAnniversaryModule"):
                     f"🤷‍♂️ **扫描完成！**\n在频道 **#{target_channel.name}** 中处理了 {processed_count} 条消息，但没有找到任何有效的系统欢迎消息。")
                 return
 
-            self.data_manager.bulk_upsert_join_records(records_to_upsert)
+            self.activity_data_manager.bulk_upsert_join_records(records_to_upsert)
             self.logger.info(f"[{guild.name}] 欢迎频道扫描完成，成功写入/更新 {len(records_to_upsert)} 条记录。")
             await log_channel.send(
                 f"✅ **频道扫描完成！**\n总共处理了 {processed_count} 条消息，从中提取并存储了 **{len(records_to_upsert)}** 条加入记录。")

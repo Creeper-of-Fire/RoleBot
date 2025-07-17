@@ -8,14 +8,13 @@ from typing import cast, Optional, TYPE_CHECKING, Dict, Literal, List
 
 import discord
 from discord import ui, Color
-from discord.ext import commands
 
 import config_data
 from core.embed_link.embed_manager import EmbedLinkManager
 from utility.feature_cog import FeatureCog
 from utility.paginated_view import PaginatedView
 from .anniversary_module import HonorAnniversaryModuleCog
-from .data_manager import HonorDataManager
+from .honor_data_manager import HonorDataManager
 from .models import HonorDefinition
 
 if TYPE_CHECKING:

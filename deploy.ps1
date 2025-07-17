@@ -177,63 +177,44 @@ finally
 # --- 5. 在远程服务器上执行部署逻辑 ---
 Write-Host "🔧 正在连接到服务器并执行部署命令..." -ForegroundColor Cyan
 
-# 构建远程执行的命令字符串
-$remoteScript = @"
-# 脚本开头设置 set -e，任何命令失败则立即退出
+$remoteCommands = @"
 set -e
-
-echo '--- [Remote] 1/6 : 清理并准备项目目录...'
 mkdir -p "$remoteProjectDir"
 cd "$remoteProjectDir"
 
-echo "   -> 正在清理目录: `$(pwd)`"
-# 删除所有非隐藏文件和目录
-rm -rf ./*
-# 删除所有隐藏文件和目录 (除了 '.' 和 '..')
-rm -rf ./.[!.]* 2>/dev/null || true
-
-echo '   -> 正在解压新文件...'
+echo '--- [Remote] 1/6 : 解压新文件...'
 unzip -o "$remoteProjectBaseDir/$zipFileName" -d .
-rm -f "$remoteProjectBaseDir/$zipFileName"
 
 echo '--- [Remote] 2/6 : 构建 Docker 镜像...'
+# 直接在宿主机上运行 docker-compose build
 docker-compose build
 
-echo '--- [Remote] 3/6 : 动态查找并运行所有数据库迁移 (Alembic)...'
-# 使用 find ... -print0 | while ... 的安全方式处理所有文件名
-find . -name "alembic.ini" -print0 | while IFS= read -r -d '' ini_file; do
-  # --- 关键修正区域开始 ---
-  # 1. 只获取目录路径，不再进行任何多余的计算
-  dir_path=`$(dirname "`$ini_file`")`
-
-  # 2. 直接使用 `$dir_path`，它将包含 `./honor_system` 这样的值
-  echo "---> 在 '`$dir_path`' 中发现 Alembic 配置，正在运行迁移..."
-
-  # 3. 直接将 `$dir_path` 用于 workdir，远程路径会是 /app/./honor_system，这是完全有效的
-  docker-compose run --rm --workdir "/app/`$dir_path`" $dockerContainerName alembic upgrade head
-  # --- 关键修正区域结束 ---
-done
-echo '--- [Remote] 所有 Alembic 迁移执行完毕。'
+echo '--- [Remote] 3/6 : 运行所有数据库迁移 (Alembic)...'
+# 通过 docker-compose run 启动一个临时容器来执行 remote_deploy.py
+# remote_deploy.py 会在容器内执行 alembic upgrade head
+docker-compose run --rm -v `$(pwd)`:/app $dockerContainerName python3 /app/remote_deploy.py
 
 echo '--- [Remote] 4/6 : 启动新容器并替换旧容器...'
+# 直接在宿主机上运行 docker-compose up
 docker-compose up -d --remove-orphans
 
 echo '--- [Remote] 5/6 : 清理无用的 Docker 镜像...'
+# 直接在宿主机上运行 docker image prune
 docker image prune -a -f
 
-echo '--- [Remote] 6/6 : 部署成功完成！---'
+echo '--- [Remote] 6/6 : 清理临时文件...'
+rm -f "$remoteProjectBaseDir/$zipFileName"
+rm -f remote_deploy.py
+
+echo '--- [Remote] 部署成功完成！---'
 "@
 
 try
 {
-    # --- 关键修复 1: 设置输出编码为 UTF-8 ---
     $OutputEncoding = [System.Text.Encoding]::UTF8
+    $linuxCompatibleCommands = $remoteCommands.Replace("`r`n", "`n")
 
-    # --- 关键修复 2: 将 Windows 换行符 (`r`n) 转换为 Linux 换行符 (`n) ---
-    $linuxCompatibleScript = $remoteScript.Replace("`r`n", "`n")
-
-    # 将修复后的脚本通过管道传递给远程服务器的 bash 执行
-    $linuxCompatibleScript | ssh -i $sshKeyPath "$( $sshUser )@$( $sshHost )" "bash -s"
+    $linuxCompatibleCommands | ssh -i $sshKeyPath "$( $sshUser )@$( $sshHost )" "bash -s"
 
     Write-Host "🎉 部署成功完成！RoleBot 已在服务器上更新并启动。" -ForegroundColor Green
 
