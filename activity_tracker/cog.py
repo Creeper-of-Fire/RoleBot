@@ -17,6 +17,7 @@ import core.command_group
 from activity_tracker.data_manager import DataManager, BEIJING_TZ
 from activity_tracker.logic import ActivityProcessor
 from activity_tracker.views import ActivityRoleView, ReportEmbeds, UserReportDetailView
+from core.command_group import RoleBotMainGroup
 from utility.views import ConfirmationView
 
 if typing.TYPE_CHECKING:
@@ -352,9 +353,10 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             self.logger.info(f"服务器 '{guild.name}' 的回填任务结束，内存锁已释放。")
 
     activity_group = app_commands.Group(
-        name=f"{config.COMMAND_GROUP_NAME}_活跃", description="用户活动追踪相关指令",
+        name=f"活跃", description="用户活动追踪相关指令",
         guild_ids=[gid for gid in config.GUILD_IDS],
-        default_permissions=discord.Permissions(manage_roles=True)
+        default_permissions=discord.Permissions(manage_roles=True),
+        parent=RoleBotMainGroup.getGroup()
     )
 
     @activity_group.command(name="发送面板", description="发送一个活跃度角色申领面板。")
@@ -552,7 +554,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         embed.add_field(name="写入消息数", value=f"{added}", inline=True)
         return embed
 
-    role_group = core.command_group.RoleBotGroup.getRoleGroup()
+    role_group = core.command_group.RoleBotGroup.getGroup()
 
     @role_group.command(name="统计活跃度", description="统计指定范围和指标的活跃度数据。")
     @app_commands.describe(

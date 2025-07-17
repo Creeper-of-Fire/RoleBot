@@ -7,6 +7,7 @@ import platform
 import zipfile
 
 import config
+from core.command_group import RoleBotMainGroup
 from core.embed_link.embed_manager import EmbedLinkManager
 
 try:
@@ -101,10 +102,13 @@ class CoreCog(commands.Cog, name="Core"):
         self.bot.add_view(MainPanelView(self))  # MainPanelView 现在由 CoreCog 负责
         self.logger.info("核心模块已就绪，主控制面板持久化视图已注册。")
 
+    role_admin_group = RoleBotMainGroup.getGroup()
+
     core_group = app_commands.Group(
-        name=f"{config.COMMAND_GROUP_NAME}_核心", description="机器人核心管理与状态指令",
+        name=f"核心", description="机器人核心管理与状态指令",
         guild_ids=[gid for gid in config.GUILD_IDS],
-        default_permissions=discord.Permissions(manage_roles=True)
+        default_permissions=discord.Permissions(manage_roles=True),
+        parent=RoleBotMainGroup.getGroup()
     )
 
     @core_group.command(name="打开身份组自助中心面板", description="发送身份组管理面板到当前频道")
