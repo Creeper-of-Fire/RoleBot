@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 
 ShownMode = Literal["equipped", "unequipped_owned", "pure_achievement", "unearned", "unearned_do_not_shown"]
 
+
 @dataclass
 class HonorShownData:
     data: HonorDefinition
@@ -151,6 +152,7 @@ class HonorHoldersManageView(PaginatedView):
 
         # 添加翻页按钮
         self._add_pagination_buttons(row=1)
+
 
 # --- 视图定义 ---
 class HonorManageView(PaginatedView):
@@ -295,7 +297,7 @@ class HonorManageView(PaginatedView):
                 ))
 
         if not options:
-            return # 如果当前页没有任何可佩戴的荣誉，则不显示下拉框
+            return  # 如果当前页没有任何可佩戴的荣誉，则不显示下拉框
 
         honor_select = ui.Select(
             placeholder="选择你想佩戴的荣誉身份组...",
@@ -537,8 +539,8 @@ class HonorCog(FeatureCog, name="Honor"):
                         # 记录存在，更新它
                         db_def.name = config_def['name']
                         db_def.description = config_def['description']
-                        db_def.role_id = config_def.get('role_id')
-                        db_def.icon_url = config_def.get('icon_url')
+                        db_def.role_id = config_def.get('role_id', None)
+                        db_def.icon_url = config_def.get('icon_url', None)
                         db_def.guild_id = guild_id
                         db_def.hidden_until_earned = config_def.get('hidden_until_earned', True)  # 确保有默认值
                         db_def.is_archived = False  # 确保它处于激活状态
@@ -549,8 +551,8 @@ class HonorCog(FeatureCog, name="Honor"):
                             guild_id=guild_id,
                             name=config_def['name'],
                             description=config_def['description'],
-                            role_id=config_def.get('role_id'),
-                            icon_url=config_def.get('icon_url'),
+                            role_id=config_def.get('role_id', None),
+                            icon_url=config_def.get('icon_url', None),
                             hidden_until_earned=config_def.get('hidden_until_earned', True),  # 确保有默认值
                         )
                         db.add(new_def)

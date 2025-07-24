@@ -211,6 +211,8 @@ class HeartbeatInformationCog(commands.Cog, name="Heartbeat Information"):
             self.bot.logger.warning(f"尝试启动已存在的心跳任务: {info.title} (ID: {key})。将先停止旧任务。")
             self.active_tasks[key].cancel()
 
+        # TODO 由于速率限制，现在取消实时更新功能，之后转为可发送限时信息
+        return
         # 1. 创建任务的协程
         coro = self._create_task_coro(info)
 

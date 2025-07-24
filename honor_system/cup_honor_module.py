@@ -41,9 +41,8 @@ class NotificationStateManager:
     def get_instance(cls, logger: logging.Logger) -> 'NotificationStateManager':
         """获取本类的单例实例。"""
         if cls._instance is None:
-            with cls._lock:
-                if cls._instance is None:
-                    cls._instance = cls(logger)
+            if cls._instance is None:
+                cls._instance = cls(logger)
         return cls._instance
 
     def _ensure_data_file(self):
@@ -201,7 +200,7 @@ class CupHonorModuleCog(commands.Cog, name="CupHonorModule"):
                         members_to_action.append(member)
 
         # 3. 获取通知所需的对象
-        notification_channel = guild.get_channel(notify_cfg["channel_id"])
+        notification_channel = guild.get_channel(notify_cfg["channel_id"]) or await guild.fetch_channel(notify_cfg["channel_id"])
         admin_role = guild.get_role(notify_cfg["admin_role_id"])
 
         if not notification_channel or not admin_role:

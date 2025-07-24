@@ -192,7 +192,7 @@ docker-compose build
 echo '--- [Remote] 3/6 : 运行所有数据库迁移 (Alembic)...'
 # 通过 docker-compose run 启动一个临时容器来执行 remote_deploy.py
 # remote_deploy.py 会在容器内执行 alembic upgrade head
-docker-compose run --rm -v `$(pwd)`:/app $dockerContainerName python3 /app/remote_deploy.py
+docker-compose run -T --rm -v `$(pwd)`:/app $dockerContainerName python3 /app/remote_deploy.py < /dev/null
 
 echo '--- [Remote] 4/6 : 启动新容器并替换旧容器...'
 # 直接在宿主机上运行 docker-compose up
@@ -214,7 +214,7 @@ try
     $OutputEncoding = [System.Text.Encoding]::UTF8
     $linuxCompatibleCommands = $remoteCommands.Replace("`r`n", "`n")
 
-    $linuxCompatibleCommands | ssh -i $sshKeyPath "$( $sshUser )@$( $sshHost )" "bash -s"
+    $linuxCompatibleCommands | ssh -T -i $sshKeyPath "$( $sshUser )@$( $sshHost )" "bash -s"
 
     Write-Host "🎉 部署成功完成！RoleBot 已在服务器上更新并启动。" -ForegroundColor Green
 

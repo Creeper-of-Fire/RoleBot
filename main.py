@@ -16,6 +16,7 @@ from fashion.cog import FashionCog
 from honor_system.anniversary_module import HonorAnniversaryModuleCog
 from honor_system.claimable_honor_module import ClaimableHonorModuleCog
 from honor_system.cog import HonorCog
+from honor_system.cup_honor_module import CupHonorModuleCog
 from honor_system.post_module import HonorPostModuleCog
 from information.cog import HeartbeatInformationCog
 from role_application.cog import RoleApplicationCog
@@ -136,7 +137,7 @@ class CogManager:
             "role_sync": RoleSyncCog,
             "role_application": RoleApplicationCog,
             "track_activity": TrackActivityCog,
-            "honor_system": [HonorCog, HonorAnniversaryModuleCog, HonorPostModuleCog, ClaimableHonorModuleCog],
+            "honor_system": [HonorCog, HonorAnniversaryModuleCog, HonorPostModuleCog, ClaimableHonorModuleCog, CupHonorModuleCog],
             "heartbeat_information": HeartbeatInformationCog,
         }
 
