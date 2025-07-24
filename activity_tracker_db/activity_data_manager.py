@@ -4,15 +4,13 @@ from __future__ import annotations
 import contextlib
 import datetime
 import logging
-from typing import List, Optional, TypeVar, Type, Self
+from typing import List, Optional, Self
 
 from sqlalchemy import select, func
 from sqlalchemy.dialects.sqlite import insert
-from sqlalchemy.orm import class_mapper
 
 from .models import SessionLocal, TrackedPost, JoinRecord
 
-T = TypeVar("T")
 
 class ActivityDataManager:
     def __init__(self, logger: logging.Logger):

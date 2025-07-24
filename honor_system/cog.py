@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import cast, Optional, TYPE_CHECKING, Dict, Literal, List
 
 import discord
-from discord import ui, Color
+from discord import ui, Color, app_commands
 
 import config_data
 from core.embed_link.embed_manager import EmbedLinkManager
@@ -15,7 +15,7 @@ from utility.feature_cog import FeatureCog
 from utility.paginated_view import PaginatedView
 from .anniversary_module import HonorAnniversaryModuleCog
 from .honor_data_manager import HonorDataManager
-from .models import HonorDefinition
+from .models import HonorDefinition, UserHonor
 
 if TYPE_CHECKING:
     from main import RoleBot
@@ -27,6 +27,130 @@ class HonorShownData:
     data: HonorDefinition
     shown_mode: ShownMode
 
+
+# --- 管理荣誉持有者 ---
+class HonorHoldersManageView(PaginatedView):
+    def __init__(self, cog: 'HonorCog', guild: discord.Guild, honor_def: HonorDefinition):
+        self.cog = cog
+        self.guild = guild
+        self.honor_def = honor_def
+
+        # 数据提供者：获取所有持有该荣誉的用户记录
+        data_provider = lambda: self.cog.data_manager.get_honor_holders(self.honor_def.uuid)
+
+        super().__init__(all_items_provider=data_provider, items_per_page=25, timeout=300)
+
+    async def on_selection_submit(self, interaction: discord.Interaction):
+        """处理管理员提交的选择，移除未被选中的成员的荣誉。"""
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        # 1. 获取本页所有成员的ID
+        current_page_holders = self.get_page_items()
+        original_ids_on_page = {holder.user_id for holder in current_page_holders}
+
+        # 2. 获取管理员希望保留的成员ID
+        kept_user_ids = {int(uid_str) for uid_str in interaction.data.get("values", [])}
+
+        # 3. 计算需要移除荣誉的成员ID
+        ids_to_revoke = original_ids_on_page - kept_user_ids
+        if not ids_to_revoke:
+            await interaction.followup.send("☑️ 在当前页面没有需要移除的成员。", ephemeral=True)
+            return
+
+        # 4. 执行移除操作
+        # 4.1 从数据库移除
+        revoked_db_count = self.cog.data_manager.revoke_honor_from_users(list(ids_to_revoke), self.honor_def.uuid)
+
+        # 4.2 移除身份组
+        revoked_role_members = []
+        if self.honor_def.role_id:
+            role = self.guild.get_role(self.honor_def.role_id)
+            if role:
+                for user_id in ids_to_revoke:
+                    member = self.guild.get_member(user_id)
+                    if member and role in member.roles:
+                        try:
+                            await member.remove_roles(role, reason=f"管理员 {interaction.user} 移除荣誉")
+                            revoked_role_members.append(member)
+                        except discord.Forbidden:
+                            self.cog.logger.warning(f"无法移除成员 {member.display_name} 的身份组 {role.name}，权限不足。")
+                        except Exception as e:
+                            self.cog.logger.error(f"移除成员 {member.display_name} 身份组时出错: {e}")
+
+        # 5. 发送操作报告
+        embed = discord.Embed(
+            title=f"荣誉移除操作完成",
+            description=f"已处理对荣誉 **{self.honor_def.name}** 持有者的更改。",
+            color=Color.green()
+        )
+        embed.add_field(name="数据库记录移除数量", value=f"`{revoked_db_count}` 条", inline=False)
+        if revoked_role_members:
+            mentions = [m.mention for m in revoked_role_members]
+            embed.add_field(name="成功移除身份组的成员", value=" ".join(mentions), inline=False)
+        else:
+            embed.add_field(name="身份组移除情况", value="无或操作失败。", inline=False)
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+        # 6. 更新视图以反映最新状态
+        await self.update_view(interaction)
+
+    async def _rebuild_view(self):
+        """构建或重建视图界面。"""
+        self.clear_items()
+
+        # 获取当前页的持有者记录
+        current_page_holders: List[UserHonor] = self.get_page_items()
+
+        # 获取对应的成员对象，并过滤掉已离开服务器的
+        current_members = []
+        for holder in current_page_holders:
+            member = self.guild.get_member(holder.user_id)
+            if member:
+                current_members.append(member)
+
+        # --- 创建Embed ---
+        embed = discord.Embed(
+            title=f"管理荣誉【{self.honor_def.name}】的持有者",
+            color=Color.blue()
+        )
+        description = (
+            f"**总持有者**: `{len(self.all_items)}` 人\n\n"
+            "下方列表显示了 **当前页** 的成员。取消勾选并点击选择框外部，即可移除他们的此项荣誉及其关联身份组。\n"
+            "**注意：此操作不可逆！每次提交仅处理当前页面的成员。**"
+        )
+        if not current_members:
+            description += "\n\n*本页无成员显示（可能成员已离开服务器）。*"
+
+        embed.description = description
+        embed.set_footer(text=f"第 {self.page + 1}/{self.total_pages} 页")
+        self.embed = embed
+
+        # --- 创建Select Menu ---
+        if current_members:
+            options = [
+                discord.SelectOption(
+                    label=f"{member.name} ({member.id})",
+                    description=f"Display Name: {member.display_name}",
+                    value=str(member.id),
+                    default=True  # 默认全部勾选
+                )
+                for member in current_members
+            ]
+
+            select_menu = ui.Select(
+                placeholder="选择要保留此荣誉的成员（默认全选）...",
+                min_values=0,
+                max_values=len(options),
+                options=options,
+                custom_id="honor_holder_select",
+                row=0
+            )
+            select_menu.callback = self.on_selection_submit
+            self.add_item(select_menu)
+
+        # 添加翻页按钮
+        self._add_pagination_buttons(row=1)
 
 # --- 视图定义 ---
 class HonorManageView(PaginatedView):
@@ -42,63 +166,78 @@ class HonorManageView(PaginatedView):
         )
         self.message: Optional[discord.Message] = None
 
+    # --- 下拉菜单的交互逻辑 ---
     async def on_honor_select(self, interaction: discord.Interaction):
         """
-        处理多选荣誉下拉框的交互。
-        通过比较用户提交的“期望状态”和当前的“实际状态”，来计算需要添加和移除的角色。
+        处理与分页同步的多选荣誉下拉框的交互。
+        此逻辑经过特殊设计，以解决下拉框只显示当前页面选项时可能导致的状态丢失问题。
         """
         await interaction.response.defer(ephemeral=True)
 
-        # 1. 获取用户提交的“期望状态”（即所有被选中的荣誉UUID）
-        desired_honor_uuids = set(interaction.data.get("values", []))
+        # --- 1. 获取所有必要的数据 ---
+        # 获取用户在当前页面上提交的“期望状态”
+        selections_on_this_page = set(interaction.data.get("values", []))
 
-        # 2. 获取当前用户所有可佩戴的荣誉和其实际佩戴的荣誉
+        # 获取用户所有可佩戴的荣誉（跨所有页面）
         all_wearable_honors = [
             uh.definition for uh in self.cog.data_manager.get_user_honors(self.member.id)
             if uh.definition.role_id is not None
         ]
-
         if not all_wearable_honors:
             await interaction.followup.send("你当前没有可佩戴的荣誉。", ephemeral=True)
             return
-
         wearable_honor_map = {h.uuid: h for h in all_wearable_honors}
 
+        # 获取用户当前实际佩戴的身份组ID
         member_role_ids = {role.id for role in self.member.roles}
-        # 计算出当前实际佩戴的、且由本系统管理的荣誉角色ID
-        current_role_ids = {
+        currently_equipped_role_ids = {
             h.role_id for h in all_wearable_honors if h.role_id in member_role_ids
         }
 
-        # 3. 计算出用户期望佩戴的荣誉角色ID
-        desired_role_ids = {
-            wearable_honor_map[uuid].role_id
-            for uuid in desired_honor_uuids if uuid in wearable_honor_map and wearable_honor_map[uuid].role_id is not None
+        # --- 2. 智能地构建最终的“期望状态” ---
+        # 这一步是关键，它将当前页面的选择与其他页面已佩戴的状态合并。
+
+        # a. 获取当前页面上所有可佩戴荣誉的UUID
+        page_wearable_uuids = {
+            item.data.uuid for item in self.get_page_items()
+            if item.shown_mode in ["equipped", "unequipped_owned"]
         }
 
-        # 4. 通过集合运算，计算出需要添加和移除的角色
-        roles_to_add_ids = desired_role_ids - current_role_ids
-        roles_to_remove_ids = current_role_ids - desired_role_ids
+        # b. 找出在其他页面上，但用户已佩戴的荣誉UUID
+        equipped_uuids_on_other_pages = set()
+        for honor in all_wearable_honors:
+            if honor.uuid not in page_wearable_uuids and honor.role_id in member_role_ids:
+                equipped_uuids_on_other_pages.add(honor.uuid)
 
-        roles_to_add = [self.guild.get_role(rid) for rid in roles_to_add_ids]
-        roles_to_remove = [self.guild.get_role(rid) for rid in roles_to_remove_ids]
+        # c. 合并成最终的期望列表：当前页选择 + 其他页已佩戴的
+        final_desired_uuids = selections_on_this_page.union(equipped_uuids_on_other_pages)
 
-        # 过滤掉已不存在的角色
-        roles_to_add = [r for r in roles_to_add if r is not None]
-        roles_to_remove = [r for r in roles_to_remove if r is not None]
+        # --- 3. 计算需要添加和移除的角色 (与之前逻辑类似，但使用新的期望状态) ---
+        final_desired_role_ids = {
+            wearable_honor_map[uuid].role_id
+            for uuid in final_desired_uuids if uuid in wearable_honor_map
+        }
+
+        roles_to_add_ids = final_desired_role_ids - currently_equipped_role_ids
+        roles_to_remove_ids = currently_equipped_role_ids - final_desired_role_ids
+
+        roles_to_add = [self.guild.get_role(rid) for rid in roles_to_add_ids if rid]
+        roles_to_remove = [self.guild.get_role(rid) for rid in roles_to_remove_ids if rid]
+
+        roles_to_add = [r for r in roles_to_add if r]
+        roles_to_remove = [r for r in roles_to_remove if r]
 
         if not roles_to_add and not roles_to_remove:
             await interaction.followup.send("☑️ 你的荣誉佩戴状态没有变化。", ephemeral=True)
             return
 
-        # 5. 执行操作并发送反馈
+        # --- 4. 执行操作并发送反馈 ---
         try:
             if roles_to_add:
                 await self.member.add_roles(*roles_to_add, reason="用户佩戴荣誉")
             if roles_to_remove:
                 await self.member.remove_roles(*roles_to_remove, reason="用户卸下荣誉")
 
-            # 构建详细的反馈消息
             response_lines = ["✅ **荣誉身份组已更新！**"]
             if roles_to_add:
                 response_lines.append(f"**新增佩戴**: {', '.join([r.mention for r in roles_to_add])}")
@@ -114,12 +253,13 @@ class HonorManageView(PaginatedView):
             self.cog.logger.error(f"批量佩戴/卸下荣誉时发生错误: {e}", exc_info=True)
             await interaction.followup.send(f"❌ 发生未知错误，请联系管理员：`{e}`", ephemeral=True)
 
-        # 6. 更新视图以反映最新状态
+        # --- 5. 更新视图以反映最新状态 ---
         fresh_member = self.guild.get_member(self.member.id) or await self.guild.fetch_member(self.member.id)
         if fresh_member:
             self.member = fresh_member
         await self.update_view(interaction)
 
+    # --- 视图重建逻辑 ---
     async def _rebuild_view(self):
         self.clear_items()
 
@@ -127,7 +267,7 @@ class HonorManageView(PaginatedView):
         main_honor_embed = self.create_honor_embed(self.member, current_page_honor_data)
         self.embed = [main_honor_embed, self.cog.guide_manager.embed]
 
-        self._add_pagination_buttons(row=2)  # 将翻页按钮下移一行，给选择器和指南按钮留出空间
+        self._add_pagination_buttons(row=2)
 
         if self.cog.guide_manager.url:
             self.add_item(ui.Button(
@@ -138,36 +278,29 @@ class HonorManageView(PaginatedView):
             ))
 
         # --- Select Menu 构建逻辑 ---
-        user_honors_earned = self.cog.data_manager.get_user_honors(self.member.id)
-        wearable_honors = [
-            uh for uh in user_honors_earned
-            if uh.definition.role_id is not None and not uh.definition.is_archived
-        ]
-
-        if not wearable_honors:
-            return  # 如果没有任何可佩戴的荣誉，则不显示下拉框
-
-        member_role_ids = {role.id for role in self.member.roles}
         options = []
-        for uh_instance in wearable_honors:
-            honor_def = uh_instance.definition
-            is_equipped_now = honor_def.role_id in member_role_ids
+        # 只遍历当前页面的项目来生成选项
+        for honor_data in current_page_honor_data:
+            # 只为可佩戴的荣誉（已佩戴或未佩戴但拥有）创建选项
+            if honor_data.shown_mode in ["equipped", "unequipped_owned"]:
+                honor_def = honor_data.data
+                is_equipped_now = honor_data.shown_mode == "equipped"
 
-            options.append(discord.SelectOption(
-                label=honor_def.name,
-                description=honor_def.description[:90],  # 描述可以长一点
-                value=honor_def.uuid,
-                emoji="✅" if is_equipped_now else "⬜",
-                default=is_equipped_now  # <-- 关键：设置默认选中状态
-            ))
+                options.append(discord.SelectOption(
+                    label=honor_def.name,
+                    description=honor_def.description[:90],
+                    value=honor_def.uuid,
+                    emoji="✅" if is_equipped_now else "⬜",
+                    default=is_equipped_now  # 关键：设置默认选中状态
+                ))
 
         if not options:
-            return
+            return # 如果当前页没有任何可佩戴的荣誉，则不显示下拉框
 
         honor_select = ui.Select(
             placeholder="选择你想佩戴的荣誉身份组...",
-            min_values=0,  # 允许用户取消所有选择
-            max_values=len(options),  # 最多可选所有项
+            min_values=0,
+            max_values=len(options),
             options=options,
             custom_id="honor_select",
             row=0
@@ -179,20 +312,12 @@ class HonorManageView(PaginatedView):
         guild = self.guild
         member = self.member
         honor_shown_list: List[HonorShownData] = []
-
-        # --- 获取有序的荣誉定义列表 ---
-        # data_manager 返回的列表顺序依赖于数据库查询结果，不一定是我们想要的。
-        # 我们需要从 config_data 直接获取原始定义的顺序。
         guild_config = config_data.HONOR_CONFIG.get(guild.id, {})
         all_config_definitions_raw = guild_config.get("definitions", [])
-
-        # 为了能快速查找，创建一个 UUID 到原始顺序索引的映射
         config_uuid_order_map = {
             definition['uuid']: index
             for index, definition in enumerate(all_config_definitions_raw)
         }
-
-
         all_definitions_from_db = self.cog.data_manager.get_all_honor_definitions(guild.id)
         user_honor_instances = self.cog.data_manager.get_user_honors(member.id)
         member_role_ids = {role.id for role in member.roles}
@@ -200,60 +325,54 @@ class HonorManageView(PaginatedView):
 
         for definition in all_definitions_from_db:
             if definition.uuid in owned_honor_definitions_map:
-                if definition.role_id is not None:
-                    if definition.role_id in member_role_ids:
-                        honor_shown_list.append(HonorShownData(definition, "equipped"))
-                    else:
-                        honor_shown_list.append(HonorShownData(definition, "unequipped_owned"))
+                # 1. 首先，最直接地检查用户是否已佩戴该身份组。
+                #    这个判断同时隐式地确认了 role_id 存在且有效。
+                if definition.role_id and definition.role_id in member_role_ids:
+                    honor_shown_list.append(HonorShownData(definition, "equipped"))
+
+                # 2. 如果用户没有佩戴，我们再检查这个身份组是否还存在于服务器上，
+                #    以判断它是否是一个“可佩戴”的荣誉。
+                elif definition.role_id and guild.get_role(definition.role_id):
+                    honor_shown_list.append(HonorShownData(definition, "unequipped_owned"))
+
+                # 3. 如果以上条件都不满足（即荣誉没有关联 role_id，或者关联的 role_id 已失效），
+                #    那么它就是一个纯粹的成就。
                 else:
                     honor_shown_list.append(HonorShownData(definition, "pure_achievement"))
             else:
                 if not definition.hidden_until_earned:
                     honor_shown_list.append(HonorShownData(definition, "unearned"))
 
-        # 【排序逻辑】对列表进行排序，确保显示顺序一致
         def sort_key(honor_data: HonorShownData):
-            """定义排序的规则。"""
-            # 1. 定义显示模式的优先级顺序
             order = {
                 "equipped": 0,
                 "unequipped_owned": 1,
                 "pure_achievement": 2,
                 "unearned": 3,
             }
-
-            # --- 第二排序标准 ---
-            # 从我们创建的映射中获取该荣誉在配置文件中的原始索引。
-            # 如果万一找不到（理论上不应该发生），给一个很大的默认值，让它排在最后。
             original_order_index = config_uuid_order_map.get(honor_data.data.uuid, 999)
-
-            # 2. 返回一个元组，Python 会依次比较元组中的元素
-            #    首先按荣誉类型（已佩戴 > 未佩戴 > ...）排序
-            #    如果类型相同，则按其在配置文件中的原始顺序排序
             return order.get(honor_data.shown_mode, 99), original_order_index
 
         honor_shown_list.sort(key=sort_key)
-
         return honor_shown_list
 
-    # --- 荣誉展示与管理 ---
     def create_honor_embed(self, member: discord.Member, current_page_honor_data: List[HonorShownData]) -> discord.Embed:
-        """
-        根据当前页面需要显示的 HonorShownData 列表，创建并返回一个 Embed。
-        """
         embed = discord.Embed(title=f"{member.display_name}的荣誉墙", color=member.color)
         if member.display_avatar:
             embed.set_thumbnail(url=member.display_avatar.url)
 
-        # 分类当前页数据
         equipped_honors_lines, unequipped_owned_honors_lines = [], []
         pure_achievement_honors_lines, unearned_honors_lines = [], []
 
         for honor_data in current_page_honor_data:
             definition = honor_data.data
-            honor_line_text = f"**{definition.name}**\n*└ {definition.description}*"
-            if definition.role_id is not None:
+            # 根据荣誉的分类 (shown_mode) 来决定如何显示文本，而不是直接检查 role_id
+            if honor_data.shown_mode in ["equipped", "unequipped_owned"]:
+                # 只有当它被正确分类为可佩戴时，才显示身份组提及
                 honor_line_text = f"<@&{definition.role_id}>\n*└ {definition.description}*"
+            else:
+                # 其他情况（纯粹成就、未获得）都只显示名称
+                honor_line_text = f"**{definition.name}**\n*└ {definition.description}*"
 
             if honor_data.shown_mode == "equipped":
                 equipped_honors_lines.append(honor_line_text)
@@ -264,8 +383,6 @@ class HonorManageView(PaginatedView):
             elif honor_data.shown_mode == "unearned":
                 unearned_honors_lines.append(honor_line_text)
 
-        # 总体描述逻辑
-        # self.all_items 此时已是最新数据，可以直接使用
         user_honor_count = sum(1 for item in self.all_items if item.shown_mode != "unearned")
         all_visible_honors_count = len(self.all_items)
         public_unearned_honors_count = all_visible_honors_count - user_honor_count
@@ -279,7 +396,6 @@ class HonorManageView(PaginatedView):
         else:
             embed.description = "你已获得部分荣誉。请查看下方已佩戴、未佩戴的荣誉，或探索待解锁的更多荣誉。"
 
-        # 添加字段
         if equipped_honors_lines:
             embed.add_field(name="✅ 已佩戴荣誉", value="\n\n".join(equipped_honors_lines), inline=False)
         if unequipped_owned_honors_lines:
@@ -292,7 +408,7 @@ class HonorManageView(PaginatedView):
         if not (equipped_honors_lines or unequipped_owned_honors_lines or pure_achievement_honors_lines or unearned_honors_lines):
             embed.add_field(name="\u200b", value="*本页暂无荣誉显示。*", inline=False)
 
-        embed.set_footer(text=f"第 {self.page + 1}/{self.total_pages} 页 | 佩戴/卸下荣誉需使用下方的下拉选择器进行操作。")
+        embed.set_footer(text=f"第 {self.page + 1}/{self.total_pages} 页 | 使用下方选择器佩戴/卸下本页显示的荣誉。")
         return embed
 
 
@@ -454,6 +570,50 @@ class HonorCog(FeatureCog, name="Honor"):
             db.commit()
 
         self.logger.info("HonorCog: 荣誉定义同步完成。")
+
+    # --- 新增的管理员指令组 ---
+    honor_admin_group = app_commands.Group(
+        name="荣誉",
+        description="荣誉系统的高级管理指令",
+        guild_only=True,
+        default_permissions=discord.Permissions(manage_roles=True)
+    )
+
+    async def honor_uuid_autocomplete(
+            self,
+            interaction: discord.Interaction,
+            current: str,
+    ) -> List[app_commands.Choice[str]]:
+        """为所有荣誉UUID参数提供自动补全选项。"""
+        all_defs = self.data_manager.get_all_honor_definitions(interaction.guild_id)
+
+        choices = []
+        for honor_def in all_defs:
+            if honor_def.is_archived:
+                continue
+
+            choice_name = f"{honor_def.name} ({honor_def.uuid[:8]})"
+            if current.lower() in choice_name.lower():
+                choices.append(app_commands.Choice(name=choice_name, value=honor_def.uuid))
+
+        return choices[:25]
+
+    @honor_admin_group.command(name="管理持有者", description="查看并移除特定荣誉的持有者。")
+    @app_commands.describe(honor_uuid="选择要管理的荣誉头衔")
+    @app_commands.autocomplete(honor_uuid=honor_uuid_autocomplete)
+    @app_commands.checks.has_permissions(manage_roles=True)
+    async def manage_holders(self, interaction: discord.Interaction, honor_uuid: str):
+        """启动一个视图，用于管理特定荣誉的持有者。"""
+        await interaction.response.defer(ephemeral=True)
+        guild = cast(discord.Guild, interaction.guild)
+
+        honor_def = self.data_manager.get_honor_definition_by_uuid(honor_uuid)
+        if not honor_def:
+            await interaction.followup.send(f"❌ 找不到UUID为 `{honor_uuid}` 的荣誉定义。", ephemeral=True)
+            return
+
+        view = HonorHoldersManageView(self, guild, honor_def)
+        await view.start(interaction, ephemeral=True)
 
 
 async def setup(bot: 'RoleBot'):

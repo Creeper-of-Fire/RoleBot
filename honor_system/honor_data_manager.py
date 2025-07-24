@@ -136,3 +136,27 @@ class HonorDataManager:
                 safe_h.definition = clone_orm_object(h.definition)
                 safe_honors.append(safe_h)
             return safe_honors
+
+    def revoke_honor_from_users(self, user_ids: List[int], honor_uuid: str) -> int:
+        """
+        从指定的用户列表中批量移除一个荣誉。
+        返回成功移除的记录数量。
+        """
+        if not user_ids:
+            return 0
+
+        with self.get_db() as db:
+            deleted_count = db.query(UserHonor).filter(
+                UserHonor.honor_uuid == honor_uuid,
+                UserHonor.user_id.in_(user_ids)
+            ).delete(synchronize_session=False)
+            db.commit()
+            return deleted_count
+
+    def get_honor_holders(self, honor_uuid: str) -> List[UserHonor]:
+        """获取拥有特定荣誉的所有用户记录。"""
+        with self.get_db() as db:
+            holders = db.execute(
+                select(UserHonor).where(UserHonor.honor_uuid == honor_uuid)
+            ).scalars().all()
+            return holders
