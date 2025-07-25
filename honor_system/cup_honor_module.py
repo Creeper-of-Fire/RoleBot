@@ -299,34 +299,33 @@ class CupHonorModuleCog(commands.Cog, name="CupHonorModule"):
             return
 
         response_lines = []
-        if granted_def:
-            response_lines.append(f"🏅 已为 {member.mention} 授予荣誉 **{honor_def.name}**。")
-        else:
+        if not granted_def:
             response_lines.append(f"☑️ {member.mention} 已拥有荣誉 **{honor_def.name}**。")
-
-        # 3. 授予身份组
-        if not honor_def.role_id:
-            response_lines.append(f"⚠️ **警告**：此荣誉未关联任何身份组。")
-            await interaction.followup.send("\n".join(response_lines), ephemeral=True)
-            return
-
-        role = interaction.guild.get_role(honor_def.role_id)
-        if not role:
-            response_lines.append(f"❌ **错误**：未在服务器中找到对应的身份组（ID: {honor_def.role_id}）。")
-            await interaction.followup.send("\n".join(response_lines), ephemeral=True)
-            return
-
-        if role not in member.roles:
-            try:
-                await member.add_roles(role, reason=f"由 {interaction.user} 手动授予杯赛头衔")
-                response_lines.append(f"✅ 已为用户佩戴身份组 {role.mention}。")
-            except discord.Forbidden:
-                response_lines.append(f"❌ **权限不足**：我无法为用户添加身份组 {role.mention}。")
-            except Exception as e:
-                self.logger.error(f"为用户 {member} 添加杯赛角色 {role.name} 时出错: {e}", exc_info=True)
-                response_lines.append(f"❌ **未知错误**：添加身份组时发生错误。")
         else:
-            response_lines.append(f"☑️ 用户已佩戴身份组 {role.mention}。")
+            response_lines.append(f"🏅 已为 {member.mention} 授予荣誉 **{honor_def.name}**。")
+            # 3. 授予身份组
+            if not honor_def.role_id:
+                response_lines.append(f"⚠️ **警告**：此荣誉未关联任何身份组。")
+                await interaction.followup.send("\n".join(response_lines), ephemeral=True)
+                return
+
+            role = interaction.guild.get_role(honor_def.role_id)
+            if not role:
+                response_lines.append(f"❌ **错误**：未在服务器中找到对应的身份组（ID: {honor_def.role_id}）。")
+                await interaction.followup.send("\n".join(response_lines), ephemeral=True)
+                return
+
+            if role not in member.roles:
+                try:
+                    await member.add_roles(role, reason=f"由 {interaction.user} 手动授予杯赛头衔")
+                    response_lines.append(f"✅ 已为用户佩戴身份组 {role.mention}。")
+                except discord.Forbidden:
+                    response_lines.append(f"❌ **权限不足**：我无法为用户添加身份组 {role.mention}。")
+                except Exception as e:
+                    self.logger.error(f"为用户 {member} 添加杯赛角色 {role.name} 时出错: {e}", exc_info=True)
+                    response_lines.append(f"❌ **未知错误**：添加身份组时发生错误。")
+            else:
+                response_lines.append(f"☑️ 用户已佩戴身份组 {role.mention}。")
 
         await interaction.followup.send("\n".join(response_lines), ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
