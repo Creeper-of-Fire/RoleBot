@@ -1,6 +1,7 @@
 # cogs/backup_cog.py
 
 from __future__ import annotations
+
 import asyncio
 import io
 import json
@@ -13,7 +14,6 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 import config
-from core.command_group import RoleBotMainGroup
 from utility.helpers import create_progress_bar
 
 if typing.TYPE_CHECKING:
@@ -188,10 +188,9 @@ class BackupCog(commands.Cog, name="Backup"):
     # --- 指令 ---
 
     backup_admin_group = app_commands.Group(
-        name=f"备份", description="数据备份相关指令",
+        name=f"{config.COMMAND_GROUP_NAME}丨备份", description="数据备份相关指令",
         guild_ids=[gid for gid in config.GUILD_IDS],
         default_permissions=discord.Permissions(manage_roles=True),
-        parent=RoleBotMainGroup.getGroup()
     )
 
     @backup_admin_group.command(name="手动身份组备份", description="立即执行一次完整的身份组备份。")

@@ -9,6 +9,7 @@ from typing import cast, Optional, TYPE_CHECKING, Dict, Literal, List
 import discord
 from discord import ui, Color, app_commands
 
+import config
 import config_data
 from core.embed_link.embed_manager import EmbedLinkManager
 from utility.feature_cog import FeatureCog
@@ -595,7 +596,12 @@ class HonorCog(FeatureCog, name="Honor"):
         self.logger.info("HonorCog: 荣誉定义同步完成。")
 
     # --- 新增的管理员指令组 ---
-    honor_admin_group = HonorAdminGroup.getGroup()
+    honor_admin_group = app_commands.Group(
+        name="荣誉头衔丨核心",
+        description="管理荣誉头衔",
+        guild_ids=[gid for gid in config.GUILD_IDS],
+        default_permissions=discord.Permissions(manage_roles=True),
+    )
 
     async def honor_uuid_autocomplete(
             self,

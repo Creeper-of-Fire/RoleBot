@@ -10,7 +10,6 @@ from discord import app_commands, ui
 from discord.ext import commands
 
 import config  # 导入你的主配置文件
-from core.command_group import RoleBotMainGroup
 
 if typing.TYPE_CHECKING:
     from main import RoleBot
@@ -209,11 +208,10 @@ class RoleApplicationCog(commands.Cog, name="RoleApplication"):
         self.bot.add_view(CreatorApplicationView(self))
 
     application_group = app_commands.Group(
-        name=f"申请面板",
+        name=f"{config.COMMAND_GROUP_NAME}丨申请面板",
         description="发送用于申请特殊身份组的面板",
         guild_ids=[gid for gid in config.GUILD_IDS],
         default_permissions=discord.Permissions(manage_roles=True),
-        parent=RoleBotMainGroup.getGroup()
     )
 
     @application_group.command(name="发送社区建设者申请面板", description="发送社区建设者身份组的申请/移除面板。")

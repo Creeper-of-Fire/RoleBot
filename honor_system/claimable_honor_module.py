@@ -10,7 +10,6 @@ from discord.ext import commands
 import config
 import config_data
 from .cog import HonorCog, HonorManageView  # 导入主模块的Cog和View
-from .command_group import HonorAdminGroup
 from .honor_data_manager import HonorDataManager
 from .json_data_manager import JsonDataManager
 
@@ -155,11 +154,10 @@ class ClaimableHonorModuleCog(commands.Cog, name="ClaimableHonorModule"):
         self.logger.info(f"ClaimableHonorView 已注册。")
 
     claim_honor_group = app_commands.Group(
-        name="自助领取荣誉面板",
+        name="荣誉头衔丨自助领取面板",
         description="管理可自助领取的荣誉面板",
         guild_ids=[gid for gid in config.GUILD_IDS],
         default_permissions=discord.Permissions(manage_roles=True),
-        parent=HonorAdminGroup.getGroup()
     )
 
     async def honor_uuid_autocomplete(

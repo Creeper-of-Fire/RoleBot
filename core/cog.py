@@ -7,7 +7,6 @@ import platform
 import zipfile
 
 import config
-from core.command_group import RoleBotMainGroup, RoleBotMainPanelGroup
 from core.embed_link.embed_manager import EmbedLinkManager
 
 try:
@@ -27,7 +26,6 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from core.main_panel_view import MainPanelView
-from utility.helpers import create_progress_bar
 
 if typing.TYPE_CHECKING:
     from main import RoleBot
@@ -130,15 +128,10 @@ class CoreCog(commands.Cog, name="Core"):
         await asyncio.sleep(5)
         self.logger.info("CoreCog 已就绪，准备执行首次缓存更新...")
 
-    role_admin_group = RoleBotMainGroup.getGroup()
-
-    role_main_panel_group = RoleBotMainPanelGroup.getGroup()
-
     core_group = app_commands.Group(
-        name=f"核心", description="机器人核心管理与状态指令",
+        name=f"{config.COMMAND_GROUP_NAME}丨核心", description="机器人核心管理与状态指令",
         guild_ids=[gid for gid in config.GUILD_IDS],
         default_permissions=discord.Permissions(manage_roles=True),
-        parent=RoleBotMainGroup.getGroup()
     )
 
     @core_group.command(name="打开身份组自助中心面板", description="发送身份组管理面板到当前频道")

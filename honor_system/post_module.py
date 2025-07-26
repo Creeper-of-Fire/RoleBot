@@ -11,6 +11,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+import config
 import config_data
 from activity_tracker_db.activity_data_manager import ActivityDataManager
 from .honor_data_manager import HonorDataManager
@@ -91,8 +92,15 @@ class HonorPostModuleCog(commands.Cog, name="HonorPostModule"):
         """监听新帖子创建事件，实时授予荣誉"""
         await self._process_thread_for_honor(thread)
 
+    post_group = app_commands.Group(
+        name="荣誉头衔丨发帖头衔",
+        description="管理发帖头衔",
+        guild_ids=[gid for gid in config.GUILD_IDS],
+        default_permissions=discord.Permissions(manage_roles=True),
+    )
+
     # --- 历史荣誉回填功能 ---
-    @app_commands.command(name="回填荣誉", description="扫描论坛历史帖子并根据当前规则补发荣誉。")
+    @post_group.command(name="回填荣誉", description="扫描论坛历史帖子并根据当前规则补发荣誉。")
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_roles=True)
     async def rescan_honors(self, interaction: discord.Interaction):

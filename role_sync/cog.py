@@ -12,8 +12,6 @@ from discord.ext import commands, tasks
 
 import config
 import config_data
-from core import command_group
-from core.command_group import RoleBotMainGroup, RoleBotMainPanelGroup
 from role_sync.role_sync_data_manager import RoleSyncDataManager, create_rule_key
 from utility.auth import is_role_dangerous
 from utility.feature_cog import FeatureCog
@@ -198,10 +196,9 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
         await self.bot.wait_until_ready()
 
     sync_group = app_commands.Group(
-        name=f"同步", description="用户身份组同步相关指令",
+        name=f"{config.COMMAND_GROUP_NAME}丨装饰丨同步", description="用户身份组同步相关指令",
         guild_ids=[gid for gid in config.GUILD_IDS],
         default_permissions=discord.Permissions(manage_roles=True),
-        parent=RoleBotMainPanelGroup.getGroup()
     )
 
     @sync_group.command(name="手动触发每日同步", description="立即执行一次每日身份组C->D同步检查任务。")

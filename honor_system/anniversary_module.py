@@ -14,7 +14,6 @@ from discord.ext import commands
 import config
 import config_data
 from activity_tracker_db.activity_data_manager import ActivityDataManager
-from .command_group import HonorAdminGroup
 from .honor_data_manager import HonorDataManager
 
 if typing.TYPE_CHECKING:
@@ -112,10 +111,9 @@ class HonorAnniversaryModuleCog(commands.Cog, name="HonorAnniversaryModule"):
                     )
 
     anniversary_group = app_commands.Group(
-        name="周年纪念荣誉", description="管理周年纪念荣誉的数据",
+        name="荣誉头衔丨周年纪念", description="管理周年纪念荣誉的数据",
         guild_ids=[gid for gid in config.GUILD_IDS],
         default_permissions=discord.Permissions(manage_roles=True),
-        parent=HonorAdminGroup.getGroup()
     )
 
     @anniversary_group.command(name="scan_members", description="扫描服务器所有成员的加入时间并存入数据库。")

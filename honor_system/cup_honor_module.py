@@ -8,10 +8,10 @@ import os
 import re
 import threading
 import typing
-from typing import Tuple
-from typing import Set
-from typing import Optional
 from typing import List
+from typing import Optional
+from typing import Set
+from typing import Tuple
 from zoneinfo import ZoneInfo
 
 import discord
@@ -252,8 +252,10 @@ class CupHonorModuleCog(commands.Cog, name="CupHonorModule"):
             self.logger.error(f"无法在频道 {notification_channel.name} 发送通知，权限不足。")
 
     # --- 管理员指令 ---
-    cup_honor_group = app_commands.Group(name="杯赛头衔", description="管理特殊的杯赛头衔",
-                                         guild_only=True, default_permissions=discord.Permissions(manage_roles=True))
+    cup_honor_group = app_commands.Group(
+        name="杯赛头衔", description="管理特殊的杯赛头衔",
+        guild_only=True, default_permissions=discord.Permissions(manage_roles=True)
+    )
 
     async def honor_uuid_autocomplete(
             self,
@@ -586,7 +588,7 @@ class CupHonorModuleCog(commands.Cog, name="CupHonorModule"):
 
         return members_to_process, error_logs
 
-    @cup_honor_group.command(name="设置最终持有者（危险操作！仅必要时！）", description="设置头衔的最终持有者，并移除名单外成员的身份组。")
+    @cup_honor_group.command(name="设置最终持有者-危险操作-仅必要时", description="设置头衔的最终持有者，并移除名单外成员的身份组。")
     @app_commands.describe(
         honor_uuid="要操作的杯赛头衔。",
         user_ids="【模式一】最终持有者的ID，用英文逗号分隔。",

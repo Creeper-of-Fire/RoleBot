@@ -7,10 +7,9 @@ from typing import Optional, List, Dict
 
 import discord
 from discord import app_commands
-from discord.ext import tasks, commands
+from discord.ext import tasks
 
 import config
-from core.command_group import RoleBotMainPanelGroup
 from timed_role import timer
 from timed_role.buttons import TimedRolePanelButton
 from timed_role.timed_role_data_manager import TimedRoleDataManager
@@ -71,10 +70,9 @@ class TimedRolesCog(FeatureCog, name="TimedRoles"):
         self.logger.info("TimedRolesCog: 安全限时身份组缓存更新完毕。")
 
     time_group = app_commands.Group(
-        name=f"限时", description="用户限时身份组相关指令",
+        name=f"{config.COMMAND_GROUP_NAME}丨装饰丨限时", description="用户限时身份组相关指令",
         guild_ids=[gid for gid in config.GUILD_IDS],
         default_permissions=discord.Permissions(manage_roles=True),
-        parent=RoleBotMainPanelGroup.getGroup()
     )
 
     @time_group.command(name="强制触发限时身份组每日重置", description="在当前服务器强制触发限时身份组每日重置")
