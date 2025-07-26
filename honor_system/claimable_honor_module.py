@@ -7,8 +7,10 @@ import discord
 from discord import app_commands, ui
 from discord.ext import commands
 
+import config
 import config_data
 from .cog import HonorCog, HonorManageView  # 导入主模块的Cog和View
+from .command_group import HonorAdminGroup
 from .honor_data_manager import HonorDataManager
 from .json_data_manager import JsonDataManager
 
@@ -155,8 +157,9 @@ class ClaimableHonorModuleCog(commands.Cog, name="ClaimableHonorModule"):
     claim_honor_group = app_commands.Group(
         name="自助领取荣誉面板",
         description="管理可自助领取的荣誉面板",
-        guild_only=True,
-        default_permissions=discord.Permissions(manage_roles=True)
+        guild_ids=[gid for gid in config.GUILD_IDS],
+        default_permissions=discord.Permissions(manage_roles=True),
+        parent=HonorAdminGroup.getGroup()
     )
 
     async def honor_uuid_autocomplete(

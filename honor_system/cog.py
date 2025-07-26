@@ -14,6 +14,7 @@ from core.embed_link.embed_manager import EmbedLinkManager
 from utility.feature_cog import FeatureCog
 from utility.paginated_view import PaginatedView
 from .anniversary_module import HonorAnniversaryModuleCog
+from .command_group import HonorAdminGroup
 from .honor_data_manager import HonorDataManager
 from .models import HonorDefinition, UserHonor
 
@@ -168,60 +169,74 @@ class HonorManageView(PaginatedView):
         )
         self.message: Optional[discord.Message] = None
 
-    # --- 下拉菜单的交互逻辑 ---
+    # --- 下拉菜单的交互逻辑 (带详细日志的调试版) ---
     async def on_honor_select(self, interaction: discord.Interaction):
         """
         处理与分页同步的多选荣誉下拉框的交互。
-        此逻辑经过特殊设计，以解决下拉框只显示当前页面选项时可能导致的状态丢失问题。
+        此版本增加了详细的调试日志，以追踪状态计算过程。
         """
         await interaction.response.defer(ephemeral=True)
 
-        # --- 1. 获取所有必要的数据 ---
-        # 获取用户在当前页面上提交的“期望状态”
-        selections_on_this_page = set(interaction.data.get("values", []))
+        # --- 0. 开始调试 ---
+        self.cog.logger.debug("--- [荣誉选择] Debug Start ---")
 
-        # 获取用户所有可佩戴的荣誉（跨所有页面）
+        # --- 1. 获取所有必要的数据 ---
+        selections_on_this_page = set(interaction.data.get("values", []))
+        self.cog.logger.debug(f"{'1a. 用户本次提交的选择 (selections_on_this_page):':<50} {selections_on_this_page}")
+
         all_wearable_honors = [
             uh.definition for uh in self.cog.data_manager.get_user_honors(self.member.id)
             if uh.definition.role_id is not None
         ]
         if not all_wearable_honors:
             await interaction.followup.send("你当前没有可佩戴的荣誉。", ephemeral=True)
+            self.cog.logger.debug("--- [荣誉选择] Debug End: 用户无荣誉 ---")
             return
+
         wearable_honor_map = {h.uuid: h for h in all_wearable_honors}
 
-        # 获取用户当前实际佩戴的身份组ID
         member_role_ids = {role.id for role in self.member.roles}
+        currently_equipped_uuids = {
+            h.uuid for h in all_wearable_honors if h.role_id in member_role_ids
+        }
         currently_equipped_role_ids = {
-            h.role_id for h in all_wearable_honors if h.role_id in member_role_ids
+            wearable_honor_map[uuid].role_id for uuid in currently_equipped_uuids
         }
+        self.cog.logger.debug(f"{'1b. 当前实际佩戴的荣誉UUID (currently_equipped_uuids):':<50} {currently_equipped_uuids}")
+        self.cog.logger.debug(f"{'1c. 当前实际佩戴的角色ID (currently_equipped_role_ids):':<50} {currently_equipped_role_ids}")
 
-        # --- 2. 智能地构建最终的“期望状态” ---
-        # 这一步是关键，它将当前页面的选择与其他页面已佩戴的状态合并。
+        # --- 2. 采用更稳健的方式构建最终的“期望状态” ---
 
-        # a. 获取当前页面上所有可佩戴荣誉的UUID
-        page_wearable_uuids = {
-            item.data.uuid for item in self.get_page_items()
-            if item.shown_mode in ["equipped", "unequipped_owned"]
+        # a. 获取当前页面上所有可操作荣誉的UUID
+        page_items = self.get_page_items()
+        # 额外日志：看看 get_page_items() 到底返回了什么
+        self.cog.logger.debug(f"{'2a. 原始页面项目 (get_page_items):':<50} {[item.__class__.__name__ for item in page_items]}")
+
+        uuids_on_this_page = {
+            item.data.uuid for item in page_items if hasattr(item, 'data') and hasattr(item.data, 'uuid')
         }
+        self.cog.logger.debug(f"{'2b. 计算出的本页荣誉UUID (uuids_on_this_page):':<50} {uuids_on_this_page}")
 
-        # b. 找出在其他页面上，但用户已佩戴的荣誉UUID
-        equipped_uuids_on_other_pages = set()
-        for honor in all_wearable_honors:
-            if honor.uuid not in page_wearable_uuids and honor.role_id in member_role_ids:
-                equipped_uuids_on_other_pages.add(honor.uuid)
+        # b. 从当前已佩戴的荣誉中，排除掉本次页面可以操作的荣誉
+        equipped_uuids_preserved = currently_equipped_uuids - uuids_on_this_page
+        self.cog.logger.debug(f"{'2c. 需要保留的非本页荣誉 (equipped_uuids_preserved):':<50} {equipped_uuids_preserved}")
 
-        # c. 合并成最终的期望列表：当前页选择 + 其他页已佩戴的
-        final_desired_uuids = selections_on_this_page.union(equipped_uuids_on_other_pages)
+        # c. 将保留下来的其他页面的荣誉，与当前页面的新选择合并
+        final_desired_uuids = equipped_uuids_preserved.union(selections_on_this_page)
+        self.cog.logger.debug(f"{'2d. 最终期望佩戴的荣誉UUID (final_desired_uuids):':<50} {final_desired_uuids}")
 
-        # --- 3. 计算需要添加和移除的角色 (与之前逻辑类似，但使用新的期望状态) ---
+        # --- 3. 计算需要添加和移除的角色 ---
         final_desired_role_ids = {
             wearable_honor_map[uuid].role_id
             for uuid in final_desired_uuids if uuid in wearable_honor_map
         }
+        self.cog.logger.debug(f"{'3a. 最终期望佩戴的角色ID (final_desired_role_ids):':<50} {final_desired_role_ids}")
 
         roles_to_add_ids = final_desired_role_ids - currently_equipped_role_ids
         roles_to_remove_ids = currently_equipped_role_ids - final_desired_role_ids
+
+        self.cog.logger.debug(f"{'3b. 需要添加的角色ID (roles_to_add_ids):':<50} {roles_to_add_ids}")
+        self.cog.logger.debug(f"{'3c. 需要移除的角色ID (roles_to_remove_ids):':<50} {roles_to_remove_ids}")
 
         roles_to_add = [self.guild.get_role(rid) for rid in roles_to_add_ids if rid]
         roles_to_remove = [self.guild.get_role(rid) for rid in roles_to_remove_ids if rid]
@@ -231,10 +246,13 @@ class HonorManageView(PaginatedView):
 
         if not roles_to_add and not roles_to_remove:
             await interaction.followup.send("☑️ 你的荣誉佩戴状态没有变化。", ephemeral=True)
+            self.cog.logger.debug("--- [荣誉选择] Debug End: 状态无变化 ---")
             return
 
         # --- 4. 执行操作并发送反馈 ---
         try:
+            self.cog.logger.debug(f"准备添加角色: {[r.name for r in roles_to_add]}")
+            self.cog.logger.debug(f"准备移除角色: {[r.name for r in roles_to_remove]}")
             if roles_to_add:
                 await self.member.add_roles(*roles_to_add, reason="用户佩戴荣誉")
             if roles_to_remove:
@@ -249,11 +267,14 @@ class HonorManageView(PaginatedView):
             await interaction.followup.send("\n".join(response_lines), ephemeral=True)
 
         except discord.Forbidden:
+            self.cog.logger.error("权限不足，无法修改角色。")
             await interaction.followup.send(
                 "❌ **操作失败！**\n我没有足够的权限来为你添加/移除身份组。请确保我的机器人角色在身份组列表中的位置高于所有荣誉身份组。", ephemeral=True)
         except Exception as e:
-            self.cog.logger.error(f"批量佩戴/卸下荣誉时发生错误: {e}", exc_info=True)
+            self.cog.logger.error(f"批量佩戴/卸下荣誉时发生未知错误: {e}", exc_info=True)
             await interaction.followup.send(f"❌ 发生未知错误，请联系管理员：`{e}`", ephemeral=True)
+
+        self.cog.logger.debug("--- [荣誉选择] Debug End: 操作完成 ---")
 
         # --- 5. 更新视图以反映最新状态 ---
         fresh_member = self.guild.get_member(self.member.id) or await self.guild.fetch_member(self.member.id)
@@ -574,12 +595,7 @@ class HonorCog(FeatureCog, name="Honor"):
         self.logger.info("HonorCog: 荣誉定义同步完成。")
 
     # --- 新增的管理员指令组 ---
-    honor_admin_group = app_commands.Group(
-        name="荣誉",
-        description="荣誉系统的高级管理指令",
-        guild_only=True,
-        default_permissions=discord.Permissions(manage_roles=True)
-    )
+    honor_admin_group = HonorAdminGroup.getGroup()
 
     async def honor_uuid_autocomplete(
             self,

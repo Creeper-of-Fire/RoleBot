@@ -13,11 +13,12 @@ from discord.ext import commands, tasks
 import config
 import config_data
 from core import command_group
-from core.command_group import RoleBotMainGroup
+from core.command_group import RoleBotMainGroup, RoleBotMainPanelGroup
 from role_sync.role_sync_data_manager import RoleSyncDataManager, create_rule_key
 from utility.auth import is_role_dangerous
 from utility.feature_cog import FeatureCog
 from utility.helpers import create_progress_bar
+from utility.permison import is_super_admin
 from utility.views import ConfirmationView
 
 if typing.TYPE_CHECKING:
@@ -200,11 +201,10 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
         name=f"同步", description="用户身份组同步相关指令",
         guild_ids=[gid for gid in config.GUILD_IDS],
         default_permissions=discord.Permissions(manage_roles=True),
-        parent=RoleBotMainGroup.getGroup()
+        parent=RoleBotMainPanelGroup.getGroup()
     )
 
     @sync_group.command(name="手动触发每日同步", description="立即执行一次每日身份组C->D同步检查任务。")
-    @app_commands.default_permissions(manage_roles=True)
     @app_commands.checks.has_permissions(manage_roles=True)
     async def manual_daily_sync(self, interaction: discord.Interaction):
         """手动触发 daily_sync_task 任务。"""
@@ -403,7 +403,7 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
             final_embed.description += "\n(原始进度条消息已失效)"
             await interaction.channel.send(content=f"{user_mention} 你的扫描任务已完成！", embed=final_embed)
 
-    @app_commands.command(name="清理同步记录", description="清理A->B同步规则的记录。")
+    @sync_group.command(name="清理同步记录", description="清理A->B同步规则的记录。")
     @app_commands.describe(
         action="要执行的操作：清除特定规则记录，清除所有记录。",
         rule="[仅清除特定规则时需要] 选择要清除记录的规则。"
@@ -412,6 +412,7 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
         app_commands.Choice(name="清除特定规则的记录", value="clear_rule"),
         app_commands.Choice(name="清除所有记录（删除文件）", value="clear_all"),
     ])
+    @is_super_admin()
     @app_commands.autocomplete(rule=sync_rule_autocomplete)
     @app_commands.checks.has_permissions(manage_roles=True)
     async def manage_sync_record(self, interaction: discord.Interaction, action: str, rule: Optional[str] = None):

@@ -390,7 +390,7 @@ class DataManager:
         key = LAST_SYNC_TIMESTAMP_KEY_TEMPLATE.format(guild_id=guild_id)
         try:
             await self.redis.set(key, str(timestamp))
-            self.logger.info(f"DataManager: 已更新服务器 {guild_id} 的最后同步时间戳为 {datetime.fromtimestamp(timestamp, tz=timezone.utc)}")
+            self.logger.debug(f"DataManager: 已更新服务器 {guild_id} 的最后同步时间戳为 {datetime.fromtimestamp(timestamp, tz=timezone.utc)}")
         except exceptions.RedisError as e:
             self.logger.error(f"DataManager: 设置最后同步时间戳失败 (Key: {key}): {e}", exc_info=True)
 

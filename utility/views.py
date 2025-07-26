@@ -27,7 +27,7 @@ class ConfirmationView(ui.View):
         if hasattr(self, 'message') and self.message:
             await self.message.edit(view=self)
 
-    @ui.button(label="确认删除", style=discord.ButtonStyle.danger, custom_id="confirm_delete")
+    @ui.button(label="确认", style=discord.ButtonStyle.danger, custom_id="confirm_delete")
     async def confirm(self, interaction: discord.Interaction, button: ui.Button):
         self.value = True
         self.stop()  # 停止视图的监听

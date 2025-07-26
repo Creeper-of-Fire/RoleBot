@@ -12,6 +12,7 @@ import config_data
 from activity_tracker.cog import TrackActivityCog
 from core.cog import CoreCog
 from core.embed_link.embed_manager import EmbedLinkManager
+from core.role_backup_cog import BackupCog
 from fashion.cog import FashionCog
 from honor_system.anniversary_module import HonorAnniversaryModuleCog
 from honor_system.claimable_honor_module import ClaimableHonorModuleCog
@@ -27,16 +28,26 @@ from timed_role.cog import TimedRolesCog
 # ===================================================================
 # 日志设置
 # ===================================================================
-# 配置一个基础的日志记录器，将信息输出到控制台
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler()  # 输出到控制台
-    ]
-)
-# 获取我们自己的日志记录器实例，方便后续使用
+# 1. 创建一个格式化器
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+# 2. 创建一个处理器 (例如，输出到控制台)
+handler = logging.StreamHandler()
+handler.setFormatter(formatter)
+
+# 3. 获取并配置我们自己的机器人 logger ('role_bot')
 logger = logging.getLogger('role_bot')
+logger.setLevel(logging.INFO)
+logger.addHandler(handler)
+# 防止日志消息向上传播到根 logger，避免重复打印
+logger.propagate = False
+
+# 4. 获取并配置 discord.py 库的 logger
+#    我们只关心 INFO 及以上级别的信息，过滤掉底层的 DEBUG 噪音
+discord_logger = logging.getLogger('discord')
+discord_logger.setLevel(logging.INFO)  # 设置为 INFO 级别
+discord_logger.addHandler(handler)
+discord_logger.propagate = False
 
 
 # ===================================================================
@@ -131,6 +142,7 @@ class CogManager:
         # 定义一个 cog 名称到其类定义的映射，方便动态加载
         self.cog_map: Dict[str, Type[commands.Cog] | List[Type[commands.Cog]]] = {
             "core": CoreCog,
+            "backup": BackupCog,
             "self_service": SelfServiceCog,
             "fashion": FashionCog,
             "timed_role": TimedRolesCog,

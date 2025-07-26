@@ -10,6 +10,7 @@ from discord import app_commands
 from discord.ext import tasks, commands
 
 import config
+from core.command_group import RoleBotMainPanelGroup
 from timed_role import timer
 from timed_role.buttons import TimedRolePanelButton
 from timed_role.timed_role_data_manager import TimedRoleDataManager
@@ -69,9 +70,14 @@ class TimedRolesCog(FeatureCog, name="TimedRoles"):
             self.safe_timed_role_ids_cache[guild_id] = current_safe_timed_ids
         self.logger.info("TimedRolesCog: 安全限时身份组缓存更新完毕。")
 
-    @app_commands.command(name="强制触发限时身份组每日重置", description="在当前服务器强制触发限时身份组每日重置")
-    @app_commands.guilds(*[discord.Object(id=gid) for gid in config.GUILD_IDS])
-    @app_commands.default_permissions(manage_roles=True)
+    time_group = app_commands.Group(
+        name=f"限时", description="用户限时身份组相关指令",
+        guild_ids=[gid for gid in config.GUILD_IDS],
+        default_permissions=discord.Permissions(manage_roles=True),
+        parent=RoleBotMainPanelGroup.getGroup()
+    )
+
+    @time_group.command(name="强制触发限时身份组每日重置", description="在当前服务器强制触发限时身份组每日重置")
     @app_commands.checks.has_permissions(manage_roles=True)
     async def force_reset_timed_roles_command(self, interaction: discord.Interaction):
         """【管理员专属】强制触发所有服务器的限时身份组每日重置。"""

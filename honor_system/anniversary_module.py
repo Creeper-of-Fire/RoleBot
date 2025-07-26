@@ -11,8 +11,10 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+import config
 import config_data
 from activity_tracker_db.activity_data_manager import ActivityDataManager
+from .command_group import HonorAdminGroup
 from .honor_data_manager import HonorDataManager
 
 if typing.TYPE_CHECKING:
@@ -109,9 +111,12 @@ class HonorAnniversaryModuleCog(commands.Cog, name="HonorAnniversaryModule"):
                         f"{cutoff_date.date()} 而获得荣誉 '{granted_def.name}'"
                     )
 
-    anniversary_group = app_commands.Group(name="周年纪念荣誉", description="管理周年纪念荣誉的数据",
-                                           guild_only=True,
-                                           default_permissions=discord.Permissions(manage_roles=True))
+    anniversary_group = app_commands.Group(
+        name="周年纪念荣誉", description="管理周年纪念荣誉的数据",
+        guild_ids=[gid for gid in config.GUILD_IDS],
+        default_permissions=discord.Permissions(manage_roles=True),
+        parent=HonorAdminGroup.getGroup()
+    )
 
     @anniversary_group.command(name="scan_members", description="扫描服务器所有成员的加入时间并存入数据库。")
     @app_commands.checks.has_permissions(manage_roles=True)
@@ -157,7 +162,7 @@ class HonorAnniversaryModuleCog(commands.Cog, name="HonorAnniversaryModule"):
 
         log_channel = guild.get_channel(interaction.channel_id) or await guild.fetch_channel(interaction.channel_id)
 
-        progress_message:discord.Message = await log_channel.send(f"[{guild.name}] 开始扫描频道 #{target_channel.name} 的历史欢迎消息...")
+        progress_message: discord.Message = await log_channel.send(f"[{guild.name}] 开始扫描频道 #{target_channel.name} 的历史欢迎消息...")
 
         records_to_upsert = []
         processed_count = 0

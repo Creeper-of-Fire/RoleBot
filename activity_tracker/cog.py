@@ -18,6 +18,7 @@ from activity_tracker.data_manager import DataManager, BEIJING_TZ
 from activity_tracker.logic import ActivityProcessor
 from activity_tracker.views import ActivityRoleView, ReportEmbeds, UserReportDetailView
 from core.command_group import RoleBotMainGroup
+from utility.permison import is_super_admin
 from utility.views import ConfirmationView
 
 if typing.TYPE_CHECKING:
@@ -383,6 +384,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         await interaction.followup.send(embed=embed, view=ActivityRoleView(self))
 
     @activity_group.command(name="管理或删除活动数据", description="【管理员】管理本服务器的活动数据。")
+    @is_super_admin()
     @app_commands.describe(action="要执行的操作。")
     @app_commands.choices(action=[
         app_commands.Choice(name="【推荐】强制结束并解锁回填任务", value="finalize_and_unlock"),

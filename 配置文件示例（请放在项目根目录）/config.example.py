@@ -1,4 +1,5 @@
 import os
+import typing
 
 from dotenv import load_dotenv
 
@@ -138,4 +139,40 @@ ACTIVITY_TRACKER_CONFIG = {
         },
         # 你可以为其他服务器添加配置
     },
+}
+
+# --- 身份组备份配置 ---
+# 是否启用自动备份功能
+ENABLE_ROLE_BACKUPS = True
+# 备份功能将在这个服务器上运行
+BACKUP_GUILD_ID = 123456789012345678  # 替换为你的服务器ID
+# 备份文件和状态更新将发送到这个频道
+BACKUP_CHANNEL_ID = 987654321098765432 # 替换为你的备份通知频道ID
+
+# --- 自动备份周期 (小时) ---
+# 每隔多少小时进行一次“轻量”备份（不刷新成员缓存）
+LIGHT_BACKUP_INTERVAL_HOURS = 1
+# 每隔多少小时进行一次“重量”备份（刷新成员缓存）
+FULL_BACKUP_INTERVAL_HOURS = 6
+
+
+# --- 权限配置 ---
+# 在这里硬编码拥有权限的用户和角色ID
+
+# 超级管理员：拥有所有权限，通常是机器人所有者或最高决策者。
+# 可以执行如“删除数据”等最高风险操作。
+SUPER_ADMIN_USER_IDS: typing.Set[int] = {
+    114514,
+}
+
+# 管理员：拥有大部分管理权限，但可能无法执行最危险的操作。
+# 例如，可以发送面板、刷新缓存、获取数据备份，但不能删除数据。
+# 注意：这里包含角色ID和特定的用户ID。
+ADMIN_ROLE_IDS: typing.Set[int] = {
+    114514,
+}
+
+ADMIN_USER_IDS: typing.Set[int] = {
+    114514,
+    # 如果某个管理员没有特定角色，也可以在这里单独添加他们的用户 ID
 }
