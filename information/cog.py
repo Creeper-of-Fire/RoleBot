@@ -12,6 +12,7 @@ import config
 from information.data_manager import HeartbeatDataManager, HeartbeatInfo
 
 from utility.helpers import format_duration_hms, BEIJING_TZ
+from utility.permison import is_admin
 
 if TYPE_CHECKING:
     from main import RoleBot
@@ -265,7 +266,7 @@ class HeartbeatInformationCog(commands.Cog, name="Heartbeat Information"):
     information_group = app_commands.Group(
         name=f"心跳资讯", description="心跳资讯相关指令",
         guild_ids=[gid for gid in config.GUILD_IDS],
-        default_permissions=discord.Permissions(manage_messages=True)
+        default_permissions=discord.Permissions(read_messages=True)
     )
 
     @information_group.command(name="添加", description="在当前频道创建一个实时更新的资讯消息 (基于特定消息)")
@@ -275,7 +276,8 @@ class HeartbeatInformationCog(commands.Cog, name="Heartbeat Information"):
         interval_seconds="更新间隔（秒），最小为1",
         embed_mode="如果源消息只有文本，是否自动转换为Embed (默认为是)"
     )
-    @app_commands.checks.has_permissions(manage_messages=True)
+    @is_admin()
+    @app_commands.checks.has_permissions(read_messages=True)
     async def heartbeat_create_message(
             self,
             interaction: discord.Interaction,
@@ -367,7 +369,7 @@ class HeartbeatInformationCog(commands.Cog, name="Heartbeat Information"):
         interval_seconds="更新间隔（秒），最小为1",
         embed_mode="如果源消息只有文本，是否自动转换为Embed (默认为是)"
     )
-    @app_commands.checks.has_permissions(manage_messages=True)
+    @is_admin()
     async def heartbeat_create_channel_feed(
             self,
             interaction: discord.Interaction,
@@ -479,7 +481,7 @@ class HeartbeatInformationCog(commands.Cog, name="Heartbeat Information"):
     @information_group.command(name="移除", description="移除一个心跳资讯")
     @app_commands.describe(title="要移除的资讯标题")
     @app_commands.autocomplete(title=_autocomplete_heartbeat_titles)
-    @app_commands.checks.has_permissions(manage_messages=True)
+    @is_admin()
     async def heartbeat_remove(self, interaction: discord.Interaction, title: str):
         await interaction.response.defer(ephemeral=True)
 
