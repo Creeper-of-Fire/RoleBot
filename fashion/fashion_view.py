@@ -70,17 +70,8 @@ class FashionManageView(PaginatedView):
 
         # --- 以下是原来 _rebuild_view 的逻辑 ---
         member_role_ids = {role.id for role in member.roles}
-        all_configured_base_ids = set(self.cog.safe_fashion_map_cache.get(self.guild.id, {}).keys())
-        member_base_role_ids = member_role_ids.intersection(all_configured_base_ids)
 
-        not_normal_role_ids = set(config_data.FASHION_NOT_NORMAL_ROLE_IDS)
-        normal_base_role_ids = member_base_role_ids - not_normal_role_ids
-
-        if not normal_base_role_ids:
-            self.embed = self.cog.guide_embed
-        else:
-            self.embed = discord.Embed(title=f"👗 {self.user.display_name} 的幻化衣橱", color=Color.green())
-            self.embed.description = "在这里管理你的幻化外观吧！"
+        self.embed = self.cog.guide_embed
 
         if not self.all_items:
             self.embed.description = "此服务器未配置幻化系统，或所有幻化身份组均不安全。"

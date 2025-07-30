@@ -143,9 +143,36 @@ class CupHonorModuleCog(commands.Cog, name="CupHonorModule"):
         self.logger.info("机器人已就绪。正在执行启动时的杯赛头衔到期检查...")
         await self._perform_expiration_check()
 
+    @staticmethod
+    def _extract_cup_titles_from_definitions(guild_config: dict) -> dict:
+        """
+        从主荣誉定义列表中提取所有杯赛头衔。
+        通过检查每个定义中是否存在 `cup_honor` 键来实现。
+
+        Args:
+            guild_config: 单个服务器的 HONOR_CONFIG[guild_id] 配置字典。
+
+        Returns:
+            一个字典，格式为 {honor_uuid: {"expiration_date": "YYYY-MM-DD..."}}，
+            以便与模块内其他逻辑兼容。
+        """
+        cup_titles = {}
+        definitions = guild_config.get("definitions", [])
+        for honor_def in definitions:
+            cup_info = honor_def.get("cup_honor")
+            # 确保 cup_info 是一个字典并且包含 expiration_date
+            if isinstance(cup_info, dict) and "expiration_date" in cup_info:
+                honor_uuid = honor_def.get("uuid")
+                if honor_uuid:
+                    cup_titles[honor_uuid] = {
+                        "expiration_date": cup_info["expiration_date"]
+                    }
+        return cup_titles
+
     async def _check_guild_for_expired_titles(self, guild: discord.Guild, cup_cfg: dict, now: datetime.datetime):
         """处理单个服务器的过期检查逻辑。"""
-        titles = cup_cfg.get("titles", {})
+        guild_config = config_data.HONOR_CONFIG.get(guild.id, {})
+        titles = self._extract_cup_titles_from_definitions(guild_config)
         notification_cfg = cup_cfg.get("notification", {})
 
         if not titles or not notification_cfg.get("channel_id") or not notification_cfg.get("admin_role_id"):
@@ -264,7 +291,7 @@ class CupHonorModuleCog(commands.Cog, name="CupHonorModule"):
     ) -> List[app_commands.Choice[str]]:
         """为杯赛荣誉UUID参数提供自动补全选项。"""
         guild_config = config_data.HONOR_CONFIG.get(interaction.guild_id, {})
-        cup_honor_titles = guild_config.get("cup_honor", {}).get("titles", {})
+        cup_honor_titles = self._extract_cup_titles_from_definitions(guild_config)
         cup_honor_uuids = list(cup_honor_titles.keys())
 
         if not cup_honor_uuids:
@@ -292,7 +319,7 @@ class CupHonorModuleCog(commands.Cog, name="CupHonorModule"):
 
         # 1. 验证荣誉UUID是否已在配置中
         guild_config = config_data.HONOR_CONFIG.get(interaction.guild_id, {})
-        cup_honor_titles = guild_config.get("cup_honor", {}).get("titles", {})
+        cup_honor_titles = self._extract_cup_titles_from_definitions(guild_config)
         if honor_uuid not in cup_honor_titles:
             await interaction.followup.send("❌ **操作失败**：这个荣誉不是一个已配置的杯赛头衔。", ephemeral=True)
             return
