@@ -15,9 +15,9 @@ from core.embed_link.embed_manager import EmbedLinkManager
 from utility.feature_cog import FeatureCog
 from utility.paginated_view import PaginatedView
 from .anniversary_module import HonorAnniversaryModuleCog
-from .command_group import HonorAdminGroup
 from .honor_data_manager import HonorDataManager
 from .models import HonorDefinition, UserHonor
+from .role_sync_honor_module import RoleClaimHonorModuleCog
 
 if TYPE_CHECKING:
     from main import RoleBot
@@ -503,6 +503,13 @@ class HonorCog(FeatureCog, name="Honor"):
                 await anniversary_cog.check_and_grant_anniversary_honor(member, guild)
             else:
                 self.logger.warning("无法找到 HonorAnniversaryModule 来检查周年荣誉。")
+
+            # 调用新模块，检查基于身份组的荣誉
+            role_claim_cog: Optional[RoleClaimHonorModuleCog] = self.bot.get_cog("RoleClaimHonorModule")
+            if role_claim_cog:
+                await role_claim_cog.check_and_grant_role_sync_honor(member, guild)
+            else:
+                self.logger.warning("无法找到 RoleClaimHonorModule 来检查基于身份组的荣誉。")
 
             view = HonorManageView(self, member, guild)
 

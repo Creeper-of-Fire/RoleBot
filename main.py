@@ -19,6 +19,7 @@ from honor_system.claimable_honor_module import ClaimableHonorModuleCog
 from honor_system.cog import HonorCog
 from honor_system.cup_honor_module import CupHonorModuleCog
 from honor_system.post_module import HonorPostModuleCog
+from honor_system.role_sync_honor_module import RoleClaimHonorModuleCog
 from information.cog import HeartbeatInformationCog
 from role_application.cog import RoleApplicationCog
 from role_sync.cog import RoleSyncCog
@@ -149,7 +150,14 @@ class CogManager:
             "role_sync": RoleSyncCog,
             "role_application": RoleApplicationCog,
             "track_activity": TrackActivityCog,
-            "honor_system": [HonorCog, HonorAnniversaryModuleCog, HonorPostModuleCog, ClaimableHonorModuleCog, CupHonorModuleCog],
+            "honor_system": [
+                HonorCog,
+                HonorAnniversaryModuleCog,
+                HonorPostModuleCog,
+                ClaimableHonorModuleCog,
+                CupHonorModuleCog,
+                RoleClaimHonorModuleCog,
+            ],
             "heartbeat_information": HeartbeatInformationCog,
         }
 
