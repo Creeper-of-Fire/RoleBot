@@ -7,7 +7,7 @@ services:
     restart: unless-stopped
     volumes:
       - redis_data:/data # 将 Redis 数据持久化到命名卷
-    command: redis-server --save 60 1 --loglevel warning # 每60秒至少有1个key变化时就保存
+    command: redis-server --save 60 1 --loglevel warning --maxmemory 100mb --maxmemory-policy allkeys-lru # 每60秒至少有1个key变化时就保存
 
   rolebot:
     build: .

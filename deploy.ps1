@@ -187,16 +187,16 @@ unzip -o "$remoteProjectBaseDir/$zipFileName" -d .
 
 echo '--- [Remote] 2/6 : 构建 Docker 镜像...'
 # 直接在宿主机上运行 docker-compose build
-docker-compose build
+docker compose build
 
 echo '--- [Remote] 3/6 : 运行所有数据库迁移 (Alembic)...'
 # 通过 docker-compose run 启动一个临时容器来执行 remote_deploy.py
 # remote_deploy.py 会在容器内执行 alembic upgrade head
-docker-compose run -T --rm -v `$(pwd)`:/app $dockerContainerName python3 /app/remote_deploy.py < /dev/null
+docker compose run -T --rm -v `$(pwd)`:/app $dockerContainerName python3 /app/remote_deploy.py < /dev/null
 
 echo '--- [Remote] 4/6 : 启动新容器并替换旧容器...'
 # 直接在宿主机上运行 docker-compose up
-docker-compose up -d --remove-orphans
+docker compose up -d --remove-orphans
 
 echo '--- [Remote] 5/6 : 清理无用的 Docker 镜像...'
 # 直接在宿主机上运行 docker image prune
