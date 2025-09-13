@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, List, Dict, Any, Optional
 import discord
 from discord import ui, Interaction, SelectOption, ButtonStyle, Embed, Color
 
+from role_jukebox.role_jukebox_manager import Preset
 from utility.helpers import safe_defer, try_get_member
 from utility.paginated_view import PaginatedView
 from role_jukebox.view import PresetEditModal
@@ -22,110 +23,112 @@ class PresetAdminView(PaginatedView):
         # provider 是一个函数，每次更新数据时都会调用它
         super().__init__(all_items_provider=self._fetch_all_presets, items_per_page=5, timeout=600)
 
-    async def _fetch_all_presets(self) -> List[Dict[str, Any]]:
-        """从Manager获取并格式化所有预设数据。"""
-        all_presets = []
-
+    async def _fetch_all_presets(self) -> List[Preset]:
+        """从Manager获取并格式化所有预设数据为Preset对象列表。"""
         # 1. 获取通用预设
-        general_presets = self.cog.jukebox_manager.get_guild_state(self.guild.id).get("general_presets", [])
-        for preset in general_presets:
-            all_presets.append({"type": "general", "data": preset})
+        all_presets = self.cog.jukebox_manager.get_all_presets_for_admin_view()
 
-        # 2. 获取所有用户的预设
-        user_presets_map = self.cog.jukebox_manager.get_all_user_presets()
-        for user_id_str, presets in user_presets_map.items():
-            for preset in presets:
-                all_presets.append({"type": "user", "user_id": int(user_id_str), "data": preset})
+        # 附加临时属性 _display_owner 用于视图显示
+        for preset in all_presets:
+            if preset.owner_id:
+                member = await try_get_member(self.guild, preset.owner_id)
+                preset._display_owner = member.display_name if member else f"用户ID: {preset.owner_id}"
 
-        return all_presets
+        # 筛选出属于本服务器的通用预设和所有用户预设
+        guild_id = self.guild.id
+        filtered_presets = [
+            p for p in all_presets
+            if p.owner_id is not None or self._is_general_preset_for_guild(p, guild_id)
+        ]
+        return filtered_presets
+
+    def _is_general_preset_for_guild(self, preset: Preset, guild_id: int) -> bool:
+        """检查一个通用预设是否属于当前服务器"""
+        # 这是一个简化的检查。更稳妥的方式是让 manager 方法直接返回过滤后的结果。
+        # 但为了保持 manager 的通用性，暂时在视图层处理。
+        guild_general_presets = self.cog.jukebox_manager.get_general_presets(guild_id)
+        return preset.uuid in {p.uuid for p in guild_general_presets}
 
     async def _rebuild_view(self):
         """核心方法：重建Embed和组件。"""
         self.clear_items()
-
         self.embed = Embed(
             title="🛠️ 身份组预设管理",
             description=f"管理服务器的所有通用预设和用户专属预设。\n当前页码: {self.page + 1}/{self.total_pages}",
             color=Color.orange()
         )
-
         page_items = self.get_page_items()
 
         if not page_items:
             self.embed.description += "\n\n*这里空空如也...*"
         else:
-            for i, item in enumerate(page_items):
-                preset_data = item['data']
-                name = preset_data['name']
-                color = preset_data['color']
-                icon = preset_data.get('icon', '无')
-
-                if item['type'] == 'general':
-                    field_name = f"🎨 **{name}** (通用预设)"
-                    field_value = f"颜色: `{color}`\n图标: {icon}"
-                else:  # user
-                    user = self.guild.get_member(item['user_id']) or f"用户ID: {item['user_id']}"
-                    display_name = user.display_name if isinstance(user, discord.Member) else user
-                    field_name = f"👤 **{name}** (用户: {display_name})"
-                    field_value = f"颜色: `{color}`\n图标: {icon}"
-
+            for i, preset in enumerate(page_items):
+                if preset.owner_id is None:  # 通用预设
+                    field_name = f"🎨 **{preset.name}** (通用预设)"
+                    field_value = f"颜色: `{preset.color}`\n图标: {preset.icon_url or '无'}"
+                else:  # 用户预设
+                    field_name = f"👤 **{preset.name}** (用户: {getattr(preset, '_display_owner', preset.owner_id)})"
+                    field_value = f"颜色: `{preset.color}`\n图标: {preset.icon_url or '无'}"
                 self.embed.add_field(name=field_name, value=field_value, inline=False)
 
         # 添加操作组件
         if page_items:
-            self.add_item(DeletePresetSelect(page_items))
+            self.add_item(EditPresetSelect(page_items))  # 编辑选择器
+            self.add_item(DeletePresetSelect(page_items))  # 删除选择器
 
-        self.add_item(AddPresetButton(row=1))
-        self.add_item(CloneRoleButton(row=1))
-
-        # 添加分页按钮
+        self.add_item(AddPresetButton(row=2))
+        self.add_item(CloneRoleButton(row=2))
         self._add_pagination_buttons(row=4)
 
 
 # --- Components for Admin View ---
 
-class DeletePresetSelect(ui.Select):
-    def __init__(self, page_items: List[Dict[str, Any]]):
+class EditPresetSelect(ui.Select):
+    def __init__(self, page_items: List[Preset]):
         options = []
-        for i, item in enumerate(page_items):
-            preset_data = item['data']
-            name = preset_data['name']
+        for preset in page_items:
+            label_prefix = "编辑通用预设:" if preset.owner_id is None else "编辑用户预设:"
+            options.append(SelectOption(label=f"{label_prefix} {preset.name}", value=preset.uuid, emoji="✏️"))
+        super().__init__(placeholder="选择一个预设进行编辑...", options=options, row=0)
 
-            # 编码所有需要的信息到 value 中
-            if item['type'] == 'general':
-                label = f"删除通用预设: {name}"
-                value = f"g_{name}"
-            else:
-                user_id = item['user_id']
-                label = f"删除用户 {user_id} 的预设: {name}"
-                value = f"u_{user_id}_{name}"
+    async def callback(self, interaction: Interaction):
+        preset_uuid = self.values[0]
+        preset_to_edit = self.view.cog.jukebox_manager.get_preset_by_uuid(preset_uuid)
+        if not preset_to_edit:
+            await interaction.response.send_message("❌ 错误：找不到该预设，可能已被删除。", ephemeral=True)
+            await self.view.update_view(interaction)
+            return
 
-            options.append(SelectOption(label=label, value=value, emoji="🗑️"))
+        # 弹出模态框，并传入现有预设对象进行填充
+        modal = PresetEditModal(self.view.cog, existing_preset=preset_to_edit, is_admin=True)
+        await interaction.response.send_modal(modal)
+        await modal.wait()
+        await self.view.update_view(interaction) # 模态框结束后刷新
 
-        super().__init__(placeholder="选择一个预设将其删除...", options=options, row=0)
+
+class DeletePresetSelect(ui.Select):
+    def __init__(self, page_items: List[Preset]):
+        options = []
+        for preset in page_items:
+            label_prefix = "删除通用预设:" if preset.owner_id is None else "删除用户预设:"
+            options.append(SelectOption(label=f"{label_prefix} {preset.name}", value=preset.uuid, emoji="🗑️"))
+        super().__init__(placeholder="选择一个预设将其删除...", options=options, row=1)
 
     async def callback(self, interaction: Interaction):
         await safe_defer(interaction)
+        preset_uuid = self.values[0]
+        preset_to_delete = self.view.cog.jukebox_manager.get_preset_by_uuid(preset_uuid)  # 获取信息用于反馈
 
-        value = self.values[0]
-        parts = value.split('_', 2)
-        preset_type = parts[0]
+        success = await self.view.cog.jukebox_manager.delete_preset_by_uuid(preset_uuid)
 
-        success = False
-        if preset_type == 'g':
-            preset_name = parts[1]
-            success = await self.view.cog.jukebox_manager.remove_general_preset(self.view.guild.id, preset_name)
-            msg = f"已删除通用预设 '{preset_name}'。" if success else "删除失败。"
-        elif preset_type == 'u':
-            user_id = int(parts[1])
-            preset_name = parts[2]
-            success = await self.view.cog.jukebox_manager.remove_user_preset(user_id, preset_name)
-            msg = f"已删除用户 {user_id} 的预设 '{preset_name}'。" if success else "删除失败。"
+        if success and preset_to_delete:
+            msg = f"已删除预设 '{preset_to_delete.name}'。"
+        elif success:
+            msg = "预设已删除。"
         else:
-            msg = "无效的选择。"
+            msg = "删除失败，可能预设已被移除。"
 
         await interaction.followup.send(f"✅ {msg}" if success else f"❌ {msg}", ephemeral=True)
-        # 刷新视图以反映更改
         await self.view.update_view(interaction)
 
 
@@ -134,16 +137,10 @@ class AddPresetButton(ui.Button):
         super().__init__(label="添加通用预设", style=ButtonStyle.green, emoji="➕", row=row)
 
     async def callback(self, interaction: Interaction):
-        # 管理员面板只添加通用预设
-        modal = PresetEditModal(self.view.cog, is_admin=True)
+        # is_admin=True, existing_preset=None 表示创建新的通用预设
+        modal = PresetEditModal(self.view.cog, is_admin=True, existing_preset=None)
         await interaction.response.send_modal(modal)
-
-        # 等待模态框结束，然后刷新视图
         await modal.wait()
-        # Modal 已经响应了 interaction，所以我们不能再用它
-        # 我们需要从 self.view.message 获取一个新的 interaction，但这很复杂
-        # 一个更简单的方法是直接编辑消息
-        # 但因为 update_view 需要一个 interaction，我们还是用原来的，它只是用来编辑消息
         await self.view.update_view(interaction)
 
 
@@ -157,8 +154,8 @@ class CloneRoleModal(ui.Modal, title="从身份组克隆预设"):
             label="身份组ID",
             placeholder="请粘贴要克隆的身份组ID",
             required=True,
-            min_length=17,  # Discord ID 最小长度
-            max_length=20,
+            # min_length=17,  # Discord ID 最小长度
+            # max_length=20,
         )
         self.add_item(self.role_id_input)
 
@@ -201,14 +198,11 @@ class CloneRoleModal(ui.Modal, title="从身份组克隆预设"):
                 self.cog.logger.error(f"Failed to read icon from role {role.id}: {e}")
                 await interaction.followup.send("⚠️ 无法读取身份组图标，将创建不带图标的预设。", ephemeral=True)
 
-        # 调用 manager 添加为通用预设
-        success, msg = await self.cog.jukebox_manager.add_general_preset(
-            self.guild.id, name, color_hex, icon_url
-        )
+        new_preset = Preset(name=name, color=color_hex, icon_url=icon_url)
+        success, msg = await self.cog.jukebox_manager.upsert_preset(new_preset, guild_id=self.guild.id)
 
-        # 如果是因为名称重复而失败，提供更清晰的提示
         if not success and "已存在" in msg:
-            msg += f"\n您可能需要先删除名为 **{name}** 的旧预设，或手动修改被克隆身份组的名称。"
+            msg += f"\n您可能需要先删除同名旧预设，或修改被克隆身份组的名称。"
 
         await interaction.followup.send(msg, ephemeral=True)
 

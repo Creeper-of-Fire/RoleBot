@@ -1,15 +1,16 @@
 # jukebox/view.py
 from __future__ import annotations
 
-import asyncio
+import uuid
 from datetime import datetime
-from typing import TYPE_CHECKING, Optional, List, Dict, Any
+from typing import TYPE_CHECKING, Optional, List
 
 import discord
 from discord import ui, Color, ButtonStyle, SelectOption, Interaction
 
+from role_jukebox.role_jukebox_manager import Preset
 from timed_role.timer import UTC8
-from utility.helpers import safe_defer, format_duration_hms, try_get_member
+from utility.helpers import safe_defer
 
 if TYPE_CHECKING:
     from role_jukebox.cog import RoleJukeboxCog
@@ -27,13 +28,12 @@ class RoleJukeboxView(ui.View):
 
         # 视图状态
         self.selected_queue_role_id: Optional[int] = None
-        self.selected_preset: Optional[Dict[str, Any]] = None
+        self.selected_preset: Optional[Preset] = None
 
     async def update_view(self, interaction: Optional[discord.Interaction] = None):
         """核心方法：重新构建整个视图和嵌入消息。"""
         self.clear_items()
 
-        guild_state = self.cog.jukebox_manager.get_guild_state(self.guild.id)
         guild_config = self.cog.get_guild_config(self.guild.id)
         is_user_vip = self.cog.is_vip(self.user)
 
@@ -56,24 +56,26 @@ class RoleJukeboxView(ui.View):
             role = self.guild.get_role(role_id)
             if not role: continue
 
-            queue_state = self.cog.jukebox_manager._get_or_create_queue_state(self.guild.id, role_id)
+            queue_state = self.cog.jukebox_manager.get_queue_state(self.guild.id, role_id)
+            current_preset_uuid = queue_state.current_preset_uuid
+            current_preset = self.cog.jukebox_manager.get_preset_by_uuid(current_preset_uuid) if current_preset_uuid else None
 
             value = ""
             name = f"🎵 {role.name}"
 
-            if not queue_state.get("current_preset"):
+            if not current_preset:
                 name = f"🎤 {role.name} (待点播)"
                 value = "这个队列还未被点播过，来当第一个吧！"
             else:
-                name = f"🎵 {queue_state['current_preset']['name']}"
+                name = f"🎵 {current_preset.name}"
                 value += f"**当前成员**: {len(role.members)} 人\n"
 
-                unlock_timestamp = queue_state.get("unlock_timestamp")
+                unlock_timestamp = queue_state.unlock_timestamp
                 if unlock_timestamp and datetime.fromisoformat(unlock_timestamp) > datetime.now(UTC8):
                     unlock_dt = datetime.fromisoformat(unlock_timestamp)
                     unlock_time_str = discord.utils.format_dt(unlock_dt, style='R')
                     value += f"**变更锁定**: {unlock_time_str} 解锁\n"
-                    value += f"**排队人数**: {len(queue_state.get('pending_requests', []))} 人"
+                    value += f"**排队人数**: {len(queue_state.pending_requests)} 人"
                 else:
                     value += "✅ **变更权已解锁**，可立即变更外观！"
 
@@ -87,18 +89,15 @@ class RoleJukeboxView(ui.View):
 
         # 2.2 如果已选择队列，显示更多操作
         if self.selected_queue_role_id:
-            selected_queue_state = self.cog.jukebox_manager._get_or_create_queue_state(self.guild.id, self.selected_queue_role_id)
+            selected_queue_state = self.cog.jukebox_manager.get_queue_state(self.guild.id, self.selected_queue_role_id)
 
             # 预设选择器
-            general_presets = guild_state.get("general_presets", [])
+            general_presets = self.cog.jukebox_manager.get_general_presets(self.guild.id)
             user_presets = self.cog.jukebox_manager.get_user_presets(self.user.id) if is_user_vip else []
             self.add_item(PresetSelect(general_presets, user_presets))
 
             # 操作按钮
-            is_locked = False
-            if selected_queue_state.get("unlock_timestamp"):
-                if datetime.fromisoformat(selected_queue_state["unlock_timestamp"]) > datetime.now(UTC8):
-                    is_locked = True
+            is_locked = selected_queue_state.is_locked
 
             is_in_role = any(r.id == self.selected_queue_role_id for r in self.user.roles)
 
@@ -107,29 +106,10 @@ class RoleJukeboxView(ui.View):
             self.add_item(JoinButton(disabled=is_in_role))  # 只要不在队列里就能加入
             self.add_item(LeaveButton(disabled=not is_in_role))  # 只要在队列里就能离开
 
-        self.add_item(ManagePresetsButton(row=4))
-
         # 3. 更新消息
         if interaction:
             await interaction.edit_original_response(content=None, embed=self.embed, view=self)
 
-class ManagePresetsButton(ui.Button):
-    def __init__(self, row: int):
-        super().__init__(label="管理我的预设", style=ButtonStyle.blurple, emoji="⚙️", row=row)
-
-    async def callback(self, interaction: Interaction):
-        is_admin = interaction.user.guild_permissions.manage_roles
-        is_vip = self.view.cog.is_vip(interaction.user)
-
-        if not is_admin and not is_vip:
-            await interaction.response.send_message("❌ 您没有权限管理预设。", ephemeral=True)
-            return
-
-        # TODO 这里可以再做一个View来选择是“添加”还是“删除”
-        # 为简化，我们直接弹出“添加”的Modal
-        # 后续可以扩展
-        modal = PresetEditModal(self.view.cog, is_admin=is_admin)
-        await interaction.response.send_modal(modal)
 
 # --- Components ---
 
@@ -150,17 +130,16 @@ class QueueSelect(ui.Select):
 
 
 class PresetSelect(ui.Select):
-    def __init__(self, general_presets: List[Dict], user_presets: List[Dict]):
+    def __init__(self, general_presets: List[Preset], user_presets: List[Preset]):
         options = []
         if general_presets:
             options.append(SelectOption(label="--- 通用预设 ---", value="_disabled1"))
             for p in general_presets:
-                options.append(SelectOption(label=p['name'], value=f"g_{p['name']}"))
-
+                options.append(SelectOption(label=p.name, value=p.uuid))
         if user_presets:
             options.append(SelectOption(label="--- 我的预设 ---", value="_disabled2"))
             for p in user_presets:
-                options.append(SelectOption(label=p['name'], value=f"u_{p['name']}"))
+                options.append(SelectOption(label=p.name, value=p.uuid))
 
         if not options:
             options.append(SelectOption(label="没有可用的预设", value="_none"))
@@ -169,17 +148,13 @@ class PresetSelect(ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         await safe_defer(interaction)
-        val = self.values[0]
-        if val.startswith("g_"):
-            name = val[2:]
-            presets = self.view.cog.jukebox_manager.get_guild_state(self.view.guild.id).get("general_presets", [])
-            self.view.selected_preset = next((p for p in presets if p['name'] == name), None)
-        elif val.startswith("u_"):
-            name = val[2:]
-            presets = self.view.cog.jukebox_manager.get_user_presets(self.view.user.id)
-            self.view.selected_preset = next((p for p in presets if p['name'] == name), None)
+        preset_uuid = self.values[0]
+        self.view.selected_preset = self.view.cog.jukebox_manager.get_preset_by_uuid(preset_uuid)
 
-        await interaction.followup.send(f"已选择预设: **{self.view.selected_preset['name']}**", ephemeral=True)
+        if self.view.selected_preset:
+            await interaction.followup.send(f"已选择预设: **{self.view.selected_preset.name}**", ephemeral=True)
+
+        # 刷新主视图以启用/禁用按钮
         await self.view.update_view(interaction)
 
 
@@ -256,91 +231,66 @@ class LeaveButton(ActionButton):
         await self.view.update_view(interaction)
 
 
-class PresetEditModal(ui.Modal, title="创建/编辑身份组预设"):
-    def __init__(self, cog: 'RoleJukeboxCog', is_admin: bool):
+class PresetEditModal(ui.Modal, title="创建/编辑身份组预设", ):
+    def __init__(self, cog: 'RoleJukeboxCog', is_admin: bool, existing_preset: Optional[Preset] = None):
         super().__init__(timeout=300)
         self.cog = cog
-        self.is_admin = is_admin  # True for general presets, False for user presets
+        self.is_admin = is_admin
+        self.existing_preset = existing_preset
 
-        self.preset_name = ui.TextInput(
-            label="预设名称",
-            placeholder="例如：深海之心",
-            required=True,
-            max_length=50
-        )
+        self.preset_name = ui.TextInput(label="预设名称", placeholder="例如：深海之心", required=True, max_length=50,
+                                        default=existing_preset.name if existing_preset else None)
         self.add_item(self.preset_name)
 
-        self.preset_color = ui.TextInput(
-            label="颜色 (HEX格式)",
-            placeholder="例如：#4A90E2",
-            required=True,
-            min_length=7,
-            max_length=7
-        )
+        self.preset_color = ui.TextInput(label="颜色 (HEX格式)", placeholder="例如：#4A90E2", required=True, min_length=7, max_length=7,
+                                         default=existing_preset.color if existing_preset else None)
         self.add_item(self.preset_color)
 
-    async def on_submit(self, interaction: Interaction):
-        await interaction.response.send_message("📝 正在处理预设... 请在 **1分钟内** 在本频道上传一张图片作为身份组图标。如果不想设置图标，请发送 `跳过` 或 `无`。",
-                                                ephemeral=True)
+        self.preset_icon = ui.TextInput(label="图标URL (可选)", placeholder="留空或输入 '无' 以移除图标", required=False,
+                                        default=existing_preset.icon_url if existing_preset else None)
+        self.add_item(self.preset_icon)
 
+    async def on_submit(self, interaction: Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        # 验证颜色
         try:
-            # 验证颜色
             color_str = self.preset_color.value
-            if not color_str.startswith("#"):
-                color_str = f"#{color_str}"
+            if not color_str.startswith("#"): color_str = f"#{color_str}"
             Color.from_str(color_str)
         except ValueError:
-            await interaction.followup.send("❌ 颜色格式无效，请输入HEX格式 (例如: `#FF5733`)。", ephemeral=True)
+            await interaction.followup.send("❌ 颜色格式无效。", ephemeral=True)
             return
 
-        def check(m):
-            return m.author == interaction.user and m.channel == interaction.channel
+        icon_url_input = self.preset_icon.value
+        icon_url = icon_url_input if icon_url_input and icon_url_input.lower() not in ['无', 'none'] else None
 
-        icon_url = None  # 默认为 None
-        try:
-            msg = await self.cog.bot.wait_for('message', check=check, timeout=60.0)
+        if self.existing_preset:  # 更新模式
+            # 创建一个新对象来更新，而不是修改旧的
+            updated_preset = Preset(
+                uuid=self.existing_preset.uuid,
+                name=self.preset_name.value,
+                color=color_str,
+                icon_url=icon_url,
+                owner_id=self.existing_preset.owner_id
+            )
+        else:  # 创建模式
+            owner_id = None if self.is_admin else interaction.user.id
+            updated_preset = Preset(
+                uuid=str(uuid.uuid4()),
+                name=self.preset_name.value,
+                color=color_str,
+                icon_url=icon_url,
+                owner_id=owner_id
+            )
 
-            if msg.attachments:
-                attachment = msg.attachments[0]
-                if not attachment.content_type.startswith('image/'):
-                    await interaction.followup.send("❌ 上传的文件不是有效的图片格式。", ephemeral=True)
-                    await msg.delete()
-                    return
-
-                # 1. 下载图片数据
-                image_bytes = await attachment.read()
-
-                # 2. 上传到存储库并获取永久URL
-                permanent_url = await self.cog._upload_icon_and_get_url(
-                    interaction.guild_id, image_bytes, attachment.filename
-                )
-
-                if permanent_url:
-                    icon_url = permanent_url
-                    feedback_msg = "✅ 图片已收到并永久保存！"
-                else:
-                    feedback_msg = "❌ 图标上传失败，请联系管理员检查后台日志。"
-
-                await msg.delete()
-            elif msg.content.lower() in ['跳过', '无', 'skip', 'none']:
-                feedback_msg = "☑️ 已跳过图标设置。"
-                await msg.delete()
-            else:
-                await interaction.followup.send("❓ 未识别到图片或有效指令，操作已取消。", ephemeral=True)
-                await msg.delete()
-                return
-
-            await interaction.edit_original_response(content=feedback_msg)
-
-        except asyncio.TimeoutError:
-            await interaction.edit_original_response(content="⌛ 操作超时，已自动取消。")
-            return
-
-        # 保存预设，现在 icon_url 是永久的了
-        name = self.preset_name.value
-        if self.is_admin:
-            success, result_msg = await self.cog.jukebox_manager.add_general_preset(interaction.guild_id, name, color_str, icon_url)
-        else:
-            success, result_msg = await self.cog.jukebox_manager.add_user_preset(interaction.user.id, interaction.guild_id, name, color_str, icon_url)
+        # PUT 操作
+        success, result_msg = await self.cog.jukebox_manager.upsert_preset(
+            updated_preset, guild_id=interaction.guild_id
+        )
 
         await interaction.followup.send(result_msg, ephemeral=True)
+
+        if success:
+            # 触发实时更新
+            await self.cog.live_update_role_by_preset_uuid(updated_preset.uuid)

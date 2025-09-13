@@ -4,10 +4,12 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import config
+from role_jukebox.models import JukeboxData, QueueState, UserData, GuildData, Preset, PendingRequest, RotationAction
 
 # --- 常量定义 ---
 DATA_DIR = "data"
@@ -24,7 +26,7 @@ class RoleJukeboxManager:
     """
 
     def __init__(self):
-        self._data: Dict[str, Any] = {}
+        self._data: JukeboxData = JukeboxData()
         self._lock = asyncio.Lock()
         self._dirty = False
         self._save_task: Optional[asyncio.Task] = None
@@ -32,21 +34,13 @@ class RoleJukeboxManager:
         self.load_data()
 
     def load_data(self):
-        """
-        从JSON文件加载数据。如果文件不存在或为空，则初始化一个默认结构。
-        "queues": {
-            "role_id": {
-              "current_preset": Optional[Dict],
-              "unlock_timestamp": Optional[str], // ISO 8601, null表示可变更
-              "pending_requests": [{"user_id": int, "preset": Dict}]
-            }
-        }
-        """
+        """从JSON文件加载数据，并将其反序列化为dataclass对象。"""
         try:
             with open(DATA_FILE, 'r', encoding='utf-8') as f:
-                self._data = json.load(f)
+                raw_data = json.load(f)
+                self._data = JukeboxData.from_dict(raw_data)
         except (FileNotFoundError, json.JSONDecodeError):
-            self._data = {"guilds": {}, "users": {}}
+            self._data = JukeboxData()  # 修改点: 初始化为空的 dataclass
 
     async def save_data(self, force: bool = False):
         """
@@ -66,7 +60,7 @@ class RoleJukeboxManager:
             async with self._lock:
                 if self._dirty:
                     with open(DATA_FILE, 'w', encoding='utf-8') as f:
-                        json.dump(self._data, f, indent=4, ensure_ascii=False)
+                        json.dump(asdict(self._data), f, indent=4, ensure_ascii=False)
                     self._dirty = False
         except asyncio.CancelledError:
             pass
@@ -75,120 +69,154 @@ class RoleJukeboxManager:
 
     # --- 内部数据访问辅助方法 ---
 
-    def _get_or_create_guild_data(self, guild_id: int) -> Dict[str, Any]:
-        """获取指定服务器的数据，如果不存在则创建并返回默认结构。"""
-        guild_id_str = str(guild_id)
-        if guild_id_str not in self._data["guilds"]:
-            self._data["guilds"][guild_id_str] = {
-                "general_presets": [],
-                "queues": {}
-            }
-        return self._data["guilds"][guild_id_str]
+    def _get_or_create_guild_data(self, guild_id: int) -> GuildData:
+        return self._data.guilds.setdefault(str(guild_id), GuildData())
 
-    def _get_or_create_user_data(self, user_id: int) -> Dict[str, Any]:
-        """获取指定用户的数据，如果不存在则创建并返回默认结构。"""
-        user_id_str = str(user_id)
-        if user_id_str not in self._data["users"]:
-            self._data["users"][user_id_str] = {
-                "custom_presets": []
-            }
-        return self._data["users"][user_id_str]
+    def _get_or_create_user_data(self, user_id: int) -> UserData:
+        return self._data.users.setdefault(str(user_id), UserData())
 
-    def _get_or_create_queue_state(self, guild_id: int, role_id: int) -> Dict[str, Any]:
-        """获取指定队列身份组的状态，如果不存在则创建并返回默认的空闲状态。"""
+    def get_queue_state(self, guild_id: int, role_id: int) -> QueueState:
+        """公开方法：获取队列状态，如果不存在则创建。"""
         guild_data = self._get_or_create_guild_data(guild_id)
-        role_id_str = str(role_id)
-        if role_id_str not in guild_data["queues"]:
-            guild_data["queues"][role_id_str] = {
-                "current_preset": None,
-                "unlock_timestamp": None,
-                "pending_requests": []
-            }
-        return guild_data["queues"][role_id_str]
+        return guild_data.queues.setdefault(str(role_id), QueueState())
 
-    # --- 公共API方法 ---
+    # --- 公开数据访问方法 ---
+    def get_all_presets_for_admin_view(self) -> List[Preset]:
+        """提供所有预设，只读地替代直接访问_data。"""
+        all_presets = []
+        for guild_data in self._data.guilds.values():
+            all_presets.extend(guild_data.general_presets)
+        for user_data in self._data.users.values():
+            all_presets.extend(user_data.custom_presets)
+        return all_presets
 
-    def get_guild_state(self, guild_id: int) -> Dict[str, Any]:
-        """获取指定服务器的完整点歌机状态。"""
-        return self._get_or_create_guild_data(guild_id)
+    def get_all_queues_using_preset(self, preset_uuid: str) -> List[Tuple[int, int]]:
+        """查找所有使用特定预设的活跃队列，返回 (guild_id, role_id) 列表。"""
+        results = []
+        for guild_id_str, guild_data in self._data.guilds.items():
+            for role_id_str, queue_state in guild_data.queues.items():
+                if queue_state.current_preset_uuid == preset_uuid:
+                    results.append((int(guild_id_str), int(role_id_str)))
+        return results
 
-    def get_user_presets(self, user_id: int) -> List[Dict[str, Any]]:
-        """获取VIP用户的个人预设列表。"""
+    # --- 全局预设查找 ---
+    def get_preset_by_uuid(self, preset_uuid: str) -> Optional[Preset]:
+        # 1. 查找通用预设
+        for guild_data in self._data.guilds.values():
+            for preset in guild_data.general_presets:
+                if preset.uuid == preset_uuid:
+                    return preset
+        # 2. 查找用户预设
+        for user_data in self._data.users.values():
+            for preset in user_data.custom_presets:
+                if preset.uuid == preset_uuid:
+                    return preset
+        return None
+
+    # --- 获取预设列表 ---
+    def get_general_presets(self, guild_id: int) -> List[Preset]:
+        """获取服务器的所有通用预设，返回Preset对象列表。"""
+        guild_data = self._get_or_create_guild_data(guild_id)
+        return guild_data.general_presets
+
+    def get_user_presets(self, user_id: int) -> List[Preset]:
+        """获取用户的所有专属预设，返回Preset对象列表。"""
         user_data = self._get_or_create_user_data(user_id)
-        return user_data["custom_presets"]
+        return user_data.custom_presets
 
-    async def add_general_preset(self, guild_id: int, name: str, color: str, icon_url: Optional[str]) -> Tuple[bool, str]:
-        """管理员为服务器添加一个通用预设。"""
+    # --- PUT操作 ---
+    async def upsert_preset(self, preset: Preset, guild_id: Optional[int] = None) -> Tuple[bool, str]:
+        """
+        幂等操作：创建或更新一个预设。
+        - 如果preset.uuid已存在，则更新。
+        - 如果preset.uuid不存在（或为新生成），则创建。
+        - 通过 preset.owner_id 是否存在来判断是用户预设还是通用预设。
+        """
         async with self._lock:
-            guild_data = self._get_or_create_guild_data(guild_id)
-            # 检查预设数量限制
-            max_presets = config.JUKEBOX_GUILD_CONFIGS[guild_id].get("max_general_presets", 10)
-            if len(guild_data["general_presets"]) >= max_presets:
-                return False, f"通用预设数量已达上限 ({max_presets}个)。"
-            # 检查名称是否重复
-            if any(p["name"] == name for p in guild_data["general_presets"]):
-                return False, f"名为 '{name}' 的预设已存在。"
+            is_user_preset = preset.owner_id is not None
 
-            guild_data["general_presets"].append({"name": name, "color": color, "icon": icon_url})
-            await self.save_data()
-        return True, f"成功添加通用预设 '{name}'。"
+            if is_user_preset:
+                target_list = self._get_or_create_user_data(preset.owner_id).custom_presets
+                if guild_id is None: return False, "为用户预设提供guild_id以检查限制。"
+                guild_config = config.JUKEBOX_GUILD_CONFIGS.get(guild_id, {})
+                max_presets = guild_config.get("max_vip_presets_per_user", 3)
+                limit_msg = f"您的专属预设数量已达上限 ({max_presets}个)。"
+            else:
+                if guild_id is None: return False, "必须为通用预设提供guild_id。"
+                target_list = self._get_or_create_guild_data(guild_id).general_presets
+                max_presets = config.JUKEBOX_GUILD_CONFIGS[guild_id].get("max_general_presets", 10)
+                limit_msg = f"通用预设数量已达上限 ({max_presets}个)。"
 
-    async def remove_general_preset(self, guild_id: int, name: str) -> bool:
-        """管理员从服务器移除一个通用预设。"""
-        async with self._lock:
-            guild_data = self._get_or_create_guild_data(guild_id)
-            preset_found = False
-            initial_len = len(guild_data["general_presets"])
-            guild_data["general_presets"] = [p for p in guild_data["general_presets"] if p["name"] != name]
+            existing_preset_index = -1
+            for i, p in enumerate(target_list):
+                if p.uuid == preset.uuid:
+                    existing_preset_index = i
+                    break
 
-            if len(guild_data["general_presets"]) < initial_len:
-                preset_found = True
+            if existing_preset_index != -1:
+                target_list[existing_preset_index] = preset
                 await self.save_data()
-        return preset_found
+                return True, f"成功更新预设 '{preset.name}'。"
+            else:
+                if len(target_list) >= max_presets:
+                    return False, limit_msg
+                if any(p.name == preset.name for p in target_list):
+                    return False, f"在当前范围内，名为 '{preset.name}' 的预设已存在。"
+                target_list.append(preset)
+                await self.save_data()
+                return True, f"成功添加预设 '{preset.name}'。"
 
-    async def add_user_preset(self, user_id: int, guild_id: int, name: str, color: str, icon_url: Optional[str]) -> Tuple[bool, str]:
-        """VIP用户为自己添加一个专属预设。"""
+    async def delete_preset_by_uuid(self, preset_uuid: str) -> bool:
+        """通过UUID在全局删除一个预设。"""
         async with self._lock:
-            user_data = self._get_or_create_user_data(user_id)
+
+            for guild_data in self._data.guilds.values():
+                initial_len = len(guild_data.general_presets)
+                guild_data.general_presets = [p for p in guild_data.general_presets if p.uuid != preset_uuid]
+                if len(guild_data.general_presets) < initial_len:
+                    await self.save_data()
+                    return True
+
+            for user_data in self._data.users.values():
+                initial_len = len(user_data.custom_presets)
+                user_data.custom_presets = [p for p in user_data.custom_presets if p.uuid != preset_uuid]
+                if len(user_data.custom_presets) < initial_len:
+                    await self.save_data()
+                    return True
+        return False
+
+    async def change_or_claim_queue(self, guild_id: int, user_id: int, role_id: int, preset: Preset) -> Tuple[bool, str]:
+        async with self._lock:
+            queue_state = self.get_queue_state(guild_id, role_id)
+            now = datetime.now(UTC8)
+
+            if queue_state.unlock_timestamp:
+                unlock_time = datetime.fromisoformat(queue_state.unlock_timestamp)
+                if now < unlock_time:
+                    return False, "这个队列的变更权仍在锁定中，您可以选择排队。"
+
             guild_config = config.JUKEBOX_GUILD_CONFIGS.get(guild_id, {})
-            if not guild_config:
-                # 理论上不应该发生，因为Cog会做检查，但作为安全措施
-                return False, "服务器未配置点歌机功能。"
+            lock_hours = guild_config.get("lock_duration_hours", 2)
+            unlock_time = now + timedelta(hours=lock_hours)
 
-            max_presets = guild_config.get("max_vip_presets_per_user", 3)
-
-            if len(user_data["custom_presets"]) >= max_presets:
-                return False, f"您的专属预设数量已达上限 ({max_presets}个)。"
-            if any(p["name"] == name for p in user_data["custom_presets"]):
-                return False, f"您已有一个名为 '{name}' 的预设。"
-
-            user_data["custom_presets"].append({"name": name, "color": color, "icon": icon_url})
+            queue_state.current_preset_uuid = preset.uuid
+            queue_state.unlock_timestamp = unlock_time.isoformat()
             await self.save_data()
-        return True, f"成功添加您的专属预设 '{name}'。"
+        return True, "变更成功！身份组外观已更新。"
 
-    async def remove_user_preset(self, user_id: int, name: str) -> bool:
-        """VIP用户移除自己的一个专属预设。"""
+    async def queue_request(self, guild_id: int, user_id: int, role_id: int, preset: Preset) -> Tuple[bool, str]:
         async with self._lock:
-            user_data = self._get_or_create_user_data(user_id)
-            preset_found = False
-            initial_len = len(user_data["custom_presets"])
-            user_data["custom_presets"] = [p for p in user_data["custom_presets"] if p["name"] != name]
+            queue_state = self.get_queue_state(guild_id, role_id)
 
-            if len(user_data["custom_presets"]) < initial_len:
-                preset_found = True
-                await self.save_data()
-        return preset_found
+            if any(req.user_id == user_id for req in queue_state.pending_requests):
+                return False, "您已经在这个队列中排队了。"
 
-    def get_all_user_presets(self) -> Dict[str, List[Dict[str, Any]]]:
-        """
-        获取所有用户的自定义预设。
-        :return: 一个字典，键是用户ID（字符串），值是该用户的预设列表。
-        """
-        # 返回一个字典，包含所有用户的 "custom_presets" 列表
-        return {
-            user_id: user_data.get("custom_presets", [])
-            for user_id, user_data in self._data.get("users", {}).items()
-        }
+            new_request = PendingRequest(user_id=user_id, preset=preset)
+            queue_state.pending_requests.append(new_request)
+            await self.save_data()
+
+            position = len(queue_state.pending_requests)
+        return True, f"排队成功！您是第 {position} 位。"
 
     async def force_unlock_all_queues(self, guild_id: int) -> int:
         """
@@ -200,62 +228,16 @@ class RoleJukeboxManager:
         data_changed = False
         async with self._lock:
             guild_data = self._get_or_create_guild_data(guild_id)
-            queues = guild_data.get("queues", {})
-
-            for role_id_str, queue_state in queues.items():
-                # 只要存在 unlock_timestamp，就将其移除
-                if queue_state.get("unlock_timestamp"):
-                    queue_state["unlock_timestamp"] = None
+            for queue_state in guild_data.queues.values():
+                if queue_state.unlock_timestamp:
+                    queue_state.unlock_timestamp = None
                     unlocked_count += 1
                     data_changed = True
-
             if data_changed:
                 await self.save_data(force=True)
-
         return unlocked_count
 
-    async def change_or_claim_queue(self, guild_id: int, user_id: int, role_id: int, preset: Dict[str, Any]) -> Tuple[bool, str]:
-        """
-        用户尝试变更一个可用的队列，或点播一个尚未初始化的队列。
-        """
-        async with self._lock:
-            queue_state = self._get_or_create_queue_state(guild_id, role_id)
-            now = datetime.now(UTC8)
-
-            # 检查是否锁定
-            if queue_state["unlock_timestamp"]:
-                unlock_time = datetime.fromisoformat(queue_state["unlock_timestamp"])
-                if now < unlock_time:
-                    return False, "这个队列的变更权仍在锁定中，您可以选择排队。"
-
-            guild_config = config.JUKEBOX_GUILD_CONFIGS.get(guild_id, {})
-            lock_hours = guild_config.get("lock_duration_hours", 2)
-            unlock_time = now + timedelta(hours=lock_hours)
-
-            queue_state["current_preset"] = preset
-            queue_state["unlock_timestamp"] = unlock_time.isoformat()
-
-            await self.save_data()
-        return True, "变更成功！身份组外观已更新。"
-
-    async def queue_request(self, guild_id: int, user_id: int, role_id: int, preset: Dict[str, Any]) -> Tuple[bool, str]:
-        """
-        用户在一个变更权被锁定的队列中“排队”下一个身份组。
-        """
-        async with self._lock:
-            queue_state = self._get_or_create_queue_state(guild_id, role_id)
-
-            # 检查是否已在排队
-            if any(req["user_id"] == user_id for req in queue_state["pending_requests"]):
-                return False, "您已经在这个队列中排队了。"
-
-            queue_state["pending_requests"].append({"user_id": user_id, "preset": preset})
-            await self.save_data()
-
-            position = len(queue_state["pending_requests"])
-        return True, f"排队成功！您是第 {position} 位。"
-
-    async def process_expirations(self) -> List[Dict[str, Any]]:
+    async def process_expirations(self) -> List[RotationAction]:
         """
         检查所有到期的队列，并返回轮换操作。
         如果队列为空，仅将unlock_timestamp设为null。
@@ -265,35 +247,30 @@ class RoleJukeboxManager:
         data_changed = False
 
         async with self._lock:
-            for guild_id_str, guild_data in self._data["guilds"].items():
-                for role_id_str, queue_state in guild_data["queues"].items():
-                    if queue_state.get("unlock_timestamp"):
-                        unlock_time = datetime.fromisoformat(queue_state["unlock_timestamp"])
+            for guild_id_str, guild_data in self._data.guilds.items():
+                for role_id_str, queue_state in guild_data.queues.items():
+                    if queue_state.unlock_timestamp:
+                        unlock_time = datetime.fromisoformat(queue_state.unlock_timestamp)
                         if now >= unlock_time:
                             data_changed = True
-
-                            if queue_state["pending_requests"]:
-                                # 轮换到下一个用户
-                                next_request = queue_state["pending_requests"].pop(0)
+                            if queue_state.pending_requests:
+                                next_request = queue_state.pending_requests.pop(0)
                                 guild_config = config.JUKEBOX_GUILD_CONFIGS.get(int(guild_id_str), {})
                                 lock_hours = guild_config.get("lock_duration_hours", 2)
                                 new_unlock_time = now + timedelta(hours=lock_hours)
 
-                                queue_state["current_preset"] = next_request["preset"]
-                                queue_state["unlock_timestamp"] = new_unlock_time.isoformat()
+                                queue_state.current_preset_uuid = next_request.preset.uuid
+                                queue_state.unlock_timestamp = new_unlock_time.isoformat()
 
-                                actions_to_take.append({
-                                    "type": "ROTATE",
-                                    "guild_id": int(guild_id_str),
-                                    "role_id": int(role_id_str),
-                                    "new_preset": next_request["preset"],
-                                    "requester_id": next_request["user_id"],
-                                })
+                                actions_to_take.append(RotationAction(
+                                    guild_id=int(guild_id_str),
+                                    role_id=int(role_id_str),
+                                    new_preset=next_request.preset,
+                                    requester_id=next_request.user_id,
+                                ))
                             else:
-                                # 仅解锁，不重置
-                                queue_state["unlock_timestamp"] = None
+                                queue_state.unlock_timestamp = None
 
             if data_changed:
                 await self.save_data(force=True)
-
         return actions_to_take

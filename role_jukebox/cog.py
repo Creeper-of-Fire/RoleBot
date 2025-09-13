@@ -13,7 +13,7 @@ from discord.ext import tasks
 
 import config
 from role_jukebox.admin_view import PresetAdminView
-from role_jukebox.role_jukebox_manager import RoleJukeboxManager
+from role_jukebox.role_jukebox_manager import RoleJukeboxManager, Preset
 from role_jukebox.view import RoleJukeboxView
 from utility.feature_cog import FeatureCog
 from utility.helpers import try_get_member
@@ -125,30 +125,16 @@ class RoleJukeboxCog(FeatureCog, name="RoleJukebox"):
     # --- VIP Sub-group ---
     my = app_commands.Group(name="我的", description="我的专属预设管理", parent=jukebox)
 
-    @my.command(name="添加专属预设", description="添加一个我的专属预设")
-    @app_commands.describe(name="预设名称", color="颜色 (HEX格式, 如#FF0000)", icon="可选的表情符号")
-    async def add_my_preset(self, interaction: discord.Interaction, name: str, color: str, icon: Optional[str] = None):
-        if not self.is_vip(interaction.user):
-            await interaction.response.send_message("❌ 此功能仅限权区用户使用。", ephemeral=True)
-            return
+    # TODO 添加一个个人的预设管理面板
 
-        try:
-            Color.from_str(color)
-        except ValueError:
-            await interaction.response.send_message("❌ 颜色格式无效，请输入HEX格式 (例如: `#FF5733`)。", ephemeral=True)
-            return
-
-        success, msg = await self.jukebox_manager.add_user_preset(interaction.user.id, interaction.guild_id, name, color, icon)
-        await interaction.response.send_message(f"✅ {msg}" if success else f"❌ {msg}", ephemeral=True)
-
-    async def _apply_preset_to_role(self, role: discord.Role, preset: dict, reason: str):
+    async def _apply_preset_to_role(self, role: discord.Role, preset: Preset, reason: str):
         """一个辅助函数，用于将预设应用到身份组，包含图标处理。"""
-        name = preset['name']
-        color = Color.from_str(preset['color'])
-        icon_url = preset.get('icon')
+        name = preset.name
+        color = Color.from_str(preset.color)
+        icon_url = preset.icon_url
         icon_bytes = None
 
-        self.logger.info(f"以颜色 {color} 和图标 {icon_url} 更新身份组 {role.name} 为 {name}")
+        self.logger.info(f"Applying preset '{name}' ({preset.uuid}) to role {role.name}")
 
         if icon_url:
             try:
@@ -156,7 +142,7 @@ class RoleJukeboxCog(FeatureCog, name="RoleJukebox"):
                     if resp.status == 200:
                         icon_bytes = await resp.read()
                     else:
-                        self.logger.warning(f"Failed to download icon from {icon_url}, status: {resp.status}")
+                        self.logger.warning(f"Failed to download icon from {icon_url}")
             except Exception as e:
                 self.logger.error(f"Error downloading icon from {icon_url}: {e}")
 
@@ -185,37 +171,53 @@ class RoleJukeboxCog(FeatureCog, name="RoleJukebox"):
     async def process_expirations_task(self):
         actions = await self.jukebox_manager.process_expirations()
         for action in actions:
-            guild = self.bot.get_guild(action['guild_id'])
-            role = guild.get_role(action['role_id']) if guild else None
+            guild = self.bot.get_guild(action.guild_id)
+            role = guild.get_role(action.role_id) if guild else None
             if not guild or not role:
                 self.logger.warning(f"Jukebox: Can't find guild or role for action: {action}")
                 continue
 
             try:
-                if action['type'] == 'ROTATE':
-                    self.logger.info(f"Jukebox: Rotating role {role.id} in guild {guild.id}")
-                    new_preset = action['new_preset']
-                    requester = await try_get_member(guild, action['requester_id'])
+                self.logger.info(f"Jukebox: Rotating role {role.id} in guild {guild.id}")
+                new_preset = action.new_preset
+                requester = await try_get_member(guild, action.requester_id)
 
-                    # 身份组外观直接在所有持有者身上改变。
+                # 1. 应用新预设
+                await self._apply_preset_to_role(role, new_preset, "点歌队列轮换")
 
-                    # 1. 应用新预设
-                    color = Color.from_str(new_preset['color'])
-                    await self._apply_preset_to_role(role, action['new_preset'], "点歌队列轮换")
+                # 2. 确保请求者拥有该身份组
+                if requester and role not in requester.roles:
+                    await requester.add_roles(role, reason="排队请求生效")
 
-                    # 2. 确保请求者拥有该身份组
-                    if requester and role not in requester.roles:
-                        await requester.add_roles(role, reason="排队请求生效")
-
-                    # 3. (可选) 通知请求者
-                    if requester:
-                        try:
-                            await requester.send(f"你在服务器 **{guild.name}** 的排队请求已生效！身份组已变更为 **{new_preset['name']}**。")
-                        except discord.Forbidden:
-                            pass
+                # 3. (可选) 通知请求者
+                if requester:
+                    try:
+                        await requester.send(f"你在服务器 **{guild.name}** 的排队请求已生效！身份组已变更为 **{new_preset.name}**。")
+                    except discord.Forbidden:
+                        pass
 
             except Exception as e:
                 self.logger.error(f"Error processing jukebox action {action}: {e}")
+
+    async def live_update_role_by_preset_uuid(self, preset_uuid: str):
+        """
+        当一个预设被更新后，查找所有正在使用此预设的活跃队列并更新其身份组外观。
+        """
+        preset = self.jukebox_manager.get_preset_by_uuid(preset_uuid)
+        if not preset:
+            return
+
+        self.logger.info(f"Performing live update for preset UUID: {preset_uuid}")
+
+        active_queues = self.jukebox_manager.get_all_queues_using_preset(preset_uuid)
+        for guild_id, role_id in active_queues:
+            guild = self.bot.get_guild(guild_id)
+            if not guild: continue
+
+            role = guild.get_role(role_id)
+            if role:
+                self.logger.info(f"Found active role {role.name} in guild {guild.name} using updated preset. Applying changes.")
+                await self._apply_preset_to_role(role, preset, "预设被管理员/所有者修改")
 
     async def _upload_icon_and_get_url(self, guild_id: int, image_bytes: bytes, original_filename: str) -> Optional[str]:
         """将图片二进制数据上传到专用频道并返回永久URL。"""
