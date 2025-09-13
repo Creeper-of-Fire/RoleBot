@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import List, Optional, Dict, Any, TypeVar, Type
+
+from timed_role.timer import UTC8
 
 # 用于 from_dict 方法的泛型
 T = TypeVar('T')
@@ -47,8 +50,21 @@ class QueueState:
     unlock_timestamp: Optional[str] = None  # 存储ISO格式的字符串
     pending_requests: List[PendingRequest] = field(default_factory=list)
 
+    @property
+    def is_locked(self) -> bool:
+        return self.unlock_timestamp is not None and datetime.fromisoformat(self.unlock_timestamp) > datetime.now(UTC8)
+
     @classmethod
     def from_dict(cls: Type[T], data: Dict[str, Any]) -> T:
+        if 'status' in data:
+            del data['status']
+
+        if 'current_preset' in data:
+            del data['current_preset']
+
+        if 'controller_id' in data:
+            del data['controller_id']
+
         # 特殊处理嵌套的 PendingRequest 列表
         requests_data = data.get('pending_requests', [])
         data['pending_requests'] = [PendingRequest.from_dict(req) for req in requests_data]
