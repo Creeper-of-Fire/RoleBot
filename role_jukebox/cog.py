@@ -13,8 +13,9 @@ from discord.ext import tasks
 
 import config
 from role_jukebox.admin_view import PresetAdminView
+from role_jukebox.main_panel_view import RoleJukeboxView
+from role_jukebox.personal_view import UserPresetView
 from role_jukebox.role_jukebox_manager import RoleJukeboxManager, Preset
-from role_jukebox.view import RoleJukeboxView
 from utility.feature_cog import FeatureCog
 from utility.helpers import try_get_member
 
@@ -125,7 +126,20 @@ class RoleJukeboxCog(FeatureCog, name="RoleJukebox"):
     # --- VIP Sub-group ---
     my = app_commands.Group(name="我的", description="我的专属预设管理", parent=jukebox)
 
-    # TODO 添加一个个人的预设管理面板
+    @my.command(name="预设面板", description="管理我的专属身份组预设")
+    async def my_presets_panel(self, interaction: Interaction):
+        """为VIP用户打开他们自己的预设管理面板。"""
+        if not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("错误：无法获取您的成员信息。", ephemeral=True)
+            return
+
+        # 权限检查
+        if not self.is_vip(interaction.user):
+            await interaction.response.send_message("❌ 此功能为权区/前权区专属。", ephemeral=True)
+            return
+
+        view = UserPresetView(self, interaction.user)
+        await view.start(interaction, ephemeral=True)
 
     async def _apply_preset_to_role(self, role: discord.Role, preset: Preset, reason: str):
         """一个辅助函数，用于将预设应用到身份组，包含图标处理。"""

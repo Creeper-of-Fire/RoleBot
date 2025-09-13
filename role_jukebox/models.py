@@ -1,5 +1,7 @@
 # jukebox/models.py
 from __future__ import annotations
+
+import uuid
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any, TypeVar, Type
 
@@ -12,12 +14,14 @@ class Preset:
     """身份组外观预设。"""
     name: str
     color: str
-    uuid: str
+    uuid: str = field(default_factory=lambda: str(uuid.uuid4()))
     icon_url: Optional[str] = None
     owner_id: Optional[int] = None
 
     @classmethod
     def from_dict(cls: Type[T], data: Dict[str, Any]) -> T:
+        if 'icon' in data:
+            data['icon_url'] = data.pop('icon')
         return cls(**data)
 
 

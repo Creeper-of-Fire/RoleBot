@@ -1,12 +1,11 @@
 # jukebox/view.py
 from __future__ import annotations
 
-import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional, List
 
 import discord
-from discord import ui, Color, ButtonStyle, SelectOption, Interaction
+from discord import ui, Color, ButtonStyle, SelectOption
 
 from role_jukebox.role_jukebox_manager import Preset
 from timed_role.timer import UTC8
@@ -229,68 +228,3 @@ class LeaveButton(ActionButton):
         await interaction.user.remove_roles(role, reason="离开点播队列")
         await interaction.followup.send(f"✅ 已离开队列 **{role.name}**！", ephemeral=True)
         await self.view.update_view(interaction)
-
-
-class PresetEditModal(ui.Modal, title="创建/编辑身份组预设", ):
-    def __init__(self, cog: 'RoleJukeboxCog', is_admin: bool, existing_preset: Optional[Preset] = None):
-        super().__init__(timeout=300)
-        self.cog = cog
-        self.is_admin = is_admin
-        self.existing_preset = existing_preset
-
-        self.preset_name = ui.TextInput(label="预设名称", placeholder="例如：深海之心", required=True, max_length=50,
-                                        default=existing_preset.name if existing_preset else None)
-        self.add_item(self.preset_name)
-
-        self.preset_color = ui.TextInput(label="颜色 (HEX格式)", placeholder="例如：#4A90E2", required=True, min_length=7, max_length=7,
-                                         default=existing_preset.color if existing_preset else None)
-        self.add_item(self.preset_color)
-
-        self.preset_icon = ui.TextInput(label="图标URL (可选)", placeholder="留空或输入 '无' 以移除图标", required=False,
-                                        default=existing_preset.icon_url if existing_preset else None)
-        self.add_item(self.preset_icon)
-
-    async def on_submit(self, interaction: Interaction):
-        await interaction.response.defer(ephemeral=True, thinking=True)
-
-        # 验证颜色
-        try:
-            color_str = self.preset_color.value
-            if not color_str.startswith("#"): color_str = f"#{color_str}"
-            Color.from_str(color_str)
-        except ValueError:
-            await interaction.followup.send("❌ 颜色格式无效。", ephemeral=True)
-            return
-
-        icon_url_input = self.preset_icon.value
-        icon_url = icon_url_input if icon_url_input and icon_url_input.lower() not in ['无', 'none'] else None
-
-        if self.existing_preset:  # 更新模式
-            # 创建一个新对象来更新，而不是修改旧的
-            updated_preset = Preset(
-                uuid=self.existing_preset.uuid,
-                name=self.preset_name.value,
-                color=color_str,
-                icon_url=icon_url,
-                owner_id=self.existing_preset.owner_id
-            )
-        else:  # 创建模式
-            owner_id = None if self.is_admin else interaction.user.id
-            updated_preset = Preset(
-                uuid=str(uuid.uuid4()),
-                name=self.preset_name.value,
-                color=color_str,
-                icon_url=icon_url,
-                owner_id=owner_id
-            )
-
-        # PUT 操作
-        success, result_msg = await self.cog.jukebox_manager.upsert_preset(
-            updated_preset, guild_id=interaction.guild_id
-        )
-
-        await interaction.followup.send(result_msg, ephemeral=True)
-
-        if success:
-            # 触发实时更新
-            await self.cog.live_update_role_by_preset_uuid(updated_preset.uuid)
