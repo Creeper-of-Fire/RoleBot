@@ -22,6 +22,7 @@ from honor_system.post_module import HonorPostModuleCog
 from honor_system.role_sync_honor_module import RoleClaimHonorModuleCog
 from information.cog import HeartbeatInformationCog
 from role_application.cog import RoleApplicationCog
+from role_jukebox.cog import RoleJukeboxCog
 from role_sync.cog import RoleSyncCog
 from self_service.cog import SelfServiceCog
 from timed_role.cog import TimedRolesCog
@@ -150,6 +151,7 @@ class CogManager:
             "role_sync": RoleSyncCog,
             "role_application": RoleApplicationCog,
             "track_activity": TrackActivityCog,
+            "role_jukebox": RoleJukeboxCog,
             "honor_system": [
                 HonorCog,
                 HonorAnniversaryModuleCog,
