@@ -147,6 +147,7 @@ class CogManager:
             "backup": BackupCog,
             "self_service": SelfServiceCog,
             "fashion": FashionCog,
+            "heartbeat_information": HeartbeatInformationCog,
             "timed_role": TimedRolesCog,
             "role_sync": RoleSyncCog,
             "role_application": RoleApplicationCog,
@@ -160,7 +161,6 @@ class CogManager:
                 CupHonorModuleCog,
                 RoleClaimHonorModuleCog,
             ],
-            "heartbeat_information": HeartbeatInformationCog,
         }
 
     async def load_all_enabled(self):

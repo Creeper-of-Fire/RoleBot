@@ -155,12 +155,12 @@ class PresetSelect(ui.Select):
         if general_presets:
             options.append(SelectOption(label="--- 通用预设 ---", value="_disabled1"))
             for p in general_presets:
-                options.append(SelectOption(label=p['name'], value=f"g_{p['name']}", emoji=p.get('icon')))
+                options.append(SelectOption(label=p['name'], value=f"g_{p['name']}"))
 
         if user_presets:
             options.append(SelectOption(label="--- 我的预设 ---", value="_disabled2"))
             for p in user_presets:
-                options.append(SelectOption(label=p['name'], value=f"u_{p['name']}", emoji=p.get('icon')))
+                options.append(SelectOption(label=p['name'], value=f"u_{p['name']}"))
 
         if not options:
             options.append(SelectOption(label="没有可用的预设", value="_none"))
@@ -296,25 +296,38 @@ class PresetEditModal(ui.Modal, title="创建/编辑身份组预设"):
         def check(m):
             return m.author == interaction.user and m.channel == interaction.channel
 
+        icon_url = None  # 默认为 None
         try:
             msg = await self.cog.bot.wait_for('message', check=check, timeout=60.0)
 
-            icon_url = None
             if msg.attachments:
                 attachment = msg.attachments[0]
                 if not attachment.content_type.startswith('image/'):
                     await interaction.followup.send("❌ 上传的文件不是有效的图片格式。", ephemeral=True)
-                    await msg.delete()  # 清理用户消息
+                    await msg.delete()
                     return
-                icon_url = attachment.url
-                feedback_msg = "✅ 图片已收到！"
-                await msg.delete()  # 清理用户消息
+
+                # 1. 下载图片数据
+                image_bytes = await attachment.read()
+
+                # 2. 上传到存储库并获取永久URL
+                permanent_url = await self.cog._upload_icon_and_get_url(
+                    interaction.guild_id, image_bytes, attachment.filename
+                )
+
+                if permanent_url:
+                    icon_url = permanent_url
+                    feedback_msg = "✅ 图片已收到并永久保存！"
+                else:
+                    feedback_msg = "❌ 图标上传失败，请联系管理员检查后台日志。"
+
+                await msg.delete()
             elif msg.content.lower() in ['跳过', '无', 'skip', 'none']:
                 feedback_msg = "☑️ 已跳过图标设置。"
-                await msg.delete()  # 清理用户消息
+                await msg.delete()
             else:
                 await interaction.followup.send("❓ 未识别到图片或有效指令，操作已取消。", ephemeral=True)
-                await msg.delete()  # 清理用户消息
+                await msg.delete()
                 return
 
             await interaction.edit_original_response(content=feedback_msg)
@@ -323,11 +336,11 @@ class PresetEditModal(ui.Modal, title="创建/编辑身份组预设"):
             await interaction.edit_original_response(content="⌛ 操作超时，已自动取消。")
             return
 
-        # 保存预设
+        # 保存预设，现在 icon_url 是永久的了
         name = self.preset_name.value
         if self.is_admin:
             success, result_msg = await self.cog.jukebox_manager.add_general_preset(interaction.guild_id, name, color_str, icon_url)
         else:
-            success, result_msg = await self.cog.jukebox_manager.add_user_preset(interaction.user.id,interaction.guild_id, name, color_str, icon_url)
+            success, result_msg = await self.cog.jukebox_manager.add_user_preset(interaction.user.id, interaction.guild_id, name, color_str, icon_url)
 
         await interaction.followup.send(result_msg, ephemeral=True)

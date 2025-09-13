@@ -179,6 +179,41 @@ class RoleJukeboxManager:
                 await self.save_data()
         return preset_found
 
+    def get_all_user_presets(self) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        获取所有用户的自定义预设。
+        :return: 一个字典，键是用户ID（字符串），值是该用户的预设列表。
+        """
+        # 返回一个字典，包含所有用户的 "custom_presets" 列表
+        return {
+            user_id: user_data.get("custom_presets", [])
+            for user_id, user_data in self._data.get("users", {}).items()
+        }
+
+    async def force_unlock_all_queues(self, guild_id: int) -> int:
+        """
+        强制解锁指定服务器的所有队列。
+        :param guild_id: 服务器ID。
+        :return: 被解锁的队列数量。
+        """
+        unlocked_count = 0
+        data_changed = False
+        async with self._lock:
+            guild_data = self._get_or_create_guild_data(guild_id)
+            queues = guild_data.get("queues", {})
+
+            for role_id_str, queue_state in queues.items():
+                # 只要存在 unlock_timestamp，就将其移除
+                if queue_state.get("unlock_timestamp"):
+                    queue_state["unlock_timestamp"] = None
+                    unlocked_count += 1
+                    data_changed = True
+
+            if data_changed:
+                await self.save_data(force=True)
+
+        return unlocked_count
+
     async def change_or_claim_queue(self, guild_id: int, user_id: int, role_id: int, preset: Dict[str, Any]) -> Tuple[bool, str]:
         """
         用户尝试变更一个可用的队列，或点播一个尚未初始化的队列。
