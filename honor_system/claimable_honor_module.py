@@ -60,6 +60,14 @@ class ClaimableHonorView(ui.View):
             return
 
         honor_uuid = panel_info['honor_uuid']
+
+        # 检查该荣誉是否仍在配置文件的可领取列表中
+        guild_config = config_data.HONOR_CONFIG.get(interaction.guild_id, {})
+        claimable_uuids = guild_config.get("claimable_honors", [])
+        if honor_uuid not in claimable_uuids:
+            await interaction.followup.send("❌ 此荣誉当前已无法通过此面板领取，可能活动已结束/管理员已移除。", ephemeral=True)
+            return
+
         honor_def, role = await self._get_honor_and_role(interaction, honor_uuid)
         if not honor_def or not role:
             return
