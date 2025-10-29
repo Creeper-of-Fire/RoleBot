@@ -18,7 +18,7 @@ except ImportError:
 
 import typing
 from datetime import datetime, timezone
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import discord
 import psutil
@@ -68,10 +68,12 @@ class CoreCog(commands.Cog, name="Core"):
         self.logger.info("CoreCog 已加载，正在启动后台任务...")
         self._update_all_caches_task.start()
         self.update_registered_embeds_task.start()
+        self._backup_data_task.start()
 
     def cog_unload(self):
         self._update_all_caches_task.cancel()
         self.update_registered_embeds_task.cancel()
+        self._backup_data_task.cancel()
 
     @tasks.loop(hours=1)
     async def _update_all_caches_task(self):
@@ -118,6 +120,45 @@ class CoreCog(commands.Cog, name="Core"):
             await manager.refresh_from_config()
         self.bot.logger.info(f"已完成对 {len(managers)} 个管理器的刷新。")
 
+    @tasks.loop(hours=12)
+    async def _backup_data_task(self):
+        """每12小时自动备份 data 目录。"""
+        self.logger.info("开始执行计划的数据备份任务...")
+
+        if not config.BACKUP_CHANNEL_ID:
+            self.logger.warning("未配置 BACKUP_CHANNEL_ID，自动备份任务跳过。")
+            return
+
+        channel = self.bot.get_channel(config.BACKUP_CHANNEL_ID)
+        if not isinstance(channel, discord.TextChannel):
+            self.logger.error(f"找不到备份频道 ID: {config.BACKUP_CHANNEL_ID} 或该频道不是文本频道。")
+            return
+
+        try:
+            backup_file, message = await self._create_backup_zip()
+
+            if backup_file:
+                await channel.send(
+                    content=f"📦 **自动数据备份**\n"
+                            f"已于 {discord.utils.format_dt(datetime.now(), style='F')} 完成 `data` 目录的自动备份。",
+                    file=backup_file
+                )
+                self.logger.info(f"自动数据备份成功，文件已发送至频道 #{channel.name}。")
+            else:
+                # message 将包含原因，例如 "目录为空"
+                await channel.send(f"ℹ️ **自动数据备份状态**\n{message}")
+                self.logger.info(f"自动数据备份跳过: {message}")
+        except discord.errors.Forbidden:
+            self.logger.error(f"机器人没有权限在频道 #{channel.name} ({channel.id}) 发送消息或上传文件。")
+        except Exception as e:
+            self.logger.error(f"执行自动数据备份任务时发生未知错误: {e}", exc_info=True)
+            try:
+                await channel.send(f"❌ **自动数据备份失败**\n执行备份时发生严重错误，请检查机器人日志。")
+            except Exception:
+                pass  # 避免在无法发送错误消息时出现级联错误
+
+
+    @_backup_data_task.before_loop
     @update_registered_embeds_task.before_loop
     @_update_all_caches_task.before_loop
     async def before_cache_update_task(self):
@@ -185,7 +226,7 @@ class CoreCog(commands.Cog, name="Core"):
     @app_commands.checks.has_permissions(manage_roles=True)
     async def system_status(self, interaction: discord.Interaction):
         """
-        【已增强】显示一个包含详细系统和 Redis 信息的监控面板。
+        显示一个包含详细系统和 Redis 信息的监控面板。
         """
         await interaction.response.defer(ephemeral=False, thinking=True)
 
@@ -253,7 +294,7 @@ class CoreCog(commands.Cog, name="Core"):
         embed.add_field(name="👥 缓存用户数", value=f"{len(self.bot.users)}", inline=True)
         embed.add_field(name="⏱️ 机器人运行时长", value=f"{uptime_str}", inline=False)
 
-        # --- 5. 【新】获取并添加 Redis 统计信息 ---
+        # --- 5. 获取并添加 Redis 统计信息 ---
         # 动态获取 TrackActivityCog 实例
         activity_cog: typing.Optional[TrackActivityCog] = self.bot.get_cog("TrackActivity")
 
@@ -288,6 +329,37 @@ class CoreCog(commands.Cog, name="Core"):
 
         await interaction.followup.send(embed=embed)
 
+    async def _create_backup_zip(self) -> tuple[Optional[discord.File], str]:
+        """
+        打包 data 目录并返回一个 discord.File 对象和一条消息。
+        如果目录为空或不存在，返回 (None, "无需备份的原因")。
+        如果打包失败，返回 (None, "错误信息")。
+        """
+        data_dir = "data"
+
+        if not os.path.isdir(data_dir) or not os.listdir(data_dir):
+            return None, f"ℹ️ `{data_dir}` 目录不存在或为空，无需备份。"
+
+        memory_file = io.BytesIO()
+        try:
+            with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
+                for root, dirs, files in os.walk(data_dir):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        arcname = os.path.relpath(file_path, data_dir)
+                        zf.write(file_path, arcname)
+        except Exception as e:
+            self.logger.error(f"创建数据备份 ZIP 时发生错误: {e}", exc_info=True)
+            return None, f"❌ 创建备份失败: `{e}`"
+
+        memory_file.seek(0)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{self.bot.user.name}的数据备份_{timestamp}.zip"
+        backup_file = discord.File(memory_file, filename=filename)
+
+        return backup_file, filename
+
     @core_group.command(name="获取数据备份", description="打包并发送 data 目录下的所有数据文件。")
     @app_commands.checks.has_permissions(manage_roles=True)
     async def backup_data(self, interaction: discord.Interaction):
@@ -302,43 +374,17 @@ class CoreCog(commands.Cog, name="Core"):
             f"服务器: {interaction.guild.name} ({interaction.guild.id})"
         )
 
-        data_dir = "data"
+        backup_file, message = await self._create_backup_zip()
 
-        # 检查 data 目录是否存在且不为空
-        if not os.path.isdir(data_dir) or not os.listdir(data_dir):
-            await interaction.followup.send(f"ℹ️ `{data_dir}` 目录不存在或为空，无需备份。", ephemeral=True)
-            return
-
-        # 在内存中创建一个二进制文件对象
-        memory_file = io.BytesIO()
-
-        # 创建一个指向内存文件的 ZipFile 对象
-        try:
-            with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
-                # 遍历 data 目录下的所有文件和子目录
-                for root, dirs, files in os.walk(data_dir):
-                    for file in files:
-                        # 获取文件的完整路径
-                        file_path = os.path.join(root, file)
-                        # 计算文件在 zip 包内的相对路径，以保持目录结构
-                        arcname = os.path.relpath(file_path, data_dir)
-                        # 将文件写入 zip 包
-                        zf.write(file_path, arcname)
-        except Exception as e:
-            self.logger.error(f"创建数据备份时发生错误: {e}", exc_info=True)
-            await interaction.followup.send(f"❌ 创建备份失败: `{e}`", ephemeral=True)
-            return
-
-        # 在写入完成后，将内存文件的指针移回开头，以便读取
-        memory_file.seek(0)
-
-        # 创建一个带时间戳的文件名
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{self.bot.user.name}的数据备份_{timestamp}.zip"
-
-        # 创建 discord.File 对象并发送
-        backup_file = discord.File(memory_file, filename=filename)
-        await interaction.followup.send(content=f"📦 {interaction.user.mention}，这是您请求的数据备份文件：", file=backup_file, ephemeral=False)
+        if backup_file:
+            await interaction.followup.send(
+                content=f"📦 {interaction.user.mention}，这是您请求的数据备份文件：",
+                file=backup_file,
+                ephemeral=False
+            )
+        else:
+            # message 包含原因 (例如，目录为空、出错等)
+            await interaction.followup.send(content=message, ephemeral=True)
 
 
 
