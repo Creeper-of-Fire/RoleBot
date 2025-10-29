@@ -156,31 +156,83 @@ class CupHonorEditModal(ui.Modal):
         new_uuid_str = str(new_honor_def.uuid)
         new_name = new_honor_def.name
 
-        # 检查点A: 与配置文件中的普通荣誉冲突
+        # 检查点: 与配置文件中的普通荣誉冲突
         guild_config = config_data.HONOR_CONFIG.get(interaction.guild_id, {})
         for config_honor in guild_config.get("definitions", []):
             # 如果是编辑操作，需要排除掉自身
             if self.original_uuid and self.original_uuid == config_honor['uuid']:
                 continue
             if config_honor['uuid'] == new_uuid_str:
-                await interaction.followup.send(f"❌ **UUID冲突！**\n此UUID已被普通荣誉 “{config_honor['name']}” 使用。", ephemeral=True)
-                return
-            if config_honor['name'] == new_name:
-                await interaction.followup.send(f"❌ **名称冲突！**\n此名称已被普通荣誉 “{config_honor['name']}” 使用。", ephemeral=True)
+                await interaction.followup.send(
+                    f"❌ **操作被阻止！**\n此UUID (`{new_uuid_str[:8]}...`) 被核心荣誉 **“{config_honor['name']}”** 所保留。\n"
+                    "杯赛荣誉系统不能修改由机器人配置文件定义的荣誉。请在JSON中更换一个新的UUID。",
+                    ephemeral=True
+                )
                 return
 
-        # 检查点B: 与JSON文件中的其他杯赛荣誉冲突
-        all_cup_honors = self.cog.cup_honor_manager.get_all_cup_honors()
-        for cup_honor in all_cup_honors:
-            # 如果是编辑操作，需要排除掉自身
-            if self.original_uuid and self.original_uuid == str(cup_honor.uuid):
-                continue
-            if str(cup_honor.uuid) == new_uuid_str:
-                await interaction.followup.send(f"❌ **UUID冲突！**\n此UUID已被杯赛荣誉 “{cup_honor.name}” 使用。", ephemeral=True)
+        # 直接查询数据库，检查是否存在任何同名但UUID不同的荣誉（包括已归档的）
+        with self.cog.honor_data_manager.get_db() as db:
+            from .models import HonorDefinition
+            conflicting_def = db.query(HonorDefinition).filter(
+                HonorDefinition.guild_id == self.guild_id,
+                HonorDefinition.name == new_name,
+                HonorDefinition.uuid != new_uuid_str  # 排除正在编辑的自身
+            ).one_or_none()
+
+            if conflicting_def:
+                # 发现了冲突，给出明确的解决指示
+                error_embed = discord.Embed(
+                    title="❌ 名称冲突！",
+                    description=f"荣誉名称 **“{new_name}”** 已被另一个荣誉占用。请查看下方详情并选择解决方案。",
+                    color=discord.Color.red()
+                )
+
+                # 尝试从杯赛管理器获取额外信息 (如过期时间)
+                conflicting_cup_honor = self.cog.cup_honor_manager.get_cup_honor_by_uuid(conflicting_def.uuid)
+
+                # 准备详情字段
+                details = [
+                    f"**UUID**: `{conflicting_def.uuid}`",
+                    f"**描述**: {conflicting_def.description or '无'}",
+                    f"**关联身份组**: {f'<@&{conflicting_def.role_id}>' if conflicting_def.role_id else '无'}",
+                    f"**状态**: {'⚠️ 已归档' if conflicting_def.is_archived else '✅ 活跃'}"
+                ]
+                if conflicting_cup_honor:
+                    exp_date = conflicting_cup_honor.cup_honor.expiration_date
+                    details.append(f"**过期时间**: <t:{int(exp_date.timestamp())}:F>")
+                    details.append(f"**类型**: 🏆 杯赛荣誉")
+                else:
+                    details.append(f"**类型**: ⚙️ 普通荣誉")
+
+
+                error_embed.add_field(
+                    name="冲突的荣誉详情",
+                    value="\n".join(details),
+                    inline=False
+                )
+
+                error_embed.add_field(
+                    name="如何解决？",
+                    value=(
+                        "1. **(覆盖)** 如果你想用当前配置**覆盖**这个已存在的荣誉，请将你提交的JSON中的`uuid`字段**修改为上方显示的冲突UUID**。\n\n"
+                        "2. **(创建新的)** 如果你想创建一个全新的荣誉，请返回并修改JSON中的`name`字段，确保它独一无二。\n\n"
+                        "3. **(腾出名称)** 如果你想保留旧荣誉但又要使用这个名字，请先**用冲突UUID覆盖并为它改名**（例如改成“xxxx_旧”或者“xxx-第一届”），提交后再用新UUID创建你的新荣誉。"
+                    ),
+                    inline=False
+                )
+                await interaction.followup.send(embed=error_embed, ephemeral=True)
                 return
-            if cup_honor.name == new_name:
-                await interaction.followup.send(f"❌ **名称冲突！**\n此名称已被杯赛荣誉 “{cup_honor.name}” 使用。", ephemeral=True)
-                return
+
+            # 在执行操作前，精确判断最终的操作类型
+            action_text = ""
+            existing_record_for_uuid = db.query(HonorDefinition).filter_by(uuid=new_uuid_str).one_or_none()
+
+            if self.is_new:
+                # 从“新增”流程开始
+                action_text = "覆盖" if existing_record_for_uuid else "创建"
+            else:
+                # 从“编辑”流程开始
+                action_text = "更新"
 
         # 4. 同步到主荣誉数据库
         try:
@@ -197,7 +249,6 @@ class CupHonorEditModal(ui.Modal):
         self.cog.cup_honor_manager.add_or_update_cup_honor(new_honor_def)
 
         # 6. 反馈
-        action_text = "更新" if not self.is_new else "创建"
         embed = discord.Embed(
             title=f"✅ 成功{action_text}杯赛荣誉",
             description=f"已成功{action_text}荣誉 **{new_honor_def.name}**。",
@@ -409,7 +460,7 @@ class CupHonorModuleCog(commands.Cog, name="CupHonorModule"):
         """每天运行一次，检查是否有杯赛头衔到期，并通知管理员。"""
         await self._perform_expiration_check()
 
-    # --- [核心改动] 3. 修改 before_loop，在启动时也调用辅助方法 ---
+    # --- before_loop，在启动时也调用辅助方法 ---
     @expiration_check_loop.before_loop
     async def before_expiration_check(self):
         """在任务开始前，等待机器人完全准备好，并立即执行一次检查。"""
