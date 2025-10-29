@@ -8,6 +8,7 @@ import json
 import typing
 import zipfile
 from datetime import datetime, timezone
+from functools import partial
 
 import discord
 from discord import app_commands
@@ -76,12 +77,12 @@ class BackupCog(commands.Cog, name="Backup"):
 
     # --- 核心备份逻辑 ---
 
-    async def _create_backup_data(self, guild: discord.Guild) -> dict:
+    def _blocking_create_backup_data(self, guild: discord.Guild) -> dict:
         """
-        生成包含服务器所有身份组信息的字典。
-        这是备份的核心数据生成函数。
+        [同步/阻塞] 生成包含服务器所有身份组信息的字典。
+        这个函数包含 CPU 密集型操作，应该在 executor 中运行。
         """
-        self.logger.info(f"开始为服务器 '{guild.name}' 生成身份组备份数据...")
+        self.logger.info(f"开始在后台线程为服务器 '{guild.name}' 生成身份组备份数据...")
 
         backup_data = {
             "backup_timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -89,7 +90,6 @@ class BackupCog(commands.Cog, name="Backup"):
             "guild_name": guild.name,
             "roles": []
         }
-
         # 从 position 高的（顶部的）角色开始备份
         sorted_roles = sorted(guild.roles, key=lambda r: r.position, reverse=True)
 
@@ -111,13 +111,26 @@ class BackupCog(commands.Cog, name="Backup"):
             }
             backup_data["roles"].append(role_data)
 
-        self.logger.info(f"身份组数据生成完毕，共处理了 {len(backup_data['roles'])} 个身份组。")
+        self.logger.info(f"后台身份组数据生成完毕，共处理了 {len(backup_data['roles'])} 个身份组。")
         return backup_data
 
-    async def _create_backup_file(self, backup_data: dict, backup_type: str) -> discord.File:
+    async def _create_backup_data_async(self, guild: discord.Guild) -> dict:
         """
-        将备份数据打包成一个压缩的 discord.File 对象。
+        [异步] 调用阻塞的数据生成函数，使其在后台线程池中运行，避免阻塞事件循环。
         """
+        # 使用 run_in_executor 将阻塞函数放到后台线程执行
+        loop = self.bot.loop
+        # 我们使用 partial 来包装函数和它的参数
+        func = partial(self._blocking_create_backup_data, guild)
+        backup_data = await loop.run_in_executor(None, func)
+        return backup_data
+
+    def _blocking_create_zip_file(self, backup_data: dict, backup_type: str, guild_name: str) -> tuple[io.BytesIO, str]:
+        """
+        [同步/阻塞] 将备份数据打包成一个压缩的内存文件对象。
+        这个函数包含 CPU 密集型和 I/O 型操作，应该在 executor 中运行。
+        """
+        self.logger.info("开始在后台线程中创建 ZIP 备份文件...")
         # 在内存中创建文件
         json_bytes = json.dumps(backup_data, indent=2).encode('utf-8')
         memory_file = io.BytesIO()
@@ -128,9 +141,21 @@ class BackupCog(commands.Cog, name="Backup"):
 
         memory_file.seek(0)
 
-        # 准备发送的文件
+        # 准备文件名
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{backup_type}_backup_{self.backup_guild.name}_{timestamp}.zip"
+        filename = f"{backup_type}_backup_{guild_name}_{timestamp}.zip"
+
+        self.logger.info(f"后台 ZIP 文件创建完毕: {filename}")
+        return memory_file, filename
+
+    async def _create_backup_file_async(self, backup_data: dict, backup_type: str) -> discord.File:
+        """
+        [异步] 调用阻塞的 ZIP 文件创建函数，并返回一个 discord.File 对象。
+        """
+        loop = self.bot.loop
+        # 同样使用 partial 包装函数和参数
+        func = partial(self._blocking_create_zip_file, backup_data, backup_type, self.backup_guild.name)
+        memory_file, filename = await loop.run_in_executor(None, func)
 
         return discord.File(memory_file, filename=filename)
 
@@ -155,10 +180,10 @@ class BackupCog(commands.Cog, name="Backup"):
                 await self._perform_member_cache_refresh(interaction=None)  # 内部调用，无交互
 
             # 1. 生成备份数据
-            data = await self._create_backup_data(self.backup_guild)
+            data = await self._create_backup_data_async(self.backup_guild)
 
             # 2. 创建文件
-            backup_file = await self._create_backup_file(data, backup_type)
+            backup_file = await self._create_backup_file_async(data, backup_type)
 
             # 3. 发送到频道
             role_count = len(data['roles'])
@@ -208,10 +233,10 @@ class BackupCog(commands.Cog, name="Backup"):
             await self._perform_member_cache_refresh(interaction)
 
             # 2. 生成备份数据
-            data = await self._create_backup_data(self.backup_guild)
+            data = await self._create_backup_data_async(self.backup_guild)
 
             # 3. 创建文件
-            backup_file = await self._create_backup_file(data, "MANUAL")
+            backup_file = await self._create_backup_file_async(data, "MANUAL")
 
             # 4. 发送到备份频道，并@用户
             await self.backup_channel.send(
