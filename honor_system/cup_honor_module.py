@@ -561,19 +561,49 @@ class CupHonorModuleCog(commands.Cog, name="CupHonorModule"):
             interaction: discord.Interaction,
             current: str,
     ) -> List[app_commands.Choice[str]]:
-        """为杯赛荣誉UUID参数提供自动补全选项。"""
+        """
+               为杯赛荣誉UUID参数提供自动补全选项。
+               选项会按过期时间降序排列，并在结果过多时提示用户。
+               """
+        # 1. 获取所有杯赛荣誉
         all_cup_honors = self.cup_honor_manager.get_all_cup_honors()
-
         if not all_cup_honors:
             return []
 
+        # 2. 按过期时间降序排序
+        #    这样最新、最晚到期的荣誉会优先显示在列表顶部
+        sorted_honors = sorted(
+            all_cup_honors,
+            key=lambda h: h.cup_honor.expiration_date,
+            reverse=True
+        )
+
+        # 3. 根据用户输入进行筛选
         choices = []
-        for honor_def in all_cup_honors:
-            choice_name = f"{honor_def.name} ({str(honor_def.uuid)[:8]})"
+        for honor_def in sorted_honors:
+            # 为了更好的用户体验，我们可以在名称中也加入过期日期
+            expiration_str = honor_def.cup_honor.expiration_date.strftime('%Y-%m-%d')
+            choice_name = f"{honor_def.name} (至{expiration_str}) ({str(honor_def.uuid)[:8]})"
+
+            # 模糊匹配用户输入
             if current.lower() in choice_name.lower():
                 choices.append(app_commands.Choice(name=choice_name, value=str(honor_def.uuid)))
 
-        return choices[:25]
+        # 4. 处理Discord的25个选项上限
+        if len(choices) > 25:
+            # 如果筛选出的结果超过25个，只返回前24个，并附带一条提示信息
+            final_choices = choices[:24]
+            final_choices.append(
+                app_commands.Choice(
+                    name="⚠️ 结果过多，请输入更精确的关键词进行搜索...",
+                    # 这个value可以是任何不会被正常解析的字符串，防止用户意外选中
+                    value="too_many_results_to_show"
+                )
+            )
+            return final_choices
+        else:
+            # 如果结果在25个以内，直接返回
+            return choices
 
     @cup_honor_group.command(name="管理", description="通过JSON编辑器管理所有杯赛头衔。")
     @app_commands.checks.has_permissions(manage_roles=True)
