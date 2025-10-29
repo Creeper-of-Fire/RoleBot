@@ -549,27 +549,6 @@ class HonorCog(FeatureCog, name="Honor"):
             for guild_id, guild_config in config_data.HONOR_CONFIG.items():
                 self.logger.info(f"同步服务器 {guild_id} 的荣誉...")
                 for config_def in guild_config.get("definitions", []):
-                    # --- 冲突处理逻辑 ---
-                    # 查找是否存在名称相同但 UUID 不同的旧定义
-                    conflicting_old_def = db.query(HonorDefinition).filter(
-                        HonorDefinition.guild_id == guild_id,
-                        HonorDefinition.name == config_def['name'],
-                        HonorDefinition.uuid != config_def['uuid']
-                    ).one_or_none()
-
-                    if conflicting_old_def:
-                        # 发现冲突，归档旧定义
-                        self.logger.warning(
-                            f"发现名称冲突: 荣誉 '{config_def['name']}' 已存在 (UUID: {conflicting_old_def.uuid})，"
-                            f"但新配置使用 UUID: {config_def['uuid']}。将归档旧定义。"
-                        )
-                        conflicting_old_def.is_archived = True
-                        # 可选：重命名以彻底解决 UNIQUE 约束，即使在归档状态下
-                        conflicting_old_def.name = f"{conflicting_old_def.name}_archived_{int(time.time())}"
-                        db.add(conflicting_old_def)
-                        db.flush()  # 立即将更改写入会话，以便后续操作不会再次冲突
-
-                    # --- 原有的同步逻辑 ---
                     # 查找当前配置项对应的数据库记录 (通过 UUID)
                     db_def = db.query(HonorDefinition).filter_by(uuid=config_def['uuid']).one_or_none()
 

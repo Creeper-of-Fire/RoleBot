@@ -173,56 +173,6 @@ class CupHonorEditModal(ui.Modal):
         # 直接查询数据库，检查是否存在任何同名但UUID不同的荣誉（包括已归档的）
         with self.cog.honor_data_manager.get_db() as db:
             from .models import HonorDefinition
-            conflicting_def = db.query(HonorDefinition).filter(
-                HonorDefinition.guild_id == self.guild_id,
-                HonorDefinition.name == new_name,
-                HonorDefinition.uuid != new_uuid_str  # 排除正在编辑的自身
-            ).one_or_none()
-
-            if conflicting_def:
-                # 发现了冲突，给出明确的解决指示
-                error_embed = discord.Embed(
-                    title="❌ 名称冲突！",
-                    description=f"荣誉名称 **“{new_name}”** 已被另一个荣誉占用。请查看下方详情并选择解决方案。",
-                    color=discord.Color.red()
-                )
-
-                # 尝试从杯赛管理器获取额外信息 (如过期时间)
-                conflicting_cup_honor = self.cog.cup_honor_manager.get_cup_honor_by_uuid(conflicting_def.uuid)
-
-                # 准备详情字段
-                details = [
-                    f"**UUID**: `{conflicting_def.uuid}`",
-                    f"**描述**: {conflicting_def.description or '无'}",
-                    f"**关联身份组**: {f'<@&{conflicting_def.role_id}>' if conflicting_def.role_id else '无'}",
-                    f"**状态**: {'⚠️ 已归档' if conflicting_def.is_archived else '✅ 活跃'}"
-                ]
-                if conflicting_cup_honor:
-                    exp_date = conflicting_cup_honor.cup_honor.expiration_date
-                    details.append(f"**过期时间**: <t:{int(exp_date.timestamp())}:F>")
-                    details.append(f"**类型**: 🏆 杯赛荣誉")
-                else:
-                    details.append(f"**类型**: ⚙️ 普通荣誉")
-
-
-                error_embed.add_field(
-                    name="冲突的荣誉详情",
-                    value="\n".join(details),
-                    inline=False
-                )
-
-                error_embed.add_field(
-                    name="如何解决？",
-                    value=(
-                        "1. **(覆盖)** 如果你想用当前配置**覆盖**这个已存在的荣誉，请将你提交的JSON中的`uuid`字段**修改为上方显示的冲突UUID**。\n\n"
-                        "2. **(创建新的)** 如果你想创建一个全新的荣誉，请返回并修改JSON中的`name`字段，确保它独一无二。\n\n"
-                        "3. **(腾出名称)** 如果你想保留旧荣誉但又要使用这个名字，请先**用冲突UUID覆盖并为它改名**（例如改成“xxxx_旧”或者“xxx-第一届”），提交后再用新UUID创建你的新荣誉。"
-                    ),
-                    inline=False
-                )
-                await interaction.followup.send(embed=error_embed, ephemeral=True)
-                return
-
             # 在执行操作前，精确判断最终的操作类型
             action_text = ""
             existing_record_for_uuid = db.query(HonorDefinition).filter_by(uuid=new_uuid_str).one_or_none()

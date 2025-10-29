@@ -58,11 +58,6 @@ class HonorDefinition(Base):
     # 反向关系，可以让我们通过一个 HonorDefinition 找到所有拥有它的用户
     owners: Mapped[List["UserHonor"]] = relationship(back_populates="definition")
 
-    # 确保 guild_id 和 name 的组合是唯一的
-    __table_args__ = (
-        UniqueConstraint('guild_id', 'name', name='_guild_name_uc'),
-    )
-
 
 class UserHonor(Base):
     """记录哪个用户拥有哪个荣誉，这是用户和荣誉之间的“桥梁”"""
