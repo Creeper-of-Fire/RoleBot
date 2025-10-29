@@ -15,6 +15,7 @@ from core.embed_link.embed_manager import EmbedLinkManager
 from utility.feature_cog import FeatureCog
 from utility.paginated_view import PaginatedView
 from .anniversary_module import HonorAnniversaryModuleCog
+from .cup_honor_json_manager import CupHonorJsonManager
 from .honor_data_manager import HonorDataManager
 from .models import HonorDefinition, UserHonor
 from .role_sync_honor_module import RoleClaimHonorModuleCog
@@ -443,6 +444,7 @@ class HonorCog(FeatureCog, name="Honor"):
     def __init__(self, bot: 'RoleBot'):
         super().__init__(bot)  # 调用父类 (FeatureCog) 的构造函数
         self.data_manager = HonorDataManager.getDataManager(logger=self.logger)
+        self.cup_honor_manager = CupHonorJsonManager.get_instance(logger=self.logger)
         self.running_backfill_tasks: Dict[int, asyncio.Task] = {}
         # 安全缓存，用于存储此模块管理的所有身份组ID
         self.safe_honor_role_ids: set[int] = set()
@@ -529,18 +531,25 @@ class HonorCog(FeatureCog, name="Honor"):
         await self.bot.wait_until_ready()
         self.logger.info("HonorCog: 开始同步所有服务器的荣誉定义...")
 
-        # 1. 收集配置文件中所有的 UUID，用于最后归档操作
+        # 1. 从配置文件收集普通荣誉UUID
         all_config_uuids = set()
         for guild_id, guild_config in config_data.HONOR_CONFIG.items():
             for honor_def in guild_config.get("definitions", []):
                 all_config_uuids.add(honor_def['uuid'])
+
+        # 2. 从JSON文件收集杯赛荣誉UUID
+        self.cup_honor_manager.load_data()  # 确保加载最新数据
+        all_cup_honor_uuids = {str(honor.uuid) for honor in self.cup_honor_manager.get_all_cup_honors()}
+
+        # 3. 合并所有合法的、不应被归档的荣誉UUID
+        all_legitimate_uuids = all_config_uuids.union(all_cup_honor_uuids)
 
         # 2. 遍历配置，处理创建和更新
         with self.data_manager.get_db() as db:
             for guild_id, guild_config in config_data.HONOR_CONFIG.items():
                 self.logger.info(f"同步服务器 {guild_id} 的荣誉...")
                 for config_def in guild_config.get("definitions", []):
-                    # --- 新增的冲突处理逻辑 ---
+                    # --- 冲突处理逻辑 ---
                     # 查找是否存在名称相同但 UUID 不同的旧定义
                     conflicting_old_def = db.query(HonorDefinition).filter(
                         HonorDefinition.guild_id == guild_id,
@@ -587,10 +596,11 @@ class HonorCog(FeatureCog, name="Honor"):
                         db.add(new_def)
                         self.logger.info(f"  -> 已创建新荣誉: {config_def['name']}")
 
-            # 3. 归档在配置文件中已不存在的荣誉
+            # 5. 归档操作：只归档那些既不在config也不在cup_honor.json中的荣誉
             db_uuids_to_check = db.query(HonorDefinition.uuid).filter(HonorDefinition.is_archived == False).all()
             db_uuids_set = {uuid_tuple[0] for uuid_tuple in db_uuids_to_check}
-            uuids_to_archive = db_uuids_set - all_config_uuids
+
+            uuids_to_archive = db_uuids_set - all_legitimate_uuids
 
             if uuids_to_archive:
                 self.logger.warning(f"发现 {len(uuids_to_archive)} 个需要归档的荣誉...")
@@ -602,7 +612,7 @@ class HonorCog(FeatureCog, name="Honor"):
 
         self.logger.info("HonorCog: 荣誉定义同步完成。")
 
-    # --- 新增的管理员指令组 ---
+    # --- 管理员指令组 ---
     honor_admin_group = app_commands.Group(
         name="荣誉头衔丨核心",
         description="管理荣誉头衔",

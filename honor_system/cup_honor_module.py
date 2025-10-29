@@ -8,6 +8,7 @@ import os
 import re
 import threading
 import typing
+import uuid
 from typing import List
 from typing import Optional
 from typing import Set
@@ -15,13 +16,17 @@ from typing import Tuple
 from zoneinfo import ZoneInfo
 
 import discord
-from discord import app_commands
+from discord import app_commands, ui
 from discord.ext import commands, tasks
+from pydantic import ValidationError
 
 import config_data
+from utility.paginated_view import PaginatedView
 from utility.views import ConfirmationView
+from .cup_honor_json_manager import CupHonorJsonManager
+from .cup_honor_models import CupHonorDefinition, CupHonorDetails
 from .honor_data_manager import HonorDataManager
-from .models import UserHonor
+from .models import UserHonor, HonorDefinition
 
 if typing.TYPE_CHECKING:
     from main import RoleBot
@@ -91,6 +96,274 @@ class NotificationStateManager:
         return honor_uuid in self.notified_uuids
 
 
+class CupHonorEditModal(ui.Modal):
+    """一个用于通过JSON编辑杯赛荣誉的模态框"""
+
+    def __init__(self, cog: 'CupHonorModuleCog', guild_id: int, parent_view: 'CupHonorManageView', honor_def: Optional[CupHonorDefinition] = None):
+        self.cog = cog
+        self.guild_id = guild_id
+        self.parent_view = parent_view  # 保存父视图实例
+        self.original_uuid = str(honor_def.uuid) if honor_def else None
+        self.is_new = honor_def is None
+
+        super().__init__(title="编辑杯赛荣誉 (JSON)" if not self.is_new else "新增杯赛荣誉 (JSON)", timeout=1200)
+
+        # 生成模板或现有数据的JSON
+        if self.is_new:
+            # 创建一个带新UUID的模板
+            template_def = CupHonorDefinition(
+                uuid=uuid.uuid4(),
+                name="新杯赛荣誉",
+                description="请填写描述",
+                role_id=123456789012345678,
+                cup_honor=CupHonorDetails(
+                    expiration_date=datetime.datetime.now(ZoneInfo("Asia/Shanghai")) + datetime.timedelta(days=30)
+                )
+            )
+            json_text = json.dumps(template_def.model_dump(mode='json'), indent=4, ensure_ascii=False)
+        else:
+            json_text = json.dumps(honor_def.model_dump(mode='json'), indent=4, ensure_ascii=False)
+
+        self.json_input = ui.TextInput(
+            label="荣誉定义 (JSON格式)",
+            style=discord.TextStyle.paragraph,
+            default=json_text,
+            required=True,
+            min_length=50
+        )
+        self.add_item(self.json_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        json_str = self.json_input.value
+
+        # 1. 校验JSON格式
+        try:
+            data = json.loads(json_str)
+        except json.JSONDecodeError as e:
+            await interaction.followup.send(f"❌ **JSON格式错误！**\n请检查你的语法，错误信息: `{e}`", ephemeral=True)
+            return
+
+        # 2. Pydantic模型验证
+        try:
+            new_honor_def = CupHonorDefinition.model_validate(data)
+        except ValidationError as e:
+            error_details = "\n".join([f"- `{' -> '.join(map(str, err['loc']))}`: {err['msg']}" for err in e.errors()])
+            await interaction.followup.send(f"❌ **数据校验失败！**\n请根据以下提示修改：\n{error_details}", ephemeral=True)
+            return
+
+        # 3. 唯一性校验 (UUID和名称)
+        new_uuid_str = str(new_honor_def.uuid)
+        new_name = new_honor_def.name
+
+        # 检查点A: 与配置文件中的普通荣誉冲突
+        guild_config = config_data.HONOR_CONFIG.get(interaction.guild_id, {})
+        for config_honor in guild_config.get("definitions", []):
+            # 如果是编辑操作，需要排除掉自身
+            if self.original_uuid and self.original_uuid == config_honor['uuid']:
+                continue
+            if config_honor['uuid'] == new_uuid_str:
+                await interaction.followup.send(f"❌ **UUID冲突！**\n此UUID已被普通荣誉 “{config_honor['name']}” 使用。", ephemeral=True)
+                return
+            if config_honor['name'] == new_name:
+                await interaction.followup.send(f"❌ **名称冲突！**\n此名称已被普通荣誉 “{config_honor['name']}” 使用。", ephemeral=True)
+                return
+
+        # 检查点B: 与JSON文件中的其他杯赛荣誉冲突
+        all_cup_honors = self.cog.cup_honor_manager.get_all_cup_honors()
+        for cup_honor in all_cup_honors:
+            # 如果是编辑操作，需要排除掉自身
+            if self.original_uuid and self.original_uuid == str(cup_honor.uuid):
+                continue
+            if str(cup_honor.uuid) == new_uuid_str:
+                await interaction.followup.send(f"❌ **UUID冲突！**\n此UUID已被杯赛荣誉 “{cup_honor.name}” 使用。", ephemeral=True)
+                return
+            if cup_honor.name == new_name:
+                await interaction.followup.send(f"❌ **名称冲突！**\n此名称已被杯赛荣誉 “{cup_honor.name}” 使用。", ephemeral=True)
+                return
+
+        # 4. 同步到主荣誉数据库
+        try:
+            await self.cog.sync_cup_honor_to_db(self.guild_id, new_honor_def, self.original_uuid)
+        except Exception as e:
+            self.cog.logger.error(f"同步杯赛荣誉到数据库时出错: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ **数据库同步失败！**\n在更新主荣誉表时发生错误: `{e}`", ephemeral=True)
+            return
+
+        # 5. 保存到JSON文件
+        # 如果是编辑且UUID变了，需要先删除旧的记录
+        if self.original_uuid and self.original_uuid != new_uuid_str:
+            self.cog.cup_honor_manager.delete_cup_honor(self.original_uuid)
+        self.cog.cup_honor_manager.add_or_update_cup_honor(new_honor_def)
+
+        # 6. 反馈
+        action_text = "更新" if not self.is_new else "创建"
+        embed = discord.Embed(
+            title=f"✅ 成功{action_text}杯赛荣誉",
+            description=f"已成功{action_text}荣誉 **{new_honor_def.name}**。",
+            color=discord.Color.green()
+        )
+        embed.add_field(name="UUID", value=f"`{new_honor_def.uuid}`", inline=False)
+        embed.add_field(name="关联身份组", value=f"<@&{new_honor_def.role_id}>", inline=True)
+        embed.add_field(name="过期时间", value=f"<t:{int(new_honor_def.cup_honor.expiration_date.timestamp())}:F>", inline=True)
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+        # 刷新管理面板
+        await self.parent_view.refresh_panel()
+
+
+class CupHonorManageView(PaginatedView):
+    def __init__(self, cog: 'CupHonorModuleCog'):
+        self.cog = cog
+
+        # 定义一个函数，用于获取并按【过期时间】排序所有荣誉数据
+        def data_provider():
+            all_honors = self.cog.cup_honor_manager.get_all_cup_honors()
+            # 按 expiration_date 降序排序 (最新/最晚到期的在前面)
+            return sorted(all_honors, key=lambda h: h.cup_honor.expiration_date, reverse=True)
+
+        # 调用父类的构造函数
+        super().__init__(
+            all_items_provider=data_provider,
+            items_per_page=20,
+            timeout=300
+        )
+
+    async def _rebuild_view(self):
+        """
+        【实现PaginatedView的抽象方法】
+        根据当前页的数据，重建视图的UI组件和Embed。
+        """
+        # 1. 清空所有旧的组件
+        self.clear_items()
+
+        # 2. 创建并设置Embed
+        self.embed = self.create_embed()
+
+        # 3. 获取当前页要显示的荣誉
+        current_page_honors: List[CupHonorDefinition] = self.get_page_items()
+
+        # 4. 根据当前页的荣誉创建下拉菜单
+        if current_page_honors:
+            # 创建选项
+            options = [
+                discord.SelectOption(
+                    label=f"{honor.name}",
+                    description=f"过期: {honor.cup_honor.expiration_date.strftime('%Y-%m-%d')} | UUID: {str(honor.uuid)[:8]}...",
+                    value=str(honor.uuid)
+                ) for honor in current_page_honors
+            ]
+
+            # 编辑下拉菜单
+            select_edit = ui.Select(placeholder="选择本页一个荣誉进行编辑...", options=options, custom_id="cup_honor_edit_select", row=0)
+            select_edit.callback = self.on_edit_select
+            self.add_item(select_edit)
+
+            # 删除下拉菜单
+            select_delete = ui.Select(placeholder="选择本页一个或多个荣誉进行删除...", options=options, custom_id="cup_honor_delete_select",
+                                      max_values=len(options), row=1)
+            select_delete.callback = self.on_delete_select
+            self.add_item(select_delete)
+
+        # 5. 添加不受分页影响的按钮
+        button_add = ui.Button(label="➕ 新增荣誉", style=discord.ButtonStyle.success, custom_id="cup_honor_add", row=2)
+        button_add.callback = self.on_add_button
+        self.add_item(button_add)
+
+        # 6. 添加分页控制按钮
+        self._add_pagination_buttons(row=4)
+
+    async def refresh_panel(self):
+        """
+        在不依赖特定交互对象的情况下，刷新视图自身附着的消息。
+        主要由模态框回调等外部操作调用。
+        """
+        if not self.message:
+            return
+
+        # 调用 PaginatedView 的内部方法来更新数据和UI
+        await self._update_data()
+        await self._rebuild_view()
+
+        try:
+            # 使用 self.embeds_to_send 获取要发送的embed列表
+            await self.message.edit(embeds=self.embeds_to_send, view=self)
+        except discord.NotFound:
+            self.cog.logger.warning(f"无法刷新杯赛荣誉管理面板，消息 {self.message.id} 可能已被删除。")
+        except Exception as e:
+            self.cog.logger.error(f"刷新荣誉管理视图时出错: {e}", exc_info=True)
+
+    def create_embed(self) -> discord.Embed:
+        embed = discord.Embed(title="杯赛荣誉管理面板 (JSON)", color=discord.Color.blue())
+        embed.description = (
+            "通过下方的控件来 **编辑**、**新增** 或 **删除** 杯赛荣誉。\n"
+            "所有操作都将通过一个 **JSON编辑器** 完成，请谨慎操作。\n\n"
+            "**操作指南:**\n"
+            "1.  **编辑**: 从下拉菜单中选择一个现有荣誉，会弹出其JSON配置供您修改。\n"
+            "2.  **新增**: 点击`新增荣誉`按钮，会弹出一个包含模板的JSON编辑器。\n"
+            "3.  **删除**: 从下拉菜单中选择要删除的荣誉，点击后会要求确认。\n"
+            "4.  **UUID**: 创建时会自动生成，**可以修改**，但必须是有效的UUID格式且全局唯一。\n"
+            "5.  **AI辅助**: 如果不熟悉JSON，可以将模板或现有数据粘贴给AI，告诉它你的修改需求，然后将结果粘贴回来。"
+        )
+        if not self.all_items:
+            embed.add_field(name="当前荣誉列表", value="*暂无杯赛荣誉定义。*", inline=False)
+        else:
+            honor_list_str = "\n".join([f"- **{h.name}** (`{str(h.uuid)[:8]}`...)" for h in self.get_page_items()])
+            embed.add_field(name=f"当前荣誉列表 (共 {len(self.get_page_items())}/{len(self.all_items)} 个)", value=honor_list_str, inline=False)
+        return embed
+
+    async def on_edit_select(self, interaction: discord.Interaction):
+        uuid_to_edit = interaction.data['values'][0]
+        honor_def = self.cog.cup_honor_manager.get_cup_honor_by_uuid(uuid_to_edit)
+        if not honor_def:
+            await interaction.response.send_message("❌ 错误：找不到该荣誉，可能已被删除。", ephemeral=True)
+            await self.refresh_panel()
+            return
+
+        modal = CupHonorEditModal(self.cog, interaction.guild_id, self, honor_def)
+        await interaction.response.send_modal(modal)
+
+    async def on_add_button(self, interaction: discord.Interaction):
+        modal = CupHonorEditModal(self.cog, interaction.guild_id, self)
+        await interaction.response.send_modal(modal)
+
+    async def on_delete_select(self, interaction: discord.Interaction):
+        uuids_to_delete = interaction.data['values']
+        if not uuids_to_delete:
+            await interaction.response.defer()
+            return
+
+        names_to_delete = []
+        for uuid_str in uuids_to_delete:
+            honor = self.cog.cup_honor_manager.get_cup_honor_by_uuid(uuid_str)
+            if honor:
+                names_to_delete.append(honor.name)
+
+        confirm_view = ConfirmationView(interaction.user)
+        await interaction.response.send_message(
+            f"⚠️ **确认删除？**\n你即将删除以下 **{len(names_to_delete)}** 个荣誉：\n- " + "\n- ".join(names_to_delete) +
+            "\n\n此操作会从JSON配置中移除它们，并**归档**其在数据库中的主定义（用户已获得的记录会保留，但荣誉将不再可用）。**此操作不可逆！**",
+            view=confirm_view,
+            ephemeral=True
+        )
+        await confirm_view.wait()
+
+        if confirm_view.value:
+            deleted_count = 0
+            for uuid_str in uuids_to_delete:
+                # 归档数据库记录
+                await self.cog.archive_honor_in_db(uuid_str)
+                # 从JSON删除
+                if self.cog.cup_honor_manager.delete_cup_honor(uuid_str):
+                    deleted_count += 1
+
+            await interaction.edit_original_response(content=f"✅ 成功删除 {deleted_count} 个荣誉。", view=None)
+            await self.refresh_panel()
+        else:
+            await interaction.edit_original_response(content="操作已取消。", view=None)
+
+
 class CupHonorModuleCog(commands.Cog, name="CupHonorModule"):
     """【荣誉子模块】管理手动的、有时效性的杯赛头衔。"""
 
@@ -98,6 +371,7 @@ class CupHonorModuleCog(commands.Cog, name="CupHonorModule"):
         self.bot = bot
         self.logger = bot.logger
         self.honor_data_manager = HonorDataManager.getDataManager(logger=self.logger)
+        self.cup_honor_manager = CupHonorJsonManager.get_instance(logger=self.logger)
         # 用于存储已发送过通知的荣誉UUID，防止重复提醒
         self.notification_manager = NotificationStateManager.get_instance(logger=self.logger)
         self.expiration_check_loop.start()
@@ -143,62 +417,59 @@ class CupHonorModuleCog(commands.Cog, name="CupHonorModule"):
         self.logger.info("机器人已就绪。正在执行启动时的杯赛头衔到期检查...")
         await self._perform_expiration_check()
 
-    @staticmethod
-    def _extract_cup_titles_from_definitions(guild_config: dict) -> dict:
-        """
-        从主荣誉定义列表中提取所有杯赛头衔。
-        通过检查每个定义中是否存在 `cup_honor` 键来实现。
+    # --- 数据库同步辅助函数 ---
+    async def sync_cup_honor_to_db(self, guild_id: int, honor_def: CupHonorDefinition, original_uuid_str: Optional[str] = None):
+        """将Pydantic模型的数据同步（插入或更新）到SQLAlchemy数据库。"""
+        with self.honor_data_manager.get_db() as db:
+            # 如果UUID改变了，需要将旧的记录归档
+            if original_uuid_str and original_uuid_str != str(honor_def.uuid):
+                old_db_def = db.query(HonorDefinition).filter_by(uuid=original_uuid_str).one_or_none()
+                if old_db_def:
+                    self.logger.warning(f"杯赛荣誉UUID从 {original_uuid_str} 变更为 {honor_def.uuid}，正在归档旧记录...")
+                    old_db_def.is_archived = True
+                    db.add(old_db_def)
 
-        Args:
-            guild_config: 单个服务器的 HONOR_CONFIG[guild_id] 配置字典。
+            # 查找或创建新的数据库记录
+            db_def = db.query(HonorDefinition).filter_by(uuid=str(honor_def.uuid)).one_or_none()
+            if not db_def:
+                db_def = HonorDefinition(uuid=str(honor_def.uuid), guild_id=guild_id)
+                self.logger.info(f"为杯赛荣誉 '{honor_def.name}' 创建新的数据库记录。")
 
-        Returns:
-            一个字典，格式为 {honor_uuid: {"expiration_date": "YYYY-MM-DD..."}}，
-            以便与模块内其他逻辑兼容。
-        """
-        cup_titles = {}
-        definitions = guild_config.get("definitions", [])
-        for honor_def in definitions:
-            cup_info = honor_def.get("cup_honor")
-            # 确保 cup_info 是一个字典并且包含 expiration_date
-            if isinstance(cup_info, dict) and "expiration_date" in cup_info:
-                honor_uuid = honor_def.get("uuid")
-                if honor_uuid:
-                    cup_titles[honor_uuid] = {
-                        "expiration_date": cup_info["expiration_date"]
-                    }
-        return cup_titles
+            # 更新数据
+            db_def.name = honor_def.name
+            db_def.description = honor_def.description
+            db_def.role_id = honor_def.role_id
+            db_def.hidden_until_earned = honor_def.hidden_until_earned
+            db_def.is_archived = False  # 确保是激活状态
+
+            db.add(db_def)
+            db.commit()
+
+    async def archive_honor_in_db(self, honor_uuid: str):
+        """在数据库中归档一个荣誉定义。"""
+        with self.honor_data_manager.get_db() as db:
+            db_def = db.query(HonorDefinition).filter_by(uuid=honor_uuid).one_or_none()
+            if db_def:
+                db_def.is_archived = True
+                db.add(db_def)
+                db.commit()
+                self.logger.info(f"已在数据库中归档荣誉 {honor_uuid}。")
 
     async def _check_guild_for_expired_titles(self, guild: discord.Guild, cup_cfg: dict, now: datetime.datetime):
         """处理单个服务器的过期检查逻辑。"""
-        guild_config = config_data.HONOR_CONFIG.get(guild.id, {})
-        titles = self._extract_cup_titles_from_definitions(guild_config)
+        titles = self.cup_honor_manager.get_all_cup_honors()
         notification_cfg = cup_cfg.get("notification", {})
 
         if not titles or not notification_cfg.get("channel_id") or not notification_cfg.get("admin_role_id"):
             self.logger.warning(f"服务器 {guild.name} 的杯赛头衔配置不完整，跳过。")
             return
 
-        for honor_uuid, title_info in titles.items():
+        for honor_def in titles:
+            honor_uuid = str(honor_def.uuid)
             if self.notification_manager.has_been_notified(honor_uuid):
                 continue  # 已处理过，跳过
 
-            try:
-                # --- 【核心修改】---
-                # 1. 从配置中解析日期字符串
-                exp_date_str = title_info["expiration_date"]
-                parsed_date = datetime.datetime.fromisoformat(exp_date_str)
-
-                # 2. 如果解析出的日期不带时区信息 (naive)，则强制赋予中国时区。
-                #    这允许在config中写 "2025-09-01T00:00:00" 而不是必须带 "+08:00"。
-                if parsed_date.tzinfo is None:
-                    expiration_date = parsed_date.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
-                else:
-                    expiration_date = parsed_date  # 如果已带时区，则尊重它
-            except (ValueError, KeyError) as e:
-                self.logger.error(f"无法解析荣誉 {honor_uuid} 的过期时间: {e}")
-                continue
-
+            expiration_date = honor_def.cup_honor.expiration_date
             if now >= expiration_date:
                 self.logger.info(f"荣誉 {honor_uuid} 在服务器 {guild.name} 已过期，开始检查用户...")
                 await self._notify_admin_for_expired_honor(guild, honor_uuid, expiration_date, notification_cfg)
@@ -290,25 +561,26 @@ class CupHonorModuleCog(commands.Cog, name="CupHonorModule"):
             current: str,
     ) -> List[app_commands.Choice[str]]:
         """为杯赛荣誉UUID参数提供自动补全选项。"""
-        guild_config = config_data.HONOR_CONFIG.get(interaction.guild_id, {})
-        cup_honor_titles = self._extract_cup_titles_from_definitions(guild_config)
-        cup_honor_uuids = list(cup_honor_titles.keys())
+        all_cup_honors = self.cup_honor_manager.get_all_cup_honors()
 
-        if not cup_honor_uuids:
+        if not all_cup_honors:
             return []
 
-        all_defs = self.honor_data_manager.get_all_honor_definitions(interaction.guild_id)
-        defs_map = {d.uuid: d for d in all_defs}
-
         choices = []
-        for uuid in cup_honor_uuids:
-            honor_def = defs_map.get(uuid)
-            if honor_def:
-                choice_name = f"{honor_def.name} ({honor_def.uuid[:8]})"
-                if current.lower() in choice_name.lower():
-                    choices.append(app_commands.Choice(name=choice_name, value=uuid))
+        for honor_def in all_cup_honors:
+            choice_name = f"{honor_def.name} ({str(honor_def.uuid)[:8]})"
+            if current.lower() in choice_name.lower():
+                choices.append(app_commands.Choice(name=choice_name, value=str(honor_def.uuid)))
 
         return choices[:25]
+
+    @cup_honor_group.command(name="管理", description="通过JSON编辑器管理所有杯赛头衔。")
+    @app_commands.checks.has_permissions(manage_roles=True)
+    async def manage_cup_honors(self, interaction: discord.Interaction):
+        """启动一个视图，用于管理所有杯赛荣誉。"""
+        await interaction.response.defer(ephemeral=True)
+        view = CupHonorManageView(self)
+        await view.start(interaction)
 
     @cup_honor_group.command(name="授予", description="为用户手动授予一个杯赛头衔及其身份组。")
     @app_commands.describe(member="要授予头衔的成员", honor_uuid="要授予的杯赛头衔")
@@ -318,9 +590,7 @@ class CupHonorModuleCog(commands.Cog, name="CupHonorModule"):
         await interaction.response.defer(ephemeral=True)
 
         # 1. 验证荣誉UUID是否已在配置中
-        guild_config = config_data.HONOR_CONFIG.get(interaction.guild_id, {})
-        cup_honor_titles = self._extract_cup_titles_from_definitions(guild_config)
-        if honor_uuid not in cup_honor_titles:
+        if not self.cup_honor_manager.get_cup_honor_by_uuid(honor_uuid):
             await interaction.followup.send("❌ **操作失败**：这个荣誉不是一个已配置的杯赛头衔。", ephemeral=True)
             return
 
