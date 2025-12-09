@@ -17,7 +17,7 @@ from fashion.cog import FashionCog
 from honor_system.anniversary_module import HonorAnniversaryModuleCog
 from honor_system.claimable_honor_module import ClaimableHonorModuleCog
 from honor_system.cog import HonorCog
-from honor_system.cup_honor_module import CupHonorModuleCog
+from honor_system.cup_honor.cup_honor_module import CupHonorModuleCog
 from honor_system.post_module import HonorPostModuleCog
 from honor_system.role_sync_honor_module import RoleClaimHonorModuleCog
 from information.cog import HeartbeatInformationCog

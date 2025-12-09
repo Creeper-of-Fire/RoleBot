@@ -2,18 +2,19 @@
 from __future__ import annotations
 
 import typing
+from typing import Optional, List
 
 import discord
-from discord.ext import commands
 
-import config_data
+from utility.feature_cog import FeatureCog
+from .getCogs import getHonorCog
 from .honor_data_manager import HonorDataManager
 
 if typing.TYPE_CHECKING:
     from main import RoleBot
 
 
-class RoleClaimHonorModuleCog(commands.Cog, name="RoleClaimHonorModule"):
+class RoleClaimHonorModuleCog(FeatureCog, name="RoleClaimHonorModule"):
     """
     【荣誉子模块】处理基于身份组的荣誉自动认领。
 
@@ -25,9 +26,14 @@ class RoleClaimHonorModuleCog(commands.Cog, name="RoleClaimHonorModule"):
     用户之后便可以通过荣誉墙自由佩戴或卸下这些身份组。
     """
 
+    def get_main_panel_buttons(self) -> Optional[List[discord.ui.Button]]:
+        pass
+
+    async def update_safe_roles_cache(self):
+        pass
+
     def __init__(self, bot: 'RoleBot'):
-        self.logger = bot.logger
-        self.bot = bot
+        super().__init__(bot)
         self.honor_data_manager = HonorDataManager.getDataManager(logger=bot.logger)
 
     async def check_and_grant_role_sync_honor(self, member: discord.Member, guild: discord.Guild):
@@ -44,11 +50,8 @@ class RoleClaimHonorModuleCog(commands.Cog, name="RoleClaimHonorModule"):
             "role_sync_honor": True  // <-- 新增的标记字段
         }
         """
-        # 1. 获取配置和用户当前的角色
-        guild_config = config_data.HONOR_CONFIG.get(guild.id, {})
-        all_definitions = guild_config.get("definitions", [])
-        if not all_definitions:
-            return
+        honor_cog = getHonorCog(self)
+        all_definitions = honor_cog.get_all_definitions_in_config()
 
         member_role_ids = {role.id for role in member.roles}
 

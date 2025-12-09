@@ -25,8 +25,8 @@ from utility.paginated_view import PaginatedView
 from utility.views import ConfirmationView
 from .cup_honor_json_manager import CupHonorJsonManager
 from .cup_honor_models import CupHonorDefinition, CupHonorDetails
-from .honor_data_manager import HonorDataManager
-from .models import UserHonor, HonorDefinition
+from honor_system.honor_data_manager import HonorDataManager
+from honor_system.models import UserHonor, HonorDefinition
 
 if typing.TYPE_CHECKING:
     from main import RoleBot
@@ -172,7 +172,6 @@ class CupHonorEditModal(ui.Modal):
 
         # 直接查询数据库，检查是否存在任何同名但UUID不同的荣誉（包括已归档的）
         with self.cog.honor_data_manager.get_db() as db:
-            from .models import HonorDefinition
             # 在执行操作前，精确判断最终的操作类型
             action_text = ""
             existing_record_for_uuid = db.query(HonorDefinition).filter_by(uuid=new_uuid_str).one_or_none()
