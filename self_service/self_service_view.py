@@ -30,7 +30,7 @@ class SelfServiceManageView(PaginatedView):
             self.cog.logger.info(f"服务器 {self.guild.id} 没有可供用户 {self.user.id} 管理的安全自助身份组。")
 
         timeout_minutes = config.ROLE_MANAGER_CONFIG.get("private_panel_timeout_minutes", 3)
-        # [改动] 调用父类构造函数，只传递数据
+        # 调用父类构造函数，只传递数据
         get_all_self_service_role_ids= lambda: all_self_service_role_ids
         super().__init__(
             all_items_provider=get_all_self_service_role_ids,
@@ -38,7 +38,7 @@ class SelfServiceManageView(PaginatedView):
             timeout=timeout_minutes * 60
         )
 
-    # [改动] 实现新的抽象方法 _rebuild_view
+    # 实现新的抽象方法 _rebuild_view
     async def _rebuild_view(self):
         self.clear_items()
 
@@ -66,7 +66,7 @@ class SelfServiceManageView(PaginatedView):
         if not self.all_items and config.GUILD_CONFIGS.get(self.guild.id, {}).get("self_service_roles"):
             self.add_item(ui.Button(label="无可用自助组 (权限原因)", style=discord.ButtonStyle.secondary, disabled=True, row=0))
 
-        # [改动] 从基类添加分页按钮
+        # 从基类添加分页按钮
         self._add_pagination_buttons(row=3)
 
         self.embed = self.cog.guide_embed.copy()  # 使用 .copy() 避免修改缓存中的原始 embed

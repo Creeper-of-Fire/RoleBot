@@ -8,3 +8,4 @@ __pycache__/
 deploy.env
 rolebot_image.tar
 data/*.db
+/model_fan_roles/model_config.py

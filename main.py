@@ -21,6 +21,7 @@ from honor_system.cup_honor_module import CupHonorModuleCog
 from honor_system.post_module import HonorPostModuleCog
 from honor_system.role_sync_honor_module import RoleClaimHonorModuleCog
 from information.cog import HeartbeatInformationCog
+from model_fan_roles.cog import ModelFanRolesCog
 from role_application.cog import RoleApplicationCog
 from role_jukebox.cog import RoleJukeboxCog
 from role_sync.cog import RoleSyncCog
@@ -147,6 +148,7 @@ class CogManager:
             "backup": BackupCog,
             "self_service": SelfServiceCog,
             "fashion": FashionCog,
+            "model_fan_roles": ModelFanRolesCog,
             "heartbeat_information": HeartbeatInformationCog,
             "timed_role": TimedRolesCog,
             "role_sync": RoleSyncCog,
