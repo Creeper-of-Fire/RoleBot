@@ -47,7 +47,13 @@ class RoleJukeboxManager:
                 json.dump(asdict(self._data), f, indent=4, ensure_ascii=False)
 
     def _get_guild_data(self, guild_id: int) -> GuildData:
-        return self._data.guilds.setdefault(str(guild_id), GuildData())
+        """
+        获取或创建服务器数据对象。
+        """
+        gid_str = str(guild_id)
+        if gid_str not in self._data.guilds:
+            self._data.guilds[gid_str] = GuildData()
+        return self._data.guilds[gid_str]
 
     # --- 图片文件管理 ---
 

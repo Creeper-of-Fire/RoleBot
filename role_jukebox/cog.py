@@ -7,7 +7,7 @@ from typing import List
 
 import aiohttp
 import discord
-from discord import app_commands, ButtonStyle, ui
+from discord import app_commands, ui
 from discord.ext import tasks
 
 from role_jukebox.admin_view import AdminDashboardView
@@ -47,6 +47,29 @@ class RoleJukeboxCog(FeatureCog, name="RoleJukebox"):
         self.rotation_task.cancel()
         asyncio.create_task(self.session.close())
 
+    async def track_autocomplete(
+            self,
+            interaction: discord.Interaction,
+            current: str
+    ) -> List[app_commands.Choice[str]]:
+        """为轨道选择提供自动补全列表。"""
+        choices = []
+        tracks = self.manager.get_all_tracks(interaction.guild_id)
+        for track in tracks:
+            # 优先显示自定义名称，否则显示身份组名称
+            role = interaction.guild.get_role(track.role_id)
+            if not role: continue  # 跳过失效的轨道
+
+            display_name = track.name or role.name
+
+            # 简单的模糊搜索
+            if current.lower() in display_name.lower():
+                choices.append(app_commands.Choice(
+                    name=f"{display_name} ({len(track.presets)}个预设)",  # 在选项中提供更多上下文信息
+                    value=str(track.role_id)  # value 必须是 string, int, or float
+                ))
+        return choices[:25]  # Discord 限制最多25个选项
+
     # --- Commands ---
 
     jukebox = app_commands.Group(name="身份组轮播", description="身份组外观自动轮播系统")
@@ -55,36 +78,44 @@ class RoleJukeboxCog(FeatureCog, name="RoleJukebox"):
     async def public_panel(self, interaction: discord.Interaction):
         if not interaction.guild: return
         view = UserJukeboxView(self, interaction.guild)
-        await view.refresh(interaction)
+        await view.show(interaction)
 
     @jukebox.command(name="管理面板", description="查看和配置轮播轨道 (查看/删除/开关)")
     @app_commands.checks.has_permissions(manage_roles=True)
     async def admin_panel(self, interaction: discord.Interaction):
         if not interaction.guild: return
         view = AdminDashboardView(self, interaction.guild)
-        await view.refresh(interaction)
+        await view.show(interaction)
 
     @jukebox.command(name="添加预设", description="向轨道添加一个新的外观预设")
     @app_commands.describe(
-        target_role="要添加到的轮播轨道 (身份组)",
+        track="要添加预设到的轨道",
         name="预设名称",
         color="颜色 (HEX格式，如 #FF0000)",
         icon="上传图标文件 (支持 PNG/JPG/GIF)"
     )
     @app_commands.checks.has_permissions(manage_roles=True)
+    @app_commands.autocomplete(track=track_autocomplete)
     async def add_preset(self,
                          interaction: discord.Interaction,
-                         target_role: discord.Role,
+                         track: str,
                          name: str,
                          color: str,
                          icon: typing.Optional[discord.Attachment] = None):
 
         await interaction.response.defer(ephemeral=True)
 
+        try:
+            target_role_id = int(track)
+        except ValueError:
+            return await interaction.followup.send("❌ 无效的轨道选择。", ephemeral=True)
+
         # 1. 检查轨道是否存在
-        track = self.manager.get_track(interaction.guild_id, target_role.id)
-        if not track:
-            return await interaction.followup.send(f"❌ 轨道不存在。请先在管理面板中为 {target_role.mention} 创建轨道。", ephemeral=True)
+        track_obj = self.manager.get_track(interaction.guild_id, target_role_id)
+        target_role = interaction.guild.get_role(target_role_id)
+
+        if not track_obj or not target_role:
+            return await interaction.followup.send("❌ 目标轨道或身份组不存在。", ephemeral=True)
 
         # 2. 验证颜色
         try:
@@ -110,20 +141,33 @@ class RoleJukeboxCog(FeatureCog, name="RoleJukebox"):
 
         # 4. 保存预设
         preset = Preset(name=name, color=color, icon_filename=filename)
-        await self.manager.add_preset(interaction.guild_id, target_role.id, preset)
+        await self.manager.add_preset(interaction.guild_id, target_role_id, preset)
 
-        msg = f"✅ 已向 {target_role.mention} 添加预设：**{name}**"
+        display_name = track_obj.name or target_role.name
+        msg = f"✅ 已向 {display_name} 添加预设：**{name}**"
         if filename: msg += " (含图标)"
-        await interaction.followup.send(msg, ephemeral=True)
+        return await interaction.followup.send(msg, ephemeral=True)
 
     @jukebox.command(name="克隆预设", description="从现有的身份组复制外观作为预设")
+    @app_commands.describe(
+        track="要克隆预设到的目标轨道",
+        source_role="提供外观的来源身份组"
+    )
     @app_commands.checks.has_permissions(manage_roles=True)
-    async def clone_preset(self, interaction: discord.Interaction, target_role: discord.Role, source_role: discord.Role):
+    @app_commands.autocomplete(track=track_autocomplete)
+    async def clone_preset(self, interaction: discord.Interaction, track: str, source_role: discord.Role):
         await interaction.response.defer(ephemeral=True)
 
-        track = self.manager.get_track(interaction.guild_id, target_role.id)
-        if not track:
-            return await interaction.followup.send("❌ 目标轨道不存在。", ephemeral=True)
+        try:
+            target_role_id = int(track)
+        except ValueError:
+            return await interaction.followup.send("❌ 无效的轨道选择。", ephemeral=True)
+
+        track_obj = self.manager.get_track(interaction.guild_id, target_role_id)
+        target_role = interaction.guild.get_role(target_role_id)
+
+        if not track_obj or not target_role:
+            return await interaction.followup.send("❌ 目标轨道或身份组不存在。", ephemeral=True)
 
         filename = None
         if source_role.icon:
@@ -137,9 +181,10 @@ class RoleJukeboxCog(FeatureCog, name="RoleJukebox"):
                 return await interaction.followup.send("⚠️ 克隆图标失败，将只克隆颜色和名称。", ephemeral=True)
 
         preset = Preset(name=source_role.name, color=str(source_role.color), icon_filename=filename)
-        await self.manager.add_preset(interaction.guild_id, target_role.id, preset)
+        await self.manager.add_preset(interaction.guild_id, target_role_id, preset)
 
-        await interaction.followup.send(f"✅ 已从 {source_role.name} 克隆预设到 {target_role.mention}。", ephemeral=True)
+        display_name = track_obj.name or target_role.name
+        return await interaction.followup.send(f"✅ 已从 {source_role.name} 克隆预设到 **{display_name}**。", ephemeral=True)
 
     # --- Rotation Task ---
 
@@ -207,9 +252,8 @@ class OpenLobbyButton(ui.Button):
         self.cog = cog
 
     async def callback(self, interaction: discord.Interaction):
-        # 复用 UserJukeboxView
         view = UserJukeboxView(self.cog, interaction.guild)
-        await view.refresh(interaction)
+        await view.show(interaction)
 
 
 async def setup(bot: RoleBot):
