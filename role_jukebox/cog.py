@@ -216,6 +216,21 @@ class RoleJukeboxCog(FeatureCog, name="RoleJukebox"):
             self.logger.warning(f"[Jukebox] Role {role_id} not found in {guild.name}.")
             return
 
+        # --- 获取轨道信息并构建最终名称 ---
+        track = self.manager.get_track(guild_id, role_id)
+        if not track:
+            self.logger.warning(f"Track for role {role_id} not found when applying preset.")
+            # 即使轨道数据丢失，也按原计划执行，但不加前缀
+            final_name = preset.name
+        else:
+            if track.name_prefix:
+                final_name = f"{track.name_prefix}{preset.name}"
+            else:
+                final_name = preset.name
+
+        # 确保名称不超过 Discord 100个字符的限制
+        final_name = final_name[:100]
+
         # 下载图标
         icon_bytes = None
         if preset.icon_filename:
@@ -225,7 +240,7 @@ class RoleJukeboxCog(FeatureCog, name="RoleJukebox"):
 
         try:
             await role.edit(
-                name=preset.name,
+                name=final_name,
                 color=discord.Color.from_str(preset.color),
                 display_icon=icon_bytes,
                 reason=f"Jukebox Rotation: {preset.name}"

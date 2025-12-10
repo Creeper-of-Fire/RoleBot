@@ -163,6 +163,7 @@ class TrackDetailView(PaginatedView):
             f"**状态**: {status}\n"
             f"**模式**: {mode}\n"
             f"**间隔**: {self.track.interval_minutes} 分钟\n"
+            f"**名称前缀**: {prefix_display}\n"
             f"----------------"
         )
         self.embed.set_footer(text="提示: 使用 /身份组轮播 添加预设 来增加更多外观")
@@ -196,6 +197,7 @@ class TrackDetailView(PaginatedView):
         # Row 3: 功能按钮
         self.add_item(RenameBtn(row=3))
         self.add_item(PreviewBtn(self.track, self.cog.manager, row=3))
+        self.add_item(SetPrefixBtn(row=3))
 
         # Row 3: 危险/导航操作
         self.add_item(DelTrackBtn(row=3))
@@ -322,6 +324,38 @@ class ToggleBtn(ui.Button):
         await view.cog.manager.update_track(view.guild.id, view.role_id, enabled=not view.track.enabled)
         await view.refresh_and_edit(itx)
 
+class SetPrefixBtn(ui.Button):
+    def __init__(self, **kwargs):
+        super().__init__(label="设置前缀", style=ButtonStyle.secondary, **kwargs, emoji="🏷️")
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(SetPrefixModal(self.view))
+
+
+class SetPrefixModal(ui.Modal, title="设置轮播名称前缀"):
+    prefix_input = ui.TextInput(
+        label="身份组名称前缀",
+        placeholder="例如: [轮播] (留空则不使用前缀)",
+        required=False,
+        max_length=20  # 设置一个合理的前缀长度限制
+    )
+
+    def __init__(self, parent_view: TrackDetailView):
+        super().__init__()
+        self.parent_view = parent_view
+        # 将当前前缀填入输入框作为默认值
+        if self.parent_view.track and self.parent_view.track.name_prefix:
+            self.prefix_input.default = self.parent_view.track.name_prefix
+
+    async def on_submit(self, interaction: discord.Interaction):
+        new_prefix = self.prefix_input.value.strip()
+        # 如果用户输入为空，则将前缀设为 None
+        await self.parent_view.cog.manager.update_track(
+            self.parent_view.guild.id,
+            self.parent_view.role_id,
+            name_prefix=new_prefix if new_prefix else None
+        )
+        await self.parent_view.refresh_and_edit(interaction)
 
 class ModeBtn(ui.Button):
     def __init__(self, mode: str, **kwargs):

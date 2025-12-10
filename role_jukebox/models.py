@@ -33,6 +33,7 @@ class Track:
     role_id: int
     presets: List[Preset] = field(default_factory=list)
     name: Optional[str] = None
+    name_prefix: Optional[str] = None
 
     # 配置参数
     mode: str = 'sequence'  # 'sequence' (顺序) 或 'random' (随机)
