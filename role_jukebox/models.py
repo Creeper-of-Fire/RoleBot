@@ -9,7 +9,7 @@ from typing import List, Optional, Dict, Any, Type, TypeVar
 
 T = TypeVar('T')
 
-DEFAULT_NAME_PREFIX = "轮播"
+DEFAULT_NAME_PREFIX = "[轮播]"
 
 @dataclass
 class Preset:
