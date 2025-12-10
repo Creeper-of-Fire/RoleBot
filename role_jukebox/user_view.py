@@ -39,20 +39,29 @@ class UserJukeboxView(ui.View):
 
         embed = Embed(
             title="🎶 身份组轮播大厅",
-            description="点击下方的身份组按钮，即可加入或退出对应的外观轮播轨道！",
+            description="点击下方的身份组按钮，即可加入或退出对应的外观轮播轨道！\n\n",
             color=Color.from_rgb(255, 105, 180)
         )
 
         if not valid_tracks:
             embed.description = "⚠️ 暂时没有开放的轮播活动，请稍后再来。"
         else:
-            # 动态生成按钮
+            # --- 为每个轨道添加信息字段，并动态生成按钮 ---
             for track, role in valid_tracks:
+                display_name = track.name or role.name
+
+                # 1. 向 Embed 添加信息字段
+                mode_str = "随机" if track.mode == 'random' else "顺序"
+                embed.add_field(
+                    name=f"💿 {display_name}",
+                    value=f"⏱️ {track.interval_minutes}m | 🎨 {len(track.presets)}个 | 🔁 {mode_str}",
+                    inline=True
+                )
+
+                # 2. 添加对应的交互按钮
                 # 检查用户是否已有该身份组，改变按钮样式
                 has_role = role in interaction.user.roles if isinstance(interaction.user, discord.Member) else False
                 style = ButtonStyle.success if has_role else ButtonStyle.secondary
-                # 优先显示自定义名称
-                display_name = track.name or role.name
                 label = display_name[:80]
 
                 self.add_item(UserTrackBtn(track, role, style, label))
