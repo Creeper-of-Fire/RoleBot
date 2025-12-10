@@ -1,11 +1,12 @@
 # role_jukebox/admin_view.py
 from __future__ import annotations
 
-import discord
-from discord import ui, ButtonStyle, Embed, Color, SelectOption
 from typing import TYPE_CHECKING, Optional
 
-from role_jukebox.models import Track
+import discord
+from discord import ui, ButtonStyle, Embed, Color, SelectOption
+
+from role_jukebox.models import Track, Preset
 from utility.paginated_view import PaginatedView
 from utility.views import ConfirmationView
 
@@ -143,6 +144,10 @@ class TrackDetailView(PaginatedView):
             self.add_item(BackButton(self.parent_view))
             return
 
+        # --- 在重建视图时，检查并修正无效的 current_index ---
+        if self.track.presets and self.track.current_index >= len(self.track.presets):
+            self.track.current_index = 0
+
         role = self.guild.get_role(self.role_id)
         role_name = role.name if role else "未知身份组"
         role_color = role.color if role else Color.default()
@@ -166,11 +171,15 @@ class TrackDetailView(PaginatedView):
         if items:
             desc_lines = []
             for i, p in enumerate(items):
-                idx = (self.page * self.items_per_page) + i + 1
+                absolute_idx = (self.page * self.items_per_page) + i
+                # --- 高亮当前播放的预设 ---
+                current_marker = "▶️ " if absolute_idx == self.track.current_index else ""
                 icon_mark = "🖼️" if p.icon_filename else "⚪"
-                desc_lines.append(f"`{idx}.` **{p.name}** {icon_mark} `Hex:{p.color}`")
+                desc_lines.append(f"`{absolute_idx+1}.` {current_marker}**{p.name}** {icon_mark} `Hex:{p.color}`")
             self.embed.add_field(name=f"预设列表 (第 {self.page + 1} 页)", value="\n".join(desc_lines), inline=False)
-            self.add_item(DeleteSelect(items))
+
+            # Row 0: 管理预设下拉菜单
+            self.add_item(ManagePresetSelect(items))
         else:
             self.embed.add_field(name="预设列表", value="*暂无预设，请添加*", inline=False)
 
@@ -179,8 +188,13 @@ class TrackDetailView(PaginatedView):
         self.add_item(ModeBtn(self.track.mode))
         self.add_item(IntervalBtn(self.track.interval_minutes))
 
+        # Row 2: 播放控制
+        self.add_item(PrevBtn(disabled=not self.track.presets))
+        self.add_item(SyncBtn(disabled=not self.track.presets))
+        self.add_item(NextBtn(disabled=not self.track.presets))
+
         # Row 2: 功能按钮
-        self.add_item(RenameBtn())  # <-- 新增重命名按钮
+        self.add_item(RenameBtn())
         self.add_item(PreviewBtn(self.track, self.cog.manager))
 
         # Row 3: 危险/导航操作
@@ -244,6 +258,59 @@ class DelTrackBtn(ui.Button):
 
         # 如果是超时(value is None)，on_timeout 已经处理了消息编辑
 
+
+# =============================================================================
+# 播放控制按钮
+# =============================================================================
+
+class PlayerControlBtn(ui.Button):
+    """播放控制按钮的基类，处理通用逻辑"""
+
+    def __init__(self, *, style: ButtonStyle = ButtonStyle.secondary, label: str | None = None, emoji: str | None = None, row: int | None = None,
+                 disabled: bool = False, action: str):
+        super().__init__(style=style, label=label, emoji=emoji, row=row, disabled=disabled)
+        self.action = action
+
+    async def callback(self, interaction: discord.Interaction):
+        view: TrackDetailView = self.view
+        await interaction.response.defer()
+
+        # 1. 调用 manager 获取下一个状态
+        new_preset = await view.cog.manager.manual_control(
+            view.guild.id, view.role_id, self.action
+        )
+
+        if new_preset:
+            # 2. 调用 cog 的方法应用到 Discord
+            try:
+                await view.cog._apply_preset(view.guild.id, view.role_id, new_preset)
+
+                action_text = {"next": "切换到", "prev": "切换到", "sync": "同步为"}
+                await interaction.followup.send(f"✅ 操作成功！已**{action_text[self.action]}**: **{new_preset.name}**", ephemeral=True)
+            except discord.Forbidden:
+                await interaction.followup.send("❌ **权限不足**，无法修改该身份组。", ephemeral=True)
+            except Exception as e:
+                await interaction.followup.send(f"❌ 应用身份组时发生未知错误: {e}", ephemeral=True)
+        else:
+            await interaction.followup.send("❌ 操作失败，轨道可能没有可用的预设。", ephemeral=True)
+
+        # 3. 刷新视图，显示新的高亮位置
+        await view.refresh_and_edit(interaction)
+
+
+class PrevBtn(PlayerControlBtn):
+    def __init__(self, disabled: bool = False):
+        super().__init__(emoji="⏮️", style=ButtonStyle.primary, row=2, disabled=disabled, action='prev')
+
+
+class SyncBtn(PlayerControlBtn):
+    def __init__(self, disabled: bool = False):
+        super().__init__(label="同步", emoji="🔄", style=ButtonStyle.success, row=2, disabled=disabled, action='sync')
+
+
+class NextBtn(PlayerControlBtn):
+    def __init__(self, disabled: bool = False):
+        super().__init__(emoji="⏭️", style=ButtonStyle.primary, row=2, disabled=disabled, action='next')
 
 class ToggleBtn(ui.Button):
     def __init__(self, on: bool):
@@ -346,38 +413,6 @@ class PreviewBtn(ui.Button):
             await interaction.followup.send(f"❌ 预览生成失败: {str(e)}", ephemeral=True)
 
 
-class DeleteSelect(ui.Select):
-    def __init__(self, items):
-        opts = [SelectOption(label=p.name[:25], value=p.uuid, emoji="🗑️", description=p.color) for p in items]
-        super().__init__(placeholder="选择要删除的预设...", options=opts, row=0)
-
-    async def callback(self, itx: discord.Interaction):
-        view: TrackDetailView = self.view
-        uuid_to_delete = self.values[0]
-
-        # 查找要删除的预设以获取其名称
-        preset_to_delete = next((p for p in view.track.presets if p.uuid == uuid_to_delete), None)
-        if not preset_to_delete:
-            await itx.response.send_message("❌ 错误：找不到要删除的预设。", ephemeral=True)
-            return
-
-        # --- 加上二次确认 ---
-        confirmation_view = ConfirmationView(author=itx.user)
-        confirm_msg_content = f"⚠️ **你确定要删除预设【{preset_to_delete.name}】吗？**\n此操作无法恢复。"
-
-        await itx.response.send_message(confirm_msg_content, view=confirmation_view, ephemeral=True)
-        confirmation_view.message = await itx.original_response()
-
-        await confirmation_view.wait()
-
-        if confirmation_view.value is True:
-            await view.cog.manager.remove_preset(view.guild.id, view.role_id, uuid_to_delete)
-            await confirmation_view.message.edit(content=f"✅ 预设 **{preset_to_delete.name}** 已删除。", view=None)
-            # 刷新主详情视图
-            await view.refresh_and_edit(itx)
-        elif confirmation_view.value is False:
-            await confirmation_view.message.edit(content="👍 操作已取消。", view=None)
-
 class IntervalModal(ui.Modal, title="设置轮播间隔"):
     val = ui.TextInput(label="间隔 (分钟)", placeholder="例如: 60", min_length=1, max_length=4)
 
@@ -402,3 +437,189 @@ class IntervalModal(ui.Modal, title="设置轮播间隔"):
 
         except ValueError:
             await itx.response.send_message("❌ 请输入有效的数字", ephemeral=True)
+
+
+# =============================================================================
+# 三级面板：预设子详情 (管理单个预设)
+# =============================================================================
+
+class PresetManageView(ui.View):
+    """子页面：用于查看、编辑和删除单个预设"""
+
+    def __init__(self, cog: RoleJukeboxCog, guild: discord.Guild, role_id: int, preset: Preset, parent_view: TrackDetailView):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.guild = guild
+        self.role_id = role_id
+        self.preset = preset
+        self.parent_view = parent_view  # 用于返回上一级
+
+    async def get_embed_and_files(self):
+        # 构建详情 Embed
+        try:
+            c = Color.from_str(self.preset.color)
+        except:
+            c = Color.default()
+        embed = Embed(title=f"🎨 管理预设: {self.preset.name}", color=c)
+        embed.description = (
+            f"**名称**: {self.preset.name}\n"
+            f"**色值**: `{self.preset.color}`\n"
+            f"**UUID**: `{self.preset.uuid}`"
+        )
+
+        files = []
+        if self.preset.icon_filename:
+            # 读取并展示图标
+            data = await self.cog.manager.get_icon_bytes(self.preset.icon_filename)
+            if data:
+                import io
+                f = discord.File(io.BytesIO(data), filename=self.preset.icon_filename)
+                embed.set_thumbnail(url=f"attachment://{self.preset.icon_filename}")
+                files.append(f)
+            else:
+                embed.set_footer(text="⚠️ 图标文件丢失")
+        else:
+            embed.set_footer(text="此预设没有图标")
+
+        return embed, files
+
+    async def refresh(self, interaction: discord.Interaction):
+        embed, files = await self.get_embed_and_files()
+        await interaction.response.edit_message(embed=embed, view=self, attachments=files)
+
+    async def show(self, interaction: discord.Interaction):
+        embed, files = await self.get_embed_and_files()
+
+        # 添加按钮
+        self.add_item(EditPresetBtn())
+        self.add_item(DeletePresetBtn())
+        self.add_item(BackToTrackBtn())
+
+        if interaction.response.is_done():
+            await interaction.followup.edit_message(interaction.message.id, embed=embed, view=self, attachments=files)
+        else:
+            # 这里的 edit_message 需要注意，如果是 select 触发的，通常是 response.edit_message
+            await interaction.response.edit_message(embed=embed, view=self, attachments=files)
+
+
+class EditPresetBtn(ui.Button):
+    def __init__(self):
+        super().__init__(label="编辑属性", style=ButtonStyle.primary, emoji="✏️")
+
+    async def callback(self, interaction: discord.Interaction):
+        view: PresetManageView = self.view
+        await interaction.response.send_modal(EditPresetModal(view))
+
+
+class DeletePresetBtn(ui.Button):
+    def __init__(self):
+        super().__init__(label="删除预设", style=ButtonStyle.danger, emoji="🗑️")
+
+    async def callback(self, interaction: discord.Interaction):
+        view: PresetManageView = self.view
+
+        # 二次确认
+        confirm_view = ConfirmationView(author=interaction.user)
+        await interaction.response.send_message(
+            f"⚠️ **确定要删除预设【{view.preset.name}】吗？**\n此操作不可恢复。",
+            view=confirm_view,
+            ephemeral=True
+        )
+        confirm_view.message = await interaction.original_response()
+
+        await confirm_view.wait()
+
+        if confirm_view.value:
+            # 执行删除
+            await view.cog.manager.remove_preset(view.guild.id, view.role_id, view.preset.uuid)
+            await confirm_view.message.edit(content="✅ 预设已删除。", view=None)
+
+            # 删除后无法停留在子页面，必须返回上一级
+            # 我们重新发送一个 TrackDetailView
+            new_track_view = TrackDetailView(view.cog, view.guild, view.role_id, view.parent_view.parent_view)
+            await new_track_view.start(interaction)
+
+        else:
+            await confirm_view.message.edit(content="👍 操作已取消。", view=None)
+
+
+class BackToTrackBtn(ui.Button):
+    def __init__(self):
+        super().__init__(label="返回列表", style=ButtonStyle.secondary, emoji="↩️")
+
+    async def callback(self, interaction: discord.Interaction):
+        view: PresetManageView = self.view
+        # 返回上一级，直接刷新父视图即可
+        await view.parent_view.update_view(interaction)
+
+
+# =============================================================================
+# 组件：下拉菜单与模态框
+# =============================================================================
+
+class ManagePresetSelect(ui.Select):
+    def __init__(self, items: list[Preset]):
+        # 限制长度，防止名称过长报错
+        opts = [
+            SelectOption(
+                label=p.name[:25],
+                value=p.uuid,
+                emoji="⚙️",
+                description=f"管理: {p.color}"
+            ) for p in items
+        ]
+        super().__init__(placeholder="选择一个预设进行管理 (编辑/删除)...", options=opts, row=0)
+
+    async def callback(self, interaction: discord.Interaction):
+        view: TrackDetailView = self.view
+        uuid_selected = self.values[0]
+
+        # 查找对象
+        preset = next((p for p in view.track.presets if p.uuid == uuid_selected), None)
+        if not preset:
+            return await interaction.response.send_message("❌ 预设不存在，可能已被删除", ephemeral=True)
+
+        # 进入子页面
+        sub_view = PresetManageView(view.cog, view.guild, view.role_id, preset, parent_view=view)
+        await sub_view.show(interaction)
+
+
+class EditPresetModal(ui.Modal, title="编辑预设属性"):
+    name_input = ui.TextInput(label="预设名称", required=True, max_length=100)
+    color_input = ui.TextInput(label="颜色 (HEX)", placeholder="#FF0000", required=True, min_length=6, max_length=7)
+
+    def __init__(self, parent_view: PresetManageView):
+        super().__init__()
+        self.parent_view = parent_view
+        self.name_input.default = self.parent_view.preset.name
+        self.color_input.default = self.parent_view.preset.color
+
+    async def on_submit(self, interaction: discord.Interaction):
+        new_name = self.name_input.value.strip()
+        new_color = self.color_input.value.strip()
+
+        try:
+            Color.from_str(new_color)
+        except ValueError:
+            return await interaction.response.send_message("❌ 颜色格式错误 (例如 #FF0000)", ephemeral=True)
+
+        # 更新数据库
+        success = await self.parent_view.cog.manager.update_preset(
+            self.parent_view.guild.id,
+            self.parent_view.role_id,
+            self.parent_view.preset.uuid,
+            new_name,
+            new_color
+        )
+
+        if success:
+            # 更新内存对象，以便立即显示
+            self.parent_view.preset.name = new_name
+            self.parent_view.preset.color = new_color
+
+            # 刷新子页面
+            await self.parent_view.show(interaction)
+            # 给一个隐式的反馈
+            # await interaction.followup.send("✅ 更新成功", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ 更新失败，轨道可能已变更", ephemeral=True)

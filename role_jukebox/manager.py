@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import random
 import time
 from dataclasses import asdict
 from typing import List, Optional, Tuple
@@ -146,7 +147,22 @@ class RoleJukeboxManager:
                 t.presets = [p for p in t.presets if p.uuid != uuid]
                 await self.save_data()
 
-    # --- 核心逻辑 ---
+    async def update_preset(self, guild_id: int, role_id: int, preset_uuid: str, new_name: str, new_color: str):
+        """
+        根据 UUID 找到并更新一个预设的名称和颜色。
+        """
+        t = self.get_track(guild_id, role_id)
+        if t:
+            preset_to_update = next((p for p in t.presets if p.uuid == preset_uuid), None)
+            if preset_to_update:
+                preset_to_update.name = new_name
+                preset_to_update.color = new_color
+                await self.save_data()
+                return True # 表示成功
+        return False # 表示失败
+
+    # --- 循环逻辑 ---
+
     def get_due_rotations(self) -> List[Tuple[int, Track, Preset]]:
         """
         检查所有轨道，找出此时此刻需要进行轮播的轨道。
@@ -170,3 +186,43 @@ class RoleJukeboxManager:
                         actions.append((int(guild_id_str), track, next_preset))
 
         return actions
+
+    async def manual_control(self, guild_id: int, role_id: int, action: str) -> Optional[Preset]:
+        """
+        手动控制轨道播放。
+        action: 'next', 'prev', 'sync'
+        返回: 需要应用到 Discord 的 Preset 对象
+        """
+        t = self.get_track(guild_id, role_id)
+        if not t or not t.presets:
+            return None
+
+        count = len(t.presets)
+
+        # --- 如果索引越界，直接重置为 0 ---
+        if t.current_index >= count:
+            t.current_index = 0
+
+        # 根据动作计算新索引
+        if action == 'next':
+            if t.mode == 'random' and count > 1:
+                # 随机模式下，找一个和当前不一样的
+                candidates = [i for i in range(count) if i != t.current_index]
+                t.current_index = random.choice(candidates)
+            else:
+                # 顺序模式
+                t.current_index = (t.current_index + 1) % count
+        elif action == 'prev':
+            # 上一首，永远按顺序来
+            t.current_index = (t.current_index - 1 + count) % count
+        elif action == 'sync':
+            # 同步操作，索引不变，直接使用当前的
+            pass
+        else:
+            return None  # 无效操作
+
+        # 重置计时器，避免刚手动切歌，又被自动任务切了
+        t.last_run_timestamp = time.time()
+
+        await self.save_data()
+        return t.presets[t.current_index]
