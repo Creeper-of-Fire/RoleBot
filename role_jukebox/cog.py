@@ -221,7 +221,7 @@ class RoleJukeboxCog(FeatureCog, name="RoleJukebox"):
         if preset.icon_filename:
             # 这一步是同步IO读取，但因为是本地SSD，通常很快
             # 如果文件很大，可以在 manager 里用 asyncio.to_thread 包装
-            icon_bytes = await asyncio.to_thread(self.manager.get_icon_bytes, preset.icon_filename)
+            icon_bytes = await self.manager.get_icon_bytes(preset.icon_filename)
 
         try:
             await role.edit(
