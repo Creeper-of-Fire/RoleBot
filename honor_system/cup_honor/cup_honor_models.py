@@ -7,6 +7,8 @@ from zoneinfo import ZoneInfo
 
 from pydantic import Field, field_validator, BaseModel
 
+from honor_system.common_models import BaseHonorDefinition
+
 
 class CupHonorDetails(BaseModel):
     """定义杯赛荣誉的特定属性"""
@@ -31,14 +33,10 @@ class CupHonorDetails(BaseModel):
         raise TypeError("expiration_date 必须是字符串或 datetime 对象")
 
 
-class CupHonorDefinition(BaseModel):
+class CupHonorDefinition(BaseHonorDefinition):
     """
     杯赛荣誉的完整Pydantic模型，用于验证和序列化。
     """
     cup_honor: CupHonorDetails
-    name: str = Field(min_length=1, max_length=100)
-    description: str = Field(max_length=255)
-    role_id: int
     uuid: uuid_lib.UUID = Field(default_factory=uuid_lib.uuid4)
-    hidden_until_earned: bool = True
     role_sync_honor: bool = True

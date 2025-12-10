@@ -51,21 +51,21 @@ class RoleClaimHonorModuleCog(FeatureCog, name="RoleClaimHonorModule"):
         }
         """
         honor_cog = getHonorCog(self)
-        all_definitions = honor_cog.get_all_definitions_in_config()
+        all_definitions = honor_cog.get_all_config_honor_definitions()
 
         member_role_ids = {role.id for role in member.roles}
 
         # 2. 遍历所有荣誉定义，查找标记为 role_sync_honor 的荣誉
-        for honor_def_config in all_definitions:
+        for honor_def in all_definitions:
             # 检查是否是“角色认领”类型的荣誉
-            if not honor_def_config.get("role_sync_honor"):
+            if not honor_def.role_sync_honor:
                 continue
 
             # 检查配置是否完整
-            honor_uuid = honor_def_config.get("uuid")
-            role_id = honor_def_config.get("role_id")
+            honor_uuid = str(honor_def.uuid) # 确保是字符串
+            role_id = honor_def.role_id
             if not honor_uuid or not role_id:
-                self.logger.warning(f"一个 role_sync_honor 的定义缺少 uuid 或 role_id: {honor_def_config}")
+                self.logger.warning(f"一个 role_sync_honor 的定义缺少 role_id: {honor_def.name}")
                 continue
 
             # 3. 如果用户拥有对应的身份组，则尝试授予荣誉

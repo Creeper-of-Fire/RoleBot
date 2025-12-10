@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import cast, Optional, TYPE_CHECKING, Dict, List
+from typing import cast, Optional, TYPE_CHECKING, Dict, List, Any
 
 import discord
 from discord import ui, Color, app_commands
@@ -12,6 +12,7 @@ import config_data
 from core.embed_link.embed_manager import EmbedLinkManager
 from honor_system.cup_honor.cup_honor_json_manager import CupHonorJsonManager
 from utility.feature_cog import FeatureCog
+from .common_models import BaseHonorDefinition
 from .getCogs import getHonorAnniversaryModuleCog, getRoleClaimHonorModuleCog
 from .honor_data_manager import HonorDataManager
 from .models import HonorDefinition
@@ -19,6 +20,7 @@ from .views import HonorHoldersManageView, HonorManageView
 
 if TYPE_CHECKING:
     from main import RoleBot
+
 
 # --- 主Cog ---
 class HonorCog(FeatureCog, name="Honor"):
@@ -110,28 +112,33 @@ class HonorCog(FeatureCog, name="Honor"):
 
         return [honor_button]
 
-    def get_all_definitions_in_config(self):
+    def get_all_config_honor_definitions(self) -> list[BaseHonorDefinition]:
         """
-        获取所有配置了的荣誉定义，它们不包含数据库中会被归档的那些。
+        获取所有配置源（config.py, cup_honors.json）中的荣誉定义，
+        并以统一的 BaseHonorDefinition 模型对象列表返回。
         """
-        # 1. 从配置文件收集普通荣誉UUID
-        all_config_uuids = set()
-        for guild_id, guild_config in config_data.HONOR_CONFIG.items():
-            for honor_def in guild_config.get("definitions", []):
-                all_config_uuids.add(honor_def['uuid'])
+        all_definitions: list[BaseHonorDefinition] = []
 
-        # 2. 从JSON文件收集杯赛荣誉UUID
+        # 1. 从 config_data.py 加载普通荣誉
+        for guild_id, guild_config in config_data.HONOR_CONFIG.items():
+            for honor_dict in guild_config.get("definitions", []):
+                all_definitions.append(BaseHonorDefinition.model_validate(honor_dict))
+
+        # 2. 从 JSON文件 加载杯赛荣誉
         self.cup_honor_manager.load_data()  # 确保加载最新数据
-        all_cup_honor_uuids = {str(honor.uuid) for honor in self.cup_honor_manager.get_all_cup_honors()}
+        all_cup_honors = self.cup_honor_manager.get_all_cup_honors()
+        # CupHonorDefinition 已经是 BaseHonorDefinition 的子类，可以直接添加
+        all_definitions.extend(all_cup_honors)
 
         # 3. 合并所有合法的、不应被归档的荣誉UUID
-        return all_config_uuids.union(all_cup_honor_uuids)
+        return all_definitions
 
     async def synchronize_all_honor_definitions(self):
         await self.bot.wait_until_ready()
         self.logger.info("HonorCog: 开始同步所有服务器的荣誉定义...")
 
-        all_legitimate_uuids = self.get_all_definitions_in_config()
+        all_config_definitions = self.get_all_config_honor_definitions()
+        all_legitimate_uuids = {str(d.uuid) for d in all_config_definitions}
 
         # 2. 遍历配置，处理创建和更新
         with self.data_manager.get_db() as db:
