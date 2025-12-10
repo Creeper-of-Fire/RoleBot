@@ -539,7 +539,8 @@ class DeletePresetBtn(ui.Button):
             # 删除后无法停留在子页面，必须返回上一级
             # 我们重新发送一个 TrackDetailView
             new_track_view = TrackDetailView(view.cog, view.guild, view.role_id, view.parent_view.parent_view)
-            await new_track_view.start(interaction)
+
+            await new_track_view.start(interaction, ephemeral=True)
 
         else:
             await confirm_view.message.edit(content="👍 操作已取消。", view=None)
