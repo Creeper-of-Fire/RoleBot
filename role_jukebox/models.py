@@ -9,6 +9,8 @@ from typing import List, Optional, Dict, Any, Type, TypeVar
 
 T = TypeVar('T')
 
+DEFAULT_NAME_PREFIX = "轮播"
+
 @dataclass
 class Preset:
     """单个外观预设（名字、颜色、图标）。"""
@@ -33,7 +35,7 @@ class Track:
     role_id: int
     presets: List[Preset] = field(default_factory=list)
     name: Optional[str] = None
-    name_prefix: Optional[str] = None
+    name_prefix: Optional[str] = DEFAULT_NAME_PREFIX
 
     # 配置参数
     mode: str = 'sequence'  # 'sequence' (顺序) 或 'random' (随机)

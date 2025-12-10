@@ -159,6 +159,8 @@ class TrackDetailView(PaginatedView):
         status = "✅ 运行中" if self.track.enabled else "⏸️ 已暂停"
         mode = "🔀 随机播放" if self.track.mode == 'random' else "🔁 顺序播放"
 
+        prefix_display = f"`{self.track.name_prefix}`" if self.track.name_prefix else "*未设置*"
+
         self.embed.description = (
             f"**状态**: {status}\n"
             f"**模式**: {mode}\n"
