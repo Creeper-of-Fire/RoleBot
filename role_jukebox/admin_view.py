@@ -160,7 +160,7 @@ class TrackDetailView(PaginatedView):
             f"**间隔**: {self.track.interval_minutes} 分钟\n"
             f"----------------"
         )
-        self.embed.set_footer(text="提示: 使用 /jukebox 添加预设 来增加更多外观")
+        self.embed.set_footer(text="提示: 使用 /身份组轮播 添加预设 来增加更多外观")
 
         items = self.get_page_items()
         if items:
