@@ -175,31 +175,31 @@ class TrackDetailView(PaginatedView):
                 # --- 高亮当前播放的预设 ---
                 current_marker = "▶️ " if absolute_idx == self.track.current_index else ""
                 icon_mark = "🖼️" if p.icon_filename else "⚪"
-                desc_lines.append(f"`{absolute_idx+1}.` {current_marker}**{p.name}** {icon_mark} `Hex:{p.color}`")
+                desc_lines.append(f"`{absolute_idx + 1}.` {current_marker}**{p.name}** {icon_mark} `Hex:{p.color}`")
             self.embed.add_field(name=f"预设列表 (第 {self.page + 1} 页)", value="\n".join(desc_lines), inline=False)
 
             # Row 0: 管理预设下拉菜单
-            self.add_item(ManagePresetSelect(items))
+            self.add_item(ManagePresetSelect(items, row=0))
         else:
             self.embed.add_field(name="预设列表", value="*暂无预设，请添加*", inline=False)
 
         # Row 1: 核心控制
-        self.add_item(ToggleBtn(self.track.enabled))
-        self.add_item(ModeBtn(self.track.mode))
-        self.add_item(IntervalBtn(self.track.interval_minutes))
+        self.add_item(ToggleBtn(self.track.enabled, row=1))
+        self.add_item(ModeBtn(self.track.mode, row=1))
+        self.add_item(IntervalBtn(self.track.interval_minutes, row=1))
 
         # Row 2: 播放控制
-        self.add_item(PrevBtn(disabled=not self.track.presets))
-        self.add_item(SyncBtn(disabled=not self.track.presets))
-        self.add_item(NextBtn(disabled=not self.track.presets))
+        self.add_item(PrevBtn(disabled=not self.track.presets, row=2))
+        self.add_item(SyncBtn(disabled=not self.track.presets, row=2))
+        self.add_item(NextBtn(disabled=not self.track.presets, row=2))
 
-        # Row 2: 功能按钮
-        self.add_item(RenameBtn())
-        self.add_item(PreviewBtn(self.track, self.cog.manager))
+        # Row 3: 功能按钮
+        self.add_item(RenameBtn(row=3))
+        self.add_item(PreviewBtn(self.track, self.cog.manager, row=3))
 
         # Row 3: 危险/导航操作
-        self.add_item(DelTrackBtn())
-        self.add_item(BackButton(self.parent_view))
+        self.add_item(DelTrackBtn(row=3))
+        self.add_item(BackButton(self.parent_view, row=3))
 
         # Row 4: 翻页
         self._add_pagination_buttons(row=4)
@@ -214,8 +214,8 @@ class TrackDetailView(PaginatedView):
 # =============================================================================
 
 class BackButton(ui.Button):
-    def __init__(self, parent_view: AdminDashboardView):
-        super().__init__(label="返回列表", style=ButtonStyle.secondary, row=2)
+    def __init__(self, parent_view: AdminDashboardView, **kwargs):
+        super().__init__(label="返回列表", style=ButtonStyle.secondary, **kwargs)
         self.parent_view = parent_view
 
     async def callback(self, interaction: discord.Interaction):
@@ -224,8 +224,8 @@ class BackButton(ui.Button):
 
 
 class DelTrackBtn(ui.Button):
-    def __init__(self):
-        super().__init__(label="删除轨道", style=ButtonStyle.danger, row=3, emoji="🗑️")
+    def __init__(self, **kwargs):
+        super().__init__(label="删除轨道", style=ButtonStyle.danger, **kwargs, emoji="🗑️")
 
     async def callback(self, interaction: discord.Interaction):
         view: TrackDetailView = self.view
@@ -299,22 +299,23 @@ class PlayerControlBtn(ui.Button):
 
 
 class PrevBtn(PlayerControlBtn):
-    def __init__(self, disabled: bool = False):
-        super().__init__(emoji="⏮️", style=ButtonStyle.primary, row=2, disabled=disabled, action='prev')
+    def __init__(self, disabled: bool = False, **kwargs):
+        super().__init__(emoji="⏮️", style=ButtonStyle.primary, **kwargs, disabled=disabled, action='prev')
 
 
 class SyncBtn(PlayerControlBtn):
-    def __init__(self, disabled: bool = False):
-        super().__init__(label="同步", emoji="🔄", style=ButtonStyle.success, row=2, disabled=disabled, action='sync')
+    def __init__(self, disabled: bool = False, **kwargs):
+        super().__init__(label="同步", emoji="🔄", style=ButtonStyle.success, **kwargs, disabled=disabled, action='sync')
 
 
 class NextBtn(PlayerControlBtn):
-    def __init__(self, disabled: bool = False):
-        super().__init__(emoji="⏭️", style=ButtonStyle.primary, row=2, disabled=disabled, action='next')
+    def __init__(self, disabled: bool = False, **kwargs):
+        super().__init__(emoji="⏭️", style=ButtonStyle.primary, **kwargs, disabled=disabled, action='next')
+
 
 class ToggleBtn(ui.Button):
-    def __init__(self, on: bool):
-        super().__init__(label="暂停轮播" if on else "开启轮播", style=ButtonStyle.danger if on else ButtonStyle.success, row=1, emoji="⏯️")
+    def __init__(self, on: bool, **kwargs):
+        super().__init__(label="暂停轮播" if on else "开启轮播", style=ButtonStyle.danger if on else ButtonStyle.success, **kwargs, emoji="⏯️")
 
     async def callback(self, itx: discord.Interaction):
         view: TrackDetailView = self.view
@@ -323,8 +324,9 @@ class ToggleBtn(ui.Button):
 
 
 class ModeBtn(ui.Button):
-    def __init__(self, mode: str):
-        super().__init__(label="切换为随机" if mode == 'sequence' else "切换为顺序", style=ButtonStyle.primary, row=1, emoji="🔀" if mode == 'sequence' else "🔁")
+    def __init__(self, mode: str, **kwargs):
+        super().__init__(label="切换为随机" if mode == 'sequence' else "切换为顺序", style=ButtonStyle.primary, **kwargs,
+                         emoji="🔀" if mode == 'sequence' else "🔁")
 
     async def callback(self, itx: discord.Interaction):
         view: TrackDetailView = self.view
@@ -334,16 +336,16 @@ class ModeBtn(ui.Button):
 
 
 class IntervalBtn(ui.Button):
-    def __init__(self, current_interval: int):
-        super().__init__(label=f"间隔 ({current_interval}m)", style=ButtonStyle.secondary, row=1, emoji="⏱️")
+    def __init__(self, current_interval: int, **kwargs):
+        super().__init__(label=f"间隔 ({current_interval}m)", style=ButtonStyle.secondary, **kwargs, emoji="⏱️")
 
     async def callback(self, itx: discord.Interaction):
         await itx.response.send_modal(IntervalModal(self.view))
 
 
 class RenameBtn(ui.Button):
-    def __init__(self):
-        super().__init__(label="重命名", style=ButtonStyle.secondary, row=2, emoji="✏️")
+    def __init__(self, **kwargs):
+        super().__init__(label="重命名", style=ButtonStyle.secondary, **kwargs, emoji="✏️")
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.send_modal(RenameTrackModal(self.view))
@@ -371,8 +373,8 @@ class RenameTrackModal(ui.Modal, title="重命名轨道"):
 
 
 class PreviewBtn(ui.Button):
-    def __init__(self, track: Track, manager: RoleJukeboxManager):
-        super().__init__(label="预览效果", style=ButtonStyle.secondary, row=2, emoji="👀")
+    def __init__(self, track: Track, manager: RoleJukeboxManager, **kwargs):
+        super().__init__(label="预览效果", style=ButtonStyle.secondary, **kwargs, emoji="👀")
         self.track = track
         self.manager = manager
 
@@ -558,7 +560,7 @@ class BackToTrackBtn(ui.Button):
 # =============================================================================
 
 class ManagePresetSelect(ui.Select):
-    def __init__(self, items: list[Preset]):
+    def __init__(self, items: list[Preset], **kwargs):
         # 限制长度，防止名称过长报错
         opts = [
             SelectOption(
@@ -568,7 +570,7 @@ class ManagePresetSelect(ui.Select):
                 description=f"管理: {p.color}"
             ) for p in items
         ]
-        super().__init__(placeholder="选择一个预设进行管理 (编辑/删除)...", options=opts, row=0)
+        super().__init__(placeholder="选择一个预设进行管理 (编辑/删除)...", options=opts, **kwargs)
 
     async def callback(self, interaction: discord.Interaction):
         view: TrackDetailView = self.view
