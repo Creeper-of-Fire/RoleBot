@@ -1,147 +1,226 @@
-# jukebox/admin_view.py
+# role_jukebox/admin_view.py
 from __future__ import annotations
 
-import uuid
-from typing import TYPE_CHECKING, List, Dict, Any, Optional
-
 import discord
-from discord import ui, Interaction, SelectOption, ButtonStyle, Embed, Color
+from discord import ui, ButtonStyle, Embed, Color, SelectOption
+from typing import TYPE_CHECKING, Optional
 
-from role_jukebox.role_jukebox_manager import Preset
-from role_jukebox.share_view import PresetEditModal, CloneRoleButton
-from utility.helpers import safe_defer, try_get_member
+from role_jukebox.models import Track, Preset
 from utility.paginated_view import PaginatedView
 
 if TYPE_CHECKING:
     from role_jukebox.cog import RoleJukeboxCog
 
 
-class PresetAdminView(PaginatedView):
-    """一个分页视图，用于管理员管理服务器的所有身份组预设。"""
+class AdminDashboardView(ui.View):
+    """一级面板：列表"""
 
     def __init__(self, cog: RoleJukeboxCog, guild: discord.Guild):
+        super().__init__(timeout=600)
         self.cog = cog
         self.guild = guild
-        # provider 是一个函数，每次更新数据时都会调用它
-        super().__init__(all_items_provider=self._fetch_all_presets, items_per_page=5, timeout=600)
 
-    async def _fetch_all_presets(self) -> List[Preset]:
-        """从Manager获取并格式化所有预设数据为Preset对象列表。"""
-        # 1. 获取通用预设
-        all_presets = self.cog.jukebox_manager.get_all_presets_for_admin_view()
+    async def refresh(self, interaction: Optional[discord.Interaction] = None):
+        self.clear_items()
+        tracks = self.cog.manager.get_all_tracks(self.guild.id)
 
-        # 附加临时属性 _display_owner 用于视图显示
-        for preset in all_presets:
-            if preset.owner_id:
-                member = await try_get_member(self.guild, preset.owner_id)
-                preset._display_owner = member.display_name if member else f"用户ID: {preset.owner_id}"
+        embed = Embed(title="🛠️ 轮播管理面板", color=Color.blurple())
+        embed.description = "使用 `/jukebox 添加预设` 指令来上传图片和添加预设。\n以下是当前活跃的轨道："
 
-        # 筛选出属于本服务器的通用预设和所有用户预设
-        guild_id = self.guild.id
-        filtered_presets = [
-            p for p in all_presets
-            if p.owner_id is not None or self._is_general_preset_for_guild(p, guild_id)
-        ]
-        return filtered_presets
+        opts = []
+        for t in tracks:
+            r = self.guild.get_role(t.role_id)
+            name = r.name if r else f"失效ID {t.role_id}"
 
-    def _is_general_preset_for_guild(self, preset: Preset, guild_id: int) -> bool:
-        """检查一个通用预设是否属于当前服务器"""
-        # 这是一个简化的检查。更稳妥的方式是让 manager 方法直接返回过滤后的结果。
-        # 但为了保持 manager 的通用性，暂时在视图层处理。
-        guild_general_presets = self.cog.jukebox_manager.get_general_presets(guild_id)
-        return preset.uuid in {p.uuid for p in guild_general_presets}
+            status = "🟢" if t.enabled else "🔴"
+            embed.add_field(
+                name=f"{status} {name}",
+                value=f"{t.interval_minutes}分钟 | {len(t.presets)}个预设 | {t.mode}",
+                inline=False
+            )
+
+            if r:
+                opts.append(SelectOption(label=name, value=str(t.role_id), emoji="⚙️"))
+
+        self.add_item(CreateButton())
+        if opts:
+            self.add_item(TrackSelect(opts))
+
+        if interaction:
+            if interaction.response.is_done():
+                await interaction.edit_original_response(embed=embed, view=self)
+            else:
+                await interaction.response.send_message(embed=embed, view=self, ephemeral=True)
+
+
+class CreateButton(ui.Button):
+    def __init__(self):
+        super().__init__(label="新建轨道", style=ButtonStyle.green, row=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(CreateTrackModal(self.view))
+
+
+class CreateTrackModal(ui.Modal, title="输入身份组ID"):
+    rid = ui.TextInput(label="身份组ID", required=True)
+
+    def __init__(self, parent):
+        super().__init__()
+        self.parent = parent
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            val = int(self.rid.value)
+            role = interaction.guild.get_role(val)
+            if not role: return await interaction.response.send_message("❌ 找不到身份组", ephemeral=True)
+            await self.parent.cog.manager.create_track(interaction.guild_id, val)
+            await interaction.response.send_message(f"✅ 轨道 {role.name} 已创建", ephemeral=True)
+            await self.parent.refresh(interaction)
+        except ValueError:
+            await interaction.response.send_message("❌ ID格式错误", ephemeral=True)
+
+
+class TrackSelect(ui.Select):
+    def __init__(self, options):
+        super().__init__(placeholder="选择轨道进行管理...", options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        role_id = int(self.values[0])
+        view = TrackDetailView(self.view.cog, self.view.guild, role_id, self.view)
+        await view.refresh(interaction)
+
+
+# --- 二级面板：详情 ---
+
+class TrackDetailView(PaginatedView):
+    def __init__(self, cog, guild, role_id, parent):
+        self.cog = cog
+        self.guild = guild
+        self.role_id = role_id
+        self.parent = parent
+        self.track = None
+        super().__init__(all_items_provider=self._get_data, items_per_page=5)
+
+    async def _get_data(self):
+        self.track = self.cog.manager.get_track(self.guild.id, self.role_id)
+        return self.track.presets if self.track else []
 
     async def _rebuild_view(self):
-        """核心方法：重建Embed和组件。"""
         self.clear_items()
-        self.embed = Embed(
-            title="🛠️ 身份组预设管理",
-            description=f"管理服务器的所有通用预设和用户专属预设。\n当前页码: {self.page + 1}/{self.total_pages}",
-            color=Color.orange()
-        )
-        page_items = self.get_page_items()
-
-        if not page_items:
-            self.embed.description += "\n\n*这里空空如也...*"
-        else:
-            for i, preset in enumerate(page_items):
-                if preset.owner_id is None:  # 通用预设
-                    field_name = f"🎨 **{preset.name}** (通用预设)"
-                    field_value = f"颜色: `{preset.color}`\n图标: {preset.icon_url or '无'}"
-                else:  # 用户预设
-                    field_name = f"👤 **{preset.name}** (用户: {getattr(preset, '_display_owner', preset.owner_id)})"
-                    field_value = f"颜色: `{preset.color}`\n图标: {preset.icon_url or '无'}"
-                self.embed.add_field(name=field_name, value=field_value, inline=False)
-
-        # 添加操作组件
-        if page_items:
-            self.add_item(EditPresetSelect(page_items))  # 编辑选择器
-            self.add_item(DeletePresetSelect(page_items))  # 删除选择器
-
-        self.add_item(AddPresetButton(row=2))
-        self.add_item(CloneRoleButton(row=2))
-        self._add_pagination_buttons(row=4)
-
-
-# --- Components for Admin View ---
-
-class EditPresetSelect(ui.Select):
-    def __init__(self, page_items: List[Preset]):
-        options = []
-        for preset in page_items:
-            label_prefix = "编辑通用预设:" if preset.owner_id is None else "编辑用户预设:"
-            options.append(SelectOption(label=f"{label_prefix} {preset.name}", value=preset.uuid, emoji="✏️"))
-        super().__init__(placeholder="选择一个预设进行编辑...", options=options, row=0)
-
-    async def callback(self, interaction: Interaction):
-        preset_uuid = self.values[0]
-        preset_to_edit = self.view.cog.jukebox_manager.get_preset_by_uuid(preset_uuid)
-        if not preset_to_edit:
-            await interaction.response.send_message("❌ 错误：找不到该预设，可能已被删除。", ephemeral=True)
-            await self.view.update_view(interaction)
+        self.track = self.cog.manager.get_track(self.guild.id, self.role_id)
+        if not self.track:
+            self.embed = Embed(title="❌ 轨道已删除")
+            self.add_item(BackButton(self.parent))
             return
 
-        # 弹出模态框，并传入现有预设对象进行填充
-        modal = PresetEditModal(self.view.cog, existing_preset=preset_to_edit, is_admin=True)
-        await interaction.response.send_modal(modal)
-        await modal.wait()
-        await self.view.update_view(interaction) # 模态框结束后刷新
+        r = self.guild.get_role(self.role_id)
+        self.embed = Embed(title=f"⚙️ {r.name if r else 'Unknown'}", color=r.color if r else Color.default())
+        self.embed.description = (
+            f"**添加预设**: 请使用 `/jukebox 添加预设` 指令\n"
+            f"**状态**: {'✅' if self.track.enabled else '⏸️'} | **模式**: {self.track.mode}\n"
+            f"**间隔**: {self.track.interval_minutes} min"
+        )
 
-
-class DeletePresetSelect(ui.Select):
-    def __init__(self, page_items: List[Preset]):
-        options = []
-        for preset in page_items:
-            label_prefix = "删除通用预设:" if preset.owner_id is None else "删除用户预设:"
-            options.append(SelectOption(label=f"{label_prefix} {preset.name}", value=preset.uuid, emoji="🗑️"))
-        super().__init__(placeholder="选择一个预设将其删除...", options=options, row=1)
-
-    async def callback(self, interaction: Interaction):
-        await safe_defer(interaction)
-        preset_uuid = self.values[0]
-        preset_to_delete = self.view.cog.jukebox_manager.get_preset_by_uuid(preset_uuid)  # 获取信息用于反馈
-
-        success = await self.view.cog.jukebox_manager.delete_preset_by_uuid(preset_uuid)
-
-        if success and preset_to_delete:
-            msg = f"已删除预设 '{preset_to_delete.name}'。"
-        elif success:
-            msg = "预设已删除。"
+        items = self.get_page_items()
+        if items:
+            txt = ""
+            for i, p in enumerate(items):
+                idx = (self.page * self.items_per_page) + i + 1
+                icon = "🖼️" if p.icon_filename else "⚪"
+                txt += f"`#{idx}` **{p.name}** {icon} ({p.color})\n"
+            self.embed.add_field(name="预设列表", value=txt)
+            self.add_item(DeleteSelect(items))
         else:
-            msg = "删除失败，可能预设已被移除。"
+            self.embed.add_field(name="空池子", value="请使用指令添加预设")
 
-        await interaction.followup.send(f"✅ {msg}" if success else f"❌ {msg}", ephemeral=True)
-        await self.view.update_view(interaction)
+        # 控制按钮
+        self.add_item(ToggleBtn(self.track.enabled))
+        self.add_item(ModeBtn(self.track.mode))
+        self.add_item(IntervalBtn())
+        self.add_item(DelTrackBtn())
+        self.add_item(BackButton(self.parent))
+
+        self._add_pagination_buttons(row=4)
+
+    async def refresh(self, interaction):
+        await self.update_view(interaction)
 
 
-class AddPresetButton(ui.Button):
-    def __init__(self, row: int):
-        super().__init__(label="添加通用预设", style=ButtonStyle.green, emoji="➕", row=row)
+# --- 简单按钮组件 ---
 
-    async def callback(self, interaction: Interaction):
-        # is_admin=True, existing_preset=None 表示创建新的通用预设
-        modal = PresetEditModal(self.view.cog, is_admin=True, existing_preset=None)
-        await interaction.response.send_modal(modal)
-        await modal.wait()
-        await self.view.update_view(interaction)
+class BackButton(ui.Button):
+    def __init__(self, parent):
+        super().__init__(label="返回", style=ButtonStyle.secondary, row=3)
+        self.p = parent
 
+    async def callback(self, itx): await self.p.refresh(itx)
+
+
+class ToggleBtn(ui.Button):
+    def __init__(self, on):
+        super().__init__(label="暂停" if on else "开启", style=ButtonStyle.danger if on else ButtonStyle.success, row=1)
+
+    async def callback(self, itx):
+        view = self.view
+        await view.cog.manager.update_track(view.guild.id, view.role_id, enabled=not view.track.enabled)
+        await view.refresh(itx)
+
+
+class ModeBtn(ui.Button):
+    def __init__(self, mode):
+        super().__init__(label="切为随机" if mode == 'sequence' else "切为顺序", style=ButtonStyle.primary, row=1)
+
+    async def callback(self, itx):
+        view = self.view
+        new = 'random' if view.track.mode == 'sequence' else 'sequence'
+        await view.cog.manager.update_track(view.guild.id, view.role_id, mode=new)
+        await view.refresh(itx)
+
+
+class IntervalBtn(ui.Button):
+    def __init__(self):
+        super().__init__(label="间隔", style=ButtonStyle.secondary, row=1)
+
+    async def callback(self, itx):
+        await itx.response.send_modal(IntervalModal(self.view))
+
+
+class DelTrackBtn(ui.Button):
+    def __init__(self):
+        super().__init__(label="删除轨道", style=ButtonStyle.danger, row=3)
+
+    async def callback(self, itx):
+        view = self.view
+        await view.cog.manager.delete_track(view.guild.id, view.role_id)
+        await itx.response.send_message("🗑️ 已删除", ephemeral=True)
+        await view.parent.refresh(itx)
+
+
+class DeleteSelect(ui.Select):
+    def __init__(self, items):
+        opts = [SelectOption(label=p.name, value=p.uuid, emoji="🗑️") for p in items]
+        super().__init__(placeholder="删除预设...", options=opts, row=0)
+
+    async def callback(self, itx):
+        view = self.view
+        await view.cog.manager.remove_preset(view.guild.id, view.role_id, self.values[0])
+        await itx.response.defer()
+        await view.refresh(itx)
+
+
+class IntervalModal(ui.Modal, title="设置间隔"):
+    val = ui.TextInput(label="分钟")
+
+    def __init__(self, p):
+        super().__init__()
+        self.p = p
+
+    async def on_submit(self, itx):
+        try:
+            v = int(self.val.value)
+            if v < 1: raise ValueError
+            await self.p.cog.manager.update_track(self.p.guild.id, self.p.role_id, interval=v)
+            await itx.response.send_message("✅", ephemeral=True)
+            await self.p.refresh(itx)
+        except:
+            await itx.response.send_message("❌", ephemeral=True)

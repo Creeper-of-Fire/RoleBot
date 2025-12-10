@@ -1,32 +1,203 @@
-# jukebox/cog.py
+# role_jukebox/cog.py
 from __future__ import annotations
 
 import asyncio
-import io
 import typing
-from typing import Optional, Dict, List
+from typing import List
 
 import aiohttp
 import discord
-from discord import app_commands, Color, Interaction, ui
+from discord import app_commands, ButtonStyle, ui
 from discord.ext import tasks
 
-import config
-from role_jukebox.admin_view import PresetAdminView
-from role_jukebox.main_panel_view import RoleJukeboxView
-from role_jukebox.personal_view import UserPresetView
-from role_jukebox.role_jukebox_manager import RoleJukeboxManager, Preset
+from role_jukebox.admin_view import AdminDashboardView
+from role_jukebox.manager import RoleJukeboxManager
+from role_jukebox.models import Preset
+from role_jukebox.user_view import UserJukeboxView
 from utility.feature_cog import FeatureCog
-from utility.helpers import try_get_member
 
 if typing.TYPE_CHECKING:
     from main import RoleBot
 
 
-class OpenJukeboxPanelButton(ui.Button):
-    """一个简单的按钮，用于打开点歌机面板。"""
+class RoleJukeboxCog(FeatureCog, name="RoleJukebox"):
+    """
+    身份组自动轮播系统。
+    管理员配置轨道（身份组+预设池+间隔），机器人自动在该身份组上循环应用外观。
+    """
 
-    def __init__(self, cog: "RoleJukeboxCog"):
+    async def update_safe_roles_cache(self):
+        pass
+
+    def get_main_panel_buttons(self) -> List[discord.ui.Button]:
+        """
+        [框架方法]
+        返回要显示在机器人主控面板（/panel）上的按钮。
+        管理员用指令配置，所以这里只提供给用户的入口。
+        """
+        return [OpenLobbyButton(self)]
+
+    def __init__(self, bot: RoleBot):
+        super().__init__(bot)
+        self.manager = RoleJukeboxManager()
+        self.session = aiohttp.ClientSession()
+        self.rotation_task.start()
+
+    def cog_unload(self):
+        self.rotation_task.cancel()
+        asyncio.create_task(self.session.close())
+
+    # --- Commands ---
+
+    jukebox = app_commands.Group(name="身份组轮播", description="身份组外观自动轮播系统")
+
+    @jukebox.command(name="私人面板", description="打开身份组轮播面板")
+    async def public_panel(self, interaction: discord.Interaction):
+        if not interaction.guild: return
+        view = UserJukeboxView(self, interaction.guild)
+        await view.refresh(interaction)
+
+    @jukebox.command(name="管理面板", description="查看和配置轮播轨道 (查看/删除/开关)")
+    @app_commands.checks.has_permissions(manage_roles=True)
+    async def admin_panel(self, interaction: discord.Interaction):
+        if not interaction.guild: return
+        view = AdminDashboardView(self, interaction.guild)
+        await view.refresh(interaction)
+
+    @jukebox.command(name="添加预设", description="向轨道添加一个新的外观预设")
+    @app_commands.describe(
+        target_role="要添加到的轮播轨道 (身份组)",
+        name="预设名称",
+        color="颜色 (HEX格式，如 #FF0000)",
+        icon="上传图标文件 (支持 PNG/JPG/GIF)"
+    )
+    @app_commands.checks.has_permissions(manage_roles=True)
+    async def add_preset(self,
+                         interaction: discord.Interaction,
+                         target_role: discord.Role,
+                         name: str,
+                         color: str,
+                         icon: typing.Optional[discord.Attachment] = None):
+
+        await interaction.response.defer(ephemeral=True)
+
+        # 1. 检查轨道是否存在
+        track = self.manager.get_track(interaction.guild_id, target_role.id)
+        if not track:
+            return await interaction.followup.send(f"❌ 轨道不存在。请先在管理面板中为 {target_role.mention} 创建轨道。", ephemeral=True)
+
+        # 2. 验证颜色
+        try:
+            discord.Color.from_str(color)
+        except ValueError:
+            return await interaction.followup.send("❌ 颜色格式无效。", ephemeral=True)
+
+        # 3. 处理图片
+        filename = None
+        if icon:
+            # 限制文件大小 (Discord 身份组图标限制 256kb，虽然我们只是存，但太大也没用)
+            if icon.size > 1024 * 1024 * 2:  # 2MB 限制
+                return await interaction.followup.send("❌ 图片太大了，请上传小于 2MB 的图片。", ephemeral=True)
+
+            try:
+                image_bytes = await icon.read()
+                # 简单获取后缀
+                ext = icon.filename.split('.')[-1] if '.' in icon.filename else "png"
+                filename = await self.manager.save_icon(image_bytes, ext)
+            except Exception as e:
+                self.logger.error(f"Save icon failed: {e}")
+                return await interaction.followup.send("❌ 图片保存失败。", ephemeral=True)
+
+        # 4. 保存预设
+        preset = Preset(name=name, color=color, icon_filename=filename)
+        await self.manager.add_preset(interaction.guild_id, target_role.id, preset)
+
+        msg = f"✅ 已向 {target_role.mention} 添加预设：**{name}**"
+        if filename: msg += " (含图标)"
+        await interaction.followup.send(msg, ephemeral=True)
+
+    @jukebox.command(name="克隆预设", description="从现有的身份组复制外观作为预设")
+    @app_commands.checks.has_permissions(manage_roles=True)
+    async def clone_preset(self, interaction: discord.Interaction, target_role: discord.Role, source_role: discord.Role):
+        await interaction.response.defer(ephemeral=True)
+
+        track = self.manager.get_track(interaction.guild_id, target_role.id)
+        if not track:
+            return await interaction.followup.send("❌ 目标轨道不存在。", ephemeral=True)
+
+        filename = None
+        if source_role.icon:
+            try:
+                # 即使是动态头像，Discord 也可以 read() 出来
+                icon_bytes = await source_role.icon.read()
+                ext = "gif" if source_role.icon.is_animated() else "png"
+                filename = await self.manager.save_icon(icon_bytes, ext)
+            except Exception as e:
+                self.logger.error(f"Clone icon failed: {e}")
+                return await interaction.followup.send("⚠️ 克隆图标失败，将只克隆颜色和名称。", ephemeral=True)
+
+        preset = Preset(name=source_role.name, color=str(source_role.color), icon_filename=filename)
+        await self.manager.add_preset(interaction.guild_id, target_role.id, preset)
+
+        await interaction.followup.send(f"✅ 已从 {source_role.name} 克隆预设到 {target_role.mention}。", ephemeral=True)
+
+    # --- Rotation Task ---
+
+    @tasks.loop(minutes=1)
+    async def rotation_task(self):
+        """每分钟检查一次是否有轨道需要轮换。"""
+        try:
+            # 获取需要执行的操作
+            # 注意：get_due_rotations 会更新内存中的时间戳，所以我们需要保存一次
+            actions = await asyncio.to_thread(self.manager.get_due_rotations)
+
+            if actions:
+                await self.manager.save_data()  # 保存更新后的时间戳和索引
+
+            for guild_id, track, preset in actions:
+                await self._apply_preset(guild_id, track.role_id, preset)
+
+        except Exception as e:
+            self.logger.error(f"[Jukebox] Rotation task error: {e}")
+
+    async def _apply_preset(self, guild_id: int, role_id: int, preset):
+        """执行具体的身份组修改操作。"""
+        guild = self.bot.get_guild(guild_id)
+        if not guild: return
+
+        role = guild.get_role(role_id)
+        if not role:
+            # 身份组如果被删了，可以考虑自动删除轨道，或者仅仅打印日志
+            self.logger.warning(f"[Jukebox] Role {role_id} not found in {guild.name}.")
+            return
+
+        # 下载图标
+        icon_bytes = None
+        if preset.icon_filename:
+            # 这一步是同步IO读取，但因为是本地SSD，通常很快
+            # 如果文件很大，可以在 manager 里用 asyncio.to_thread 包装
+            icon_bytes = await asyncio.to_thread(self.manager.get_icon_bytes, preset.icon_filename)
+
+        try:
+            await role.edit(
+                name=preset.name,
+                color=discord.Color.from_str(preset.color),
+                display_icon=icon_bytes,
+                reason=f"Jukebox Rotation: {preset.name}"
+            )
+        except discord.Forbidden:
+            self.logger.warning(f"Missing permission to edit role {role.name} in {guild.name}")
+        except Exception as e:
+            self.logger.error(f"Failed to edit role {role.id}: {e}")
+
+    @rotation_task.before_loop
+    async def before_task(self):
+        await self.bot.wait_until_ready()
+
+
+class OpenLobbyButton(ui.Button):
+    def __init__(self, cog: RoleJukeboxCog):
+        # 放在主面板上的按钮，负责打开 User View
         super().__init__(
             label="身份点歌机",
             style=discord.ButtonStyle.primary,
@@ -35,236 +206,11 @@ class OpenJukeboxPanelButton(ui.Button):
         )
         self.cog = cog
 
-    async def callback(self, interaction: Interaction):
-        if not isinstance(interaction.user, discord.Member):
-            await interaction.response.send_message("错误：无法获取您的成员信息。", ephemeral=True)
-            return
-
-        view = RoleJukeboxView(self.cog, interaction.user)
-        await view.update_view()  # Initial build
-        await interaction.response.send_message(embed=view.embed, view=view, ephemeral=True)
-
-
-class RoleJukeboxCog(FeatureCog, name="RoleJukebox"):
-    """管理身份组点歌机功能。"""
-
-    def get_main_panel_buttons(self) -> Optional[List[discord.ui.Button]]:
-        return [OpenJukeboxPanelButton(self)]
-
-    async def update_safe_roles_cache(self):
-        pass
-
-    def __init__(self, bot: RoleBot):
-        super().__init__(bot)
-        self.jukebox_manager = RoleJukeboxManager()
-        self.process_expirations_task.start()
-        self.session = aiohttp.ClientSession()
-
-    def cog_unload(self):
-        self.process_expirations_task.cancel()
-        asyncio.create_task(self.session.close())
-
-    # --- Helper Methods ---
-    def get_guild_config(self, guild_id: int) -> Optional[Dict]:
-        """安全地获取服务器的点歌机配置。"""
-        return config.JUKEBOX_GUILD_CONFIGS.get(guild_id)
-
-    def is_vip(self, member: discord.Member) -> bool:
-        """检查成员是否为VIP。"""
-        guild_config = self.get_guild_config(member.guild.id)
-        if not guild_config or not guild_config.get("vip_user_role_ids"):
-            return False
-        vip_role_ids = set(guild_config["vip_user_role_ids"])
-        member_role_ids = {role.id for role in member.roles}
-        return not vip_role_ids.isdisjoint(member_role_ids)
-
-    # --- Slash Commands Group ---
-    jukebox = app_commands.Group(
-        name="身份组点歌机",
-        description="身份组点歌机相关指令",
-        guild_ids=[gid for gid in config.JUKEBOX_GUILD_CONFIGS if config.JUKEBOX_GUILD_CONFIGS[gid].get("enabled")]
-    )
-
-    @jukebox.command(name="私人面板", description="打开身份组点歌机面板")
-    async def panel(self, interaction: discord.Interaction):
-        if not isinstance(interaction.user, discord.Member):
-            await interaction.response.send_message("错误：无法获取您的成员信息。", ephemeral=True)
-            return
-
-        view = RoleJukeboxView(self, interaction.user)
-        await view.update_view()  # Initial build
-        await interaction.response.send_message(embed=view.embed, view=view, ephemeral=True)
-
-    # --- Admin Sub-group ---
-    admin = app_commands.Group(name="管理", description="点歌机管理指令", parent=jukebox)
-
-    @admin.command(name="管理面板", description="打开可视化的预设管理面板")
-    @app_commands.checks.has_permissions(manage_roles=True)
-    async def admin_panel(self, interaction: Interaction):
-        if not interaction.guild:
-            await interaction.response.send_message("此指令只能在服务器内使用。", ephemeral=True)
-            return
-
-        view = PresetAdminView(self, interaction.guild)
-        await view.start(interaction, ephemeral=True)
-
-    @admin.command(name="解锁全部", description="强制解锁本服务器所有被锁定的点歌队列")
-    @app_commands.checks.has_permissions(manage_roles=True)
-    async def force_unlock_all(self, interaction: Interaction):
-        """管理员指令，用于立即解除所有队列的变更锁定。"""
-        await interaction.response.defer(ephemeral=True)
-
-        unlocked_count = await self.jukebox_manager.force_unlock_all_queues(interaction.guild_id)
-
-        if unlocked_count > 0:
-            message = f"✅ 操作成功！已强制解锁 **{unlocked_count}** 个点歌队列。"
-        else:
-            message = "ℹ️ 操作完成，但当前没有发现任何处于锁定状态的队列。"
-
-        await interaction.followup.send(message, ephemeral=True)
-
-    # --- VIP Sub-group ---
-    my = app_commands.Group(name="我的", description="我的专属预设管理", parent=jukebox)
-
-    @my.command(name="预设面板", description="管理我的专属身份组预设")
-    async def my_presets_panel(self, interaction: Interaction):
-        """为VIP用户打开他们自己的预设管理面板。"""
-        if not isinstance(interaction.user, discord.Member):
-            await interaction.response.send_message("错误：无法获取您的成员信息。", ephemeral=True)
-            return
-
-        # 权限检查
-        if not self.is_vip(interaction.user):
-            await interaction.response.send_message("❌ 此功能为权区/前权区专属。", ephemeral=True)
-            return
-
-        view = UserPresetView(self, interaction.user)
-        await view.start(interaction, ephemeral=True)
-
-    async def _apply_preset_to_role(self, role: discord.Role, preset: Preset, reason: str):
-        """一个辅助函数，用于将预设应用到身份组，包含图标处理。"""
-        name = preset.name
-        color = Color.from_str(preset.color)
-        icon_url = preset.icon_url
-        icon_bytes = None
-
-        self.logger.info(f"Applying preset '{name}' ({preset.uuid}) to role {role.name}")
-
-        if icon_url:
-            try:
-                async with self.session.get(icon_url) as resp:
-                    if resp.status == 200:
-                        icon_bytes = await resp.read()
-                    else:
-                        self.logger.warning(f"Failed to download icon from {icon_url}")
-            except Exception as e:
-                self.logger.error(f"Error downloading icon from {icon_url}: {e}")
-
-        await role.edit(name=name, color=color, display_icon=icon_bytes, reason=reason)
-
-    async def user_claim_or_change_queue(self, interaction: Interaction, view: 'RoleJukeboxView'):
-        """处理用户点击'变更/点播'按钮的逻辑"""
-        success, msg = await self.jukebox_manager.change_or_claim_queue(
-            view.guild.id, view.user.id, view.selected_queue_role_id, view.selected_preset
-        )
-        if success:
-            role = view.guild.get_role(view.selected_queue_role_id)
-            await self._apply_preset_to_role(role, view.selected_preset, f"{interaction.user} 变更/点播")
-
-            if role not in interaction.user.roles:
-                await view.user.add_roles(role, reason="变更/点播身份组")
-
-            await interaction.followup.send(f"✅ {msg}", ephemeral=True)
-        else:
-            await interaction.followup.send(f"❌ {msg}", ephemeral=True)
-
-        await view.update_view(interaction)
-
-    # --- Background Task ---
-    @tasks.loop(seconds=30)
-    async def process_expirations_task(self):
-        actions = await self.jukebox_manager.process_expirations()
-        for action in actions:
-            guild = self.bot.get_guild(action.guild_id)
-            role = guild.get_role(action.role_id) if guild else None
-            if not guild or not role:
-                self.logger.warning(f"Jukebox: Can't find guild or role for action: {action}")
-                continue
-
-            try:
-                self.logger.info(f"Jukebox: Rotating role {role.id} in guild {guild.id}")
-                new_preset = action.new_preset
-                requester = await try_get_member(guild, action.requester_id)
-
-                # 1. 应用新预设
-                await self._apply_preset_to_role(role, new_preset, "点歌队列轮换")
-
-                # 2. 确保请求者拥有该身份组
-                if requester and role not in requester.roles:
-                    await requester.add_roles(role, reason="排队请求生效")
-
-                # 3. (可选) 通知请求者
-                if requester:
-                    try:
-                        await requester.send(f"你在服务器 **{guild.name}** 的排队请求已生效！身份组已变更为 **{new_preset.name}**。")
-                    except discord.Forbidden:
-                        pass
-
-            except Exception as e:
-                self.logger.error(f"Error processing jukebox action {action}: {e}")
-
-    async def live_update_role_by_preset_uuid(self, preset_uuid: str):
-        """
-        当一个预设被更新后，查找所有正在使用此预设的活跃队列并更新其身份组外观。
-        """
-        preset = self.jukebox_manager.get_preset_by_uuid(preset_uuid)
-        if not preset:
-            return
-
-        self.logger.info(f"Performing live update for preset UUID: {preset_uuid}")
-
-        active_queues = self.jukebox_manager.get_all_queues_using_preset(preset_uuid)
-        for guild_id, role_id in active_queues:
-            guild = self.bot.get_guild(guild_id)
-            if not guild: continue
-
-            role = guild.get_role(role_id)
-            if role:
-                self.logger.info(f"Found active role {role.name} in guild {guild.name} using updated preset. Applying changes.")
-                await self._apply_preset_to_role(role, preset, "预设被管理员/所有者修改")
-
-    async def _upload_icon_and_get_url(self, guild_id: int, image_bytes: bytes, original_filename: str) -> Optional[str]:
-        """将图片二进制数据上传到专用频道并返回永久URL。"""
-        guild_config = self.get_guild_config(guild_id)
-        if not guild_config or not (channel_id := guild_config.get("icon_storage_channel_id")):
-            self.logger.error(f"Guild {guild_id} is missing 'icon_storage_channel_id' in config.")
-            return None
-
-        channel = self.bot.get_channel(channel_id)
-        if not channel:
-            self.logger.error(f"Cannot find icon storage channel with ID {channel_id}.")
-            return None
-
-        try:
-            # 使用 discord.File 对象上传二进制数据
-            file = discord.File(io.BytesIO(image_bytes), filename=original_filename)
-            message = await channel.send(file=file)
-
-            # 返回上传后附件的永久URL
-            return message.attachments[0].url
-        except discord.Forbidden:
-            self.logger.error(f"Bot lacks permissions to upload to channel {channel_id}.")
-            return None
-        except Exception as e:
-            self.logger.error(f"Failed to upload icon to storage channel: {e}")
-            return None
-
-    @process_expirations_task.before_loop
-    async def before_tasks(self):
-        await self.bot.wait_until_ready()
+    async def callback(self, interaction: discord.Interaction):
+        # 复用 UserJukeboxView
+        view = UserJukeboxView(self.cog, interaction.guild)
+        await view.refresh(interaction)
 
 
 async def setup(bot: RoleBot):
-    """Cog的入口点。"""
-    # 确保只在有配置的服务器上注册指令
     await bot.add_cog(RoleJukeboxCog(bot))
