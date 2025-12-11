@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import typing
+from typing import Optional, TYPE_CHECKING, Any
 from typing import List
 
 import aiohttp
@@ -16,7 +17,7 @@ from role_jukebox.models import Preset
 from role_jukebox.user_view import UserJukeboxView
 from utility.feature_cog import FeatureCog
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
     from main import RoleBot
 
 
@@ -92,16 +93,22 @@ class RoleJukeboxCog(FeatureCog, name="RoleJukebox"):
         track="要添加预设到的轨道",
         name="预设名称",
         color="颜色 (HEX格式，如 #FF0000)",
+        secondary_color="[可选] 副颜色，用于创建渐变效果",
+        tertiary_color="[可选] 启用全息模式 (目前输入任意HEX值均可触发，如 #000000)",
         icon="上传图标文件 (支持 PNG/JPG/GIF)"
     )
     @app_commands.checks.has_permissions(manage_roles=True)
     @app_commands.autocomplete(track=track_autocomplete)
-    async def add_preset(self,
-                         interaction: discord.Interaction,
-                         track: str,
-                         name: str,
-                         color: str,
-                         icon: typing.Optional[discord.Attachment] = None):
+    async def add_preset(
+            self,
+            interaction: discord.Interaction,
+            track: str,
+            name: str,
+            color: str,
+            secondary_color: Optional[str] = None,
+            tertiary_color: Optional[str] = None,
+            icon: Optional[discord.Attachment] = None
+    ):
 
         await interaction.response.defer(ephemeral=True)
 
@@ -140,7 +147,13 @@ class RoleJukeboxCog(FeatureCog, name="RoleJukebox"):
                 return await interaction.followup.send("❌ 图片保存失败。", ephemeral=True)
 
         # 4. 保存预设
-        preset = Preset(name=name, color=color, icon_filename=filename)
+        preset = Preset(
+            name=name,
+            color=color,
+            secondary_color=secondary_color,
+            tertiary_color=tertiary_color,
+            icon_filename=filename,
+        )
         await self.manager.add_preset(interaction.guild_id, target_role_id, preset)
 
         display_name = track_obj.name or target_role.name
@@ -180,7 +193,17 @@ class RoleJukeboxCog(FeatureCog, name="RoleJukebox"):
                 self.logger.error(f"Clone icon failed: {e}")
                 return await interaction.followup.send("⚠️ 克隆图标失败，将只克隆颜色和名称。", ephemeral=True)
 
-        preset = Preset(name=source_role.name, color=str(source_role.color), icon_filename=filename)
+        # 检查并克隆副色
+        secondary_color_str = str(source_role.secondary_color) if source_role.secondary_color else None
+        tertiary_color_str = str(source_role.tertiary_color) if source_role.tertiary_color else None
+
+        preset = Preset(
+            name=source_role.name,
+            color=str(source_role.color),
+            secondary_color=secondary_color_str,
+            tertiary_color=tertiary_color_str,
+            icon_filename=filename
+        )
         await self.manager.add_preset(interaction.guild_id, target_role_id, preset)
 
         display_name = track_obj.name or target_role.name
@@ -239,12 +262,29 @@ class RoleJukeboxCog(FeatureCog, name="RoleJukebox"):
             icon_bytes = await self.manager.get_icon_bytes(preset.icon_filename)
 
         try:
-            await role.edit(
-                name=final_name,
-                color=discord.Color.from_str(preset.color),
-                display_icon=icon_bytes,
-                reason=f"Jukebox Rotation: {preset.name}"
-            )
+            edit_kwargs: dict[str, Any] = {
+                'name': final_name,
+                'reason': f"Jukebox Rotation: {preset.name}",
+            }
+            if icon_bytes:
+                edit_kwargs['display_icon'] = icon_bytes
+            # 根据预设配置决定颜色模式
+            if preset.tertiary_color:
+                # 全息模式：使用固定的常量值
+                # 这些值来自 Discord API 文档
+                edit_kwargs['color'] = discord.Colour(11127295)
+                edit_kwargs['secondary_color'] = discord.Colour(16759788)
+                edit_kwargs['tertiary_color'] = discord.Colour(16761760)
+            elif preset.secondary_color:
+                # 渐变模式
+                edit_kwargs['color'] = discord.Color.from_str(preset.color)
+                edit_kwargs['secondary_color'] = discord.Color.from_str(preset.secondary_color)
+            else:
+                # 单色模式
+                edit_kwargs['color'] = discord.Color.from_str(preset.color)
+
+            await role.edit(**edit_kwargs)
+
         except discord.Forbidden:
             self.logger.warning(f"Missing permission to edit role {role.name} in {guild.name}")
         except Exception as e:

@@ -32,7 +32,9 @@ class DashboardMode(str, Enum):
 class Preset:
     """单个外观预设（名字、颜色、图标）。"""
     name: str
-    color: str  # Hex 字符串 (#RRGGBB)
+    color: str  # Hex 字符串 (#RRGGBB) - 主色
+    secondary_color: Optional[str] = None  # 副色，用于渐变
+    tertiary_color: Optional[str] = None   # 第三种颜色，用于触发全息模式
     uuid: str = field(default_factory=lambda: str(uuid.uuid4()))
     icon_filename: Optional[str] = None
 

@@ -146,7 +146,16 @@ class RoleJukeboxManager:
                 t.presets = [p for p in t.presets if p.uuid != uuid]
                 await self.save_data()
 
-    async def update_preset(self, guild_id: int, role_id: int, preset_uuid: str, new_name: str, new_color: str):
+    async def update_preset(
+            self,
+            guild_id: int,
+            role_id: int,
+            preset_uuid: str,
+            new_name: str,
+            new_color: str,
+            new_secondary_color: Optional[str],
+            new_tertiary_color: Optional[str]
+    ):
         """
         根据 UUID 找到并更新一个预设的名称和颜色。
         """
@@ -156,9 +165,11 @@ class RoleJukeboxManager:
             if preset_to_update:
                 preset_to_update.name = new_name
                 preset_to_update.color = new_color
+                preset_to_update.secondary_color = new_secondary_color
+                preset_to_update.tertiary_color = new_tertiary_color
                 await self.save_data()
-                return True # 表示成功
-        return False # 表示失败
+                return True  # 表示成功
+        return False  # 表示失败
 
     # --- 循环逻辑 ---
 

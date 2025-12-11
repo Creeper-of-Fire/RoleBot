@@ -53,10 +53,12 @@ def create_dashboard_embed(guild: discord.Guild, all_tracks: List[Track], mode: 
         mode_str = "随机" if t.mode == TrackMode.RANDOM else "顺序"
         summary_line = f"⏱️ {t.interval_minutes}m | 🔁 {mode_str} | 🎨 {len(t.presets)}个预设"
 
+        field_value = f"目标: {role.mention}\n{summary_line}"
+
         if not t.presets:
-            field_value = summary_line + "\n*暂无预设*"
+            field_value += "\n*暂无预设*"
         else:
-            preset_lines = []
+            preset_lines = [""] # 先空一行，和上面的摘要拉开距离
             presets_to_show = t.presets[:10]
             for i, p in enumerate(presets_to_show):
                 # 截断过长的名称以保持排版整洁
@@ -66,8 +68,7 @@ def create_dashboard_embed(guild: discord.Guild, all_tracks: List[Track], mode: 
             if len(t.presets) > 10:
                 preset_lines.append(f"...等共 {len(t.presets)} 个")
 
-            preset_list_str = "\n".join(preset_lines)
-            field_value = f"{summary_line}\n{preset_list_str}"
+            field_value += "\n".join(preset_lines)
 
         if mode == DashboardMode.ADMIN:
             status_emoji = "🟢" if t.enabled else "🔴"
@@ -110,7 +111,14 @@ class PreviewBtn(ui.Button):
                 except:
                     c = Color.default()
 
-                emb = Embed(title=p.name, description=f"Color: `{p.color}`", color=c)
+                # 构建能够展示所有颜色信息的描述
+                desc = f"**主色**: `{p.color}`"
+                if p.secondary_color:
+                    desc += f"\n**副色**: `{p.secondary_color}`"
+                if p.tertiary_color:
+                    desc += f"\n**三色**: `{p.tertiary_color}` (全息模式)"
+
+                emb = Embed(title=p.name, description=desc, color=c)
 
                 if p.icon_filename:
                     data = await self.manager.get_icon_bytes(p.icon_filename)

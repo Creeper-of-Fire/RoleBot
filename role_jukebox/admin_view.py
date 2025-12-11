@@ -147,7 +147,10 @@ class TrackDetailView(PaginatedView):
 
         prefix_display = f"`{self.track.name_prefix}`" if self.track.name_prefix else "*未设置*"
 
+        role_mention_str = f"{role.mention} (`{self.role_id}`)" if role else f"失效ID `{self.role_id}`"
         self.embed.description = (
+            f"**目标身份组**: {role_mention_str}\n"
+            f"----------------\n"
             f"**状态**: {status}\n"
             f"**模式**: {mode}\n"
             f"**间隔**: {self.track.interval_minutes} 分钟\n"
@@ -161,10 +164,25 @@ class TrackDetailView(PaginatedView):
             desc_lines = []
             for i, p in enumerate(items):
                 absolute_idx = (self.page * self.items_per_page) + i
-                # --- 高亮当前播放的预设 ---
+                # 高亮当前播放的预设
                 current_marker = "▶️ " if absolute_idx == self.track.current_index else ""
+
                 icon_mark = "🖼️" if p.icon_filename else "⚪"
-                desc_lines.append(f"`{absolute_idx + 1}.` {current_marker}**{p.name}** {icon_mark} `Hex:{p.color}`")
+                # 默认显示主色
+                color_display = f"`{p.color}`"
+
+                # 如果是渐变，显示两种颜色
+                if p.secondary_color:
+                    color_display = f"`{p.color}` -> `{p.secondary_color}`"
+
+                # 如果是全息模式，明确标注
+                if p.tertiary_color:
+                    color_display = "✨ `全息模式`"
+
+                # 最终组合成一行
+                desc_lines.append(
+                    f"`{absolute_idx + 1}.` {current_marker}**{p.name}** {icon_mark} {color_display}"
+                )
             self.embed.add_field(name=f"预设列表 (第 {self.page + 1} 页)", value="\n".join(desc_lines), inline=False)
 
             # Row 0: 管理预设下拉菜单
@@ -395,6 +413,7 @@ class RenameTrackModal(ui.Modal, title="重命名轨道"):
         )
         await self.parent_view.refresh_and_edit(interaction)
 
+
 class IntervalModal(ui.Modal, title="设置轮播间隔"):
     val = ui.TextInput(label="间隔 (分钟)", placeholder="例如: 60", min_length=1, max_length=4)
 
@@ -443,11 +462,16 @@ class PresetManageView(ui.View):
         except:
             c = Color.default()
         embed = Embed(title=f"🎨 管理预设: {self.preset.name}", color=c)
-        embed.description = (
-            f"**名称**: {self.preset.name}\n"
-            f"**色值**: `{self.preset.color}`\n"
-            f"**UUID**: `{self.preset.uuid}`"
+        desc = (
+            f"**主色**: `{self.preset.color}`\n"
         )
+        if self.preset.secondary_color:
+            desc += f"**副色**: `{self.preset.secondary_color}`\n"
+        if self.preset.tertiary_color:
+            desc += f"**三色**: `{self.preset.tertiary_color}` (触发全息模式)\n"
+
+        desc += f"**UUID**: `{self.preset.uuid}`"
+        embed.description = desc
 
         files = []
         if self.preset.icon_filename:
@@ -570,19 +594,34 @@ class ManagePresetSelect(ui.Select):
 class EditPresetModal(ui.Modal, title="编辑预设属性"):
     name_input = ui.TextInput(label="预设名称", required=True, max_length=100)
     color_input = ui.TextInput(label="颜色 (HEX)", placeholder="#FF0000", required=True, min_length=6, max_length=7)
+    secondary_color_input = ui.TextInput(label="[可选] 副颜色 (HEX)", placeholder="留空则不使用渐变", required=False, max_length=7)
+    tertiary_color_input = ui.TextInput(
+        label="[可选] 第三种颜色 (HEX)",
+        placeholder="设置为任意合法值即可，用于触发全息模式",
+        required=False,
+        max_length=7
+    )
 
     def __init__(self, parent_view: PresetManageView):
         super().__init__()
         self.parent_view = parent_view
         self.name_input.default = self.parent_view.preset.name
         self.color_input.default = self.parent_view.preset.color
+        self.secondary_color_input.default = self.parent_view.preset.secondary_color
+        self.tertiary_color_input.default = self.parent_view.preset.tertiary_color
 
     async def on_submit(self, interaction: discord.Interaction):
         new_name = self.name_input.value.strip()
         new_color = self.color_input.value.strip()
+        new_secondary = self.secondary_color_input.value.strip() or None
+        new_tertiary = self.tertiary_color_input.value.strip() or None
 
         try:
             Color.from_str(new_color)
+            if new_secondary:
+                Color.from_str(new_secondary)
+            if new_tertiary:
+                Color.from_str(new_tertiary)
         except ValueError:
             return await interaction.response.send_message("❌ 颜色格式错误 (例如 #FF0000)", ephemeral=True)
 
@@ -592,13 +631,17 @@ class EditPresetModal(ui.Modal, title="编辑预设属性"):
             self.parent_view.role_id,
             self.parent_view.preset.uuid,
             new_name,
-            new_color
+            new_color,
+            new_secondary,
+            new_tertiary
         )
 
         if success:
             # 更新内存对象，以便立即显示
             self.parent_view.preset.name = new_name
             self.parent_view.preset.color = new_color
+            self.parent_view.preset.secondary_color = new_secondary
+            self.parent_view.preset.tertiary_color = new_tertiary
 
             # 刷新子页面
             await self.parent_view.show(interaction)
