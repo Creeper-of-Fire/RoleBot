@@ -1,15 +1,32 @@
 # role_jukebox/models.py
 from __future__ import annotations
 
-import uuid
 import random
-import time
+import uuid
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import List, Optional, Dict, Any, Type, TypeVar
 
 T = TypeVar('T')
 
 DEFAULT_NAME_PREFIX = "[轮播]"
+
+
+class TrackMode(str, Enum):
+    SEQUENCE = 'sequence'
+    RANDOM = 'random'
+
+
+class PlayerAction(str, Enum):
+    NEXT = 'next'
+    PREV = 'prev'
+    SYNC = 'sync'
+
+
+class DashboardMode(str, Enum):
+    ADMIN = 'admin'
+    USER = 'user'
+
 
 @dataclass
 class Preset:
@@ -38,7 +55,7 @@ class Track:
     name_prefix: Optional[str] = DEFAULT_NAME_PREFIX
 
     # 配置参数
-    mode: str = 'sequence'  # 'sequence' (顺序) 或 'random' (随机)
+    mode: TrackMode = TrackMode.RANDOM  # 轮播模式
     interval_minutes: int = 60  # 轮播间隔（分钟）
     enabled: bool = True  # 是否开启轮播
 
@@ -51,7 +68,7 @@ class Track:
         if not self.presets:
             return None
 
-        if self.mode == 'random':
+        if self.mode == TrackMode.RANDOM:
             # 随机模式：随机选一个
             if len(self.presets) > 1:
                 # 尝试避免连续两次重复（简单的随机优化）
@@ -71,7 +88,14 @@ class Track:
     def from_dict(cls: Type[T], data: Dict[str, Any]) -> T:
         presets_data = data.get('presets', [])
         data['presets'] = [Preset.from_dict(p) for p in presets_data]
-        # 自动填充新增字段的默认值
+
+        if 'mode' in data and isinstance(data['mode'], str):
+            try:
+                data['mode'] = TrackMode(data['mode'])
+            except ValueError:
+                data['mode'] = TrackMode.SEQUENCE
+
+                # 自动填充新增字段的默认值
         clean_data = {k: v for k, v in data.items() if k in cls.__annotations__}
         return cls(**clean_data)
 

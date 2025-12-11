@@ -6,13 +6,13 @@ from typing import TYPE_CHECKING, Optional
 import discord
 from discord import ui, ButtonStyle, Embed, Color, SelectOption
 
-from role_jukebox.models import Track, Preset
+from role_jukebox.models import Track, Preset, TrackMode, PlayerAction, DashboardMode
+from role_jukebox.share_view import create_dashboard_embed, PreviewBtn
 from utility.paginated_view import PaginatedView
 from utility.views import ConfirmationView
 
 if TYPE_CHECKING:
     from role_jukebox.cog import RoleJukeboxCog
-    from role_jukebox.manager import RoleJukeboxManager
 
 
 # =============================================================================
@@ -34,13 +34,10 @@ class AdminDashboardView(ui.View):
         self.clear_items()
         tracks = self.cog.manager.get_all_tracks(self.guild.id)
 
-        embed = Embed(title="🛠️ 轮播管理面板", color=Color.blurple())
-        embed.description = (
-            "使用 `/身份组轮播 添加预设` 指令来上传图片和添加预设。\n"
-            "点击下方按钮管理对应轨道的详细配置。"
-        )
+        # --- 使用共享函数创建 Embed ---
+        embed = create_dashboard_embed(self.guild, tracks, DashboardMode.ADMIN)
 
-        valid_count = 0
+        # --- 添加特定于管理视图的按钮 ---
         for t in tracks:
             r = self.guild.get_role(t.role_id)
             # 优先使用自定义名称，否则回退到身份组名称
@@ -49,22 +46,11 @@ class AdminDashboardView(ui.View):
                 self.add_item(TrackBtn(t.role_id, display_name, ButtonStyle.secondary, disabled=True))
                 continue
 
-            valid_count += 1
             status_emoji = "🟢" if t.enabled else "🔴"
             btn_style = ButtonStyle.success if t.enabled else ButtonStyle.secondary
             label = f"{display_name[:10]}"
 
             self.add_item(TrackBtn(t.role_id, label, btn_style, emoji=status_emoji))
-
-            mode_str = "随机" if t.mode == 'random' else "顺序"
-            embed.add_field(
-                name=f"{status_emoji} {display_name}",
-                value=f"⏱️ {t.interval_minutes}m | 🎨 {len(t.presets)}个 | 🔁 {mode_str}",
-                inline=True
-            )
-
-        if valid_count == 0:
-            embed.description += "\n\n⚠️ **当前没有活跃的轨道**"
 
         self.add_item(CreateButton())
 
@@ -157,7 +143,7 @@ class TrackDetailView(PaginatedView):
 
         self.embed = Embed(title=f"⚙️ 配置轨道: {display_name}", color=role_color)
         status = "✅ 运行中" if self.track.enabled else "⏸️ 已暂停"
-        mode = "🔀 随机播放" if self.track.mode == 'random' else "🔁 顺序播放"
+        mode = "🔀 随机播放" if self.track.mode == TrackMode.RANDOM else "🔁 顺序播放"
 
         prefix_display = f"`{self.track.name_prefix}`" if self.track.name_prefix else "*未设置*"
 
@@ -304,17 +290,17 @@ class PlayerControlBtn(ui.Button):
 
 class PrevBtn(PlayerControlBtn):
     def __init__(self, disabled: bool = False, **kwargs):
-        super().__init__(emoji="⏮️", style=ButtonStyle.primary, **kwargs, disabled=disabled, action='prev')
+        super().__init__(emoji="⏮️", style=ButtonStyle.primary, **kwargs, disabled=disabled, action=PlayerAction.PREV)
 
 
 class SyncBtn(PlayerControlBtn):
     def __init__(self, disabled: bool = False, **kwargs):
-        super().__init__(label="同步", emoji="🔄", style=ButtonStyle.success, **kwargs, disabled=disabled, action='sync')
+        super().__init__(label="同步", emoji="🔄", style=ButtonStyle.success, **kwargs, disabled=disabled, action=PlayerAction.SYNC)
 
 
 class NextBtn(PlayerControlBtn):
     def __init__(self, disabled: bool = False, **kwargs):
-        super().__init__(emoji="⏭️", style=ButtonStyle.primary, **kwargs, disabled=disabled, action='next')
+        super().__init__(emoji="⏭️", style=ButtonStyle.primary, **kwargs, disabled=disabled, action=PlayerAction.NEXT)
 
 
 class ToggleBtn(ui.Button):
@@ -325,6 +311,7 @@ class ToggleBtn(ui.Button):
         view: TrackDetailView = self.view
         await view.cog.manager.update_track(view.guild.id, view.role_id, enabled=not view.track.enabled)
         await view.refresh_and_edit(itx)
+
 
 class SetPrefixBtn(ui.Button):
     def __init__(self, **kwargs):
@@ -359,6 +346,7 @@ class SetPrefixModal(ui.Modal, title="设置轮播名称前缀"):
         )
         await self.parent_view.refresh_and_edit(interaction)
 
+
 class ModeBtn(ui.Button):
     def __init__(self, mode: str, **kwargs):
         super().__init__(label="切换为随机" if mode == 'sequence' else "切换为顺序", style=ButtonStyle.primary, **kwargs,
@@ -366,7 +354,7 @@ class ModeBtn(ui.Button):
 
     async def callback(self, itx: discord.Interaction):
         view: TrackDetailView = self.view
-        new_mode = 'random' if view.track.mode == 'sequence' else 'sequence'
+        new_mode = TrackMode.RANDOM if view.track.mode == TrackMode.SEQUENCE else TrackMode.SEQUENCE
         await view.cog.manager.update_track(view.guild.id, view.role_id, mode=new_mode)
         await view.refresh_and_edit(itx)
 
@@ -406,50 +394,6 @@ class RenameTrackModal(ui.Modal, title="重命名轨道"):
             name=new_name if new_name else None
         )
         await self.parent_view.refresh_and_edit(interaction)
-
-
-class PreviewBtn(ui.Button):
-    def __init__(self, track: Track, manager: RoleJukeboxManager, **kwargs):
-        super().__init__(label="预览效果", style=ButtonStyle.secondary, **kwargs, emoji="👀")
-        self.track = track
-        self.manager = manager
-
-    async def callback(self, interaction: discord.Interaction):
-        if not self.track.presets:
-            return await interaction.response.send_message("❌ 暂无预设可预览", ephemeral=True)
-
-        await interaction.response.defer(ephemeral=True, thinking=True)
-
-        presets_to_show = self.track.presets[:10]
-        files, embeds = [], []
-
-        try:
-            for p in presets_to_show:
-                try:
-                    c = Color.from_str(p.color)
-                except:
-                    c = Color.default()
-
-                emb = Embed(title=p.name, description=f"Color: `{p.color}`", color=c)
-
-                if p.icon_filename:
-                    data = await self.manager.get_icon_bytes(p.icon_filename)
-                    if data:
-                        import io
-                        f = discord.File(io.BytesIO(data), filename=p.icon_filename)
-                        emb.set_thumbnail(url=f"attachment://{p.icon_filename}")
-                        files.append(f)
-                embeds.append(emb)
-
-            content = f"👀 **外观预览 (前{len(embeds)}个)**"
-            if len(self.track.presets) > 10:
-                content += f" (共 {len(self.track.presets)} 个)"
-
-            await interaction.followup.send(content=content, embeds=embeds, files=files, ephemeral=True)
-
-        except Exception as e:
-            await interaction.followup.send(f"❌ 预览生成失败: {str(e)}", ephemeral=True)
-
 
 class IntervalModal(ui.Modal, title="设置轮播间隔"):
     val = ui.TextInput(label="间隔 (分钟)", placeholder="例如: 60", min_length=1, max_length=4)

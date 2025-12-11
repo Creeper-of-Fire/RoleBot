@@ -10,9 +10,8 @@ from dataclasses import asdict
 from typing import List, Optional, Tuple
 
 import aiofiles
-import aiohttp
 
-from role_jukebox.models import JukeboxData, GuildData, Track, Preset
+from role_jukebox.models import JukeboxData, GuildData, Track, Preset, TrackMode, PlayerAction
 
 # 使用新文件名以避免旧数据冲突，实现“不需要兼容”
 DATA_FILE = "data/jukebox_data.json"
@@ -187,10 +186,9 @@ class RoleJukeboxManager:
 
         return actions
 
-    async def manual_control(self, guild_id: int, role_id: int, action: str) -> Optional[Preset]:
+    async def manual_control(self, guild_id: int, role_id: int, action: PlayerAction) -> Optional[Preset]:
         """
         手动控制轨道播放。
-        action: 'next', 'prev', 'sync'
         返回: 需要应用到 Discord 的 Preset 对象
         """
         t = self.get_track(guild_id, role_id)
@@ -204,18 +202,18 @@ class RoleJukeboxManager:
             t.current_index = 0
 
         # 根据动作计算新索引
-        if action == 'next':
-            if t.mode == 'random' and count > 1:
+        if action == PlayerAction.NEXT:
+            if t.mode == TrackMode.RANDOM and count > 1:
                 # 随机模式下，找一个和当前不一样的
                 candidates = [i for i in range(count) if i != t.current_index]
                 t.current_index = random.choice(candidates)
             else:
                 # 顺序模式
                 t.current_index = (t.current_index + 1) % count
-        elif action == 'prev':
+        elif action == PlayerAction.PREV:
             # 上一首，永远按顺序来
             t.current_index = (t.current_index - 1 + count) % count
-        elif action == 'sync':
+        elif action == PlayerAction.SYNC:
             # 同步操作，索引不变，直接使用当前的
             pass
         else:

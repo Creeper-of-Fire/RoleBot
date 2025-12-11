@@ -4,9 +4,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import discord
-from discord import ui, ButtonStyle, Embed, Color
+from discord import ui, ButtonStyle, Embed
 
-from role_jukebox.admin_view import PreviewBtn  # 复用预览按钮逻辑
+from role_jukebox.models import TrackMode, DashboardMode
+from role_jukebox.share_view import create_dashboard_embed, PreviewBtn
 from utility.helpers import safe_defer
 
 if TYPE_CHECKING:
@@ -30,41 +31,24 @@ class UserJukeboxView(ui.View):
         self.clear_items()
         tracks = self.cog.manager.get_all_tracks(self.guild.id)
 
-        # 过滤并计数
-        valid_tracks = []
+        # --- 使用共享函数创建 Embed ---
+        embed = create_dashboard_embed(self.guild, tracks, DashboardMode.USER)
+
+        # --- 添加特定于用户视图的按钮 ---
+        # 遍历所有轨道，只为有效且启用的轨道创建按钮
         for t in tracks:
             role = self.guild.get_role(t.role_id)
-            if role and t.enabled:  # 只展示开启的
-                valid_tracks.append((t, role))
+            if not role or not t.enabled:
+                continue
 
-        embed = Embed(
-            title="🎶 身份组轮播大厅",
-            description="点击下方的身份组按钮，即可加入或退出对应的外观轮播轨道！\n\n",
-            color=Color.from_rgb(255, 105, 180)
-        )
+            display_name = t.name or role.name
 
-        if not valid_tracks:
-            embed.description = "⚠️ 暂时没有开放的轮播活动，请稍后再来。"
-        else:
-            # --- 为每个轨道添加信息字段，并动态生成按钮 ---
-            for track, role in valid_tracks:
-                display_name = track.name or role.name
+            # 检查用户是否已有该身份组，改变按钮样式
+            has_role = role in interaction.user.roles if isinstance(interaction.user, discord.Member) else False
+            style = ButtonStyle.success if has_role else ButtonStyle.secondary
+            label = display_name[:80]
 
-                # 1. 向 Embed 添加信息字段
-                mode_str = "随机" if track.mode == 'random' else "顺序"
-                embed.add_field(
-                    name=f"💿 {display_name}",
-                    value=f"⏱️ {track.interval_minutes}m | 🎨 {len(track.presets)}个 | 🔁 {mode_str}",
-                    inline=True
-                )
-
-                # 2. 添加对应的交互按钮
-                # 检查用户是否已有该身份组，改变按钮样式
-                has_role = role in interaction.user.roles if isinstance(interaction.user, discord.Member) else False
-                style = ButtonStyle.success if has_role else ButtonStyle.secondary
-                label = display_name[:80]
-
-                self.add_item(UserTrackBtn(track, role, style, label))
+            self.add_item(UserTrackBtn(t, role, style, label))
 
         # 确保总是发送一个新消息
         if interaction.response.is_done():
@@ -94,7 +78,7 @@ class UserTrackBtn(ui.Button):
             color=self.role.color
         )
 
-        mode_text = "随机切换" if self.track.mode == 'random' else "顺序切换"
+        mode_text = "随机切换" if self.track.mode == TrackMode.RANDOM else "顺序切换"
         status_text = "✅ **已加入**" if has_role else "⬜ **未加入**"
 
         embed.description = (
@@ -104,7 +88,6 @@ class UserTrackBtn(ui.Button):
             f"**包含外观**: {len(self.track.presets)} 种"
         )
 
-        # 使用一个新的 View 来显示操作选项，而不是以前的 Select
         view = JoinLeaveView(self.role, has_role, self.track, self.view.cog.manager)
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
@@ -122,7 +105,7 @@ class JoinLeaveView(ui.View):
         else:
             self.add_item(ActionBtn("加入轨道", ButtonStyle.green, "📥", True))
 
-        # 2. 预览按钮 (复用 admin_view 中的逻辑)
+        # 2. 预览按钮
         self.add_item(PreviewBtn(self.track, self.manager))
 
 
