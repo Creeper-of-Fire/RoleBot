@@ -165,7 +165,7 @@ class FashionPanelButton(ui.Button):
             await interaction.followup.send("错误：无法获取您的服务器成员信息。", ephemeral=True)
             return
         view = FashionManageView(self.cog, member)
-        await view.update_view(interaction)
+        await view.start(interaction, ephemeral=True)
 
 
 async def setup(bot: 'RoleBot'):

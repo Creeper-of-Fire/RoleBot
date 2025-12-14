@@ -283,10 +283,15 @@ class PlayerControlBtn(ui.Button):
         view: TrackDetailView = self.view
         await interaction.response.defer()
 
+        new_preset = None
+
         # 1. 调用 manager 获取下一个状态
-        new_preset = await view.cog.manager.manual_control(
-            view.guild.id, view.role_id, self.action
-        )
+        try:
+            new_preset = await view.cog.manager.manual_control(
+                view.guild.id, view.role_id, self.action
+            )
+        except Exception as e:
+            await interaction.followup.send(f"❌ 操作失败: {e}", ephemeral=True)
 
         if new_preset:
             # 2. 调用 cog 的方法应用到 Discord

@@ -47,7 +47,7 @@ class FashionManageView(PaginatedView):
         if not all_fashion_options:
             self.cog.logger.info(f"服务器 {self.guild.id} 未配置幻化系统或无安全幻化组。")
 
-        # 2. [改动] 调用父类构造函数，只传递数据，不传递 interaction/cog/user
+        # 2. 调用父类构造函数，只传递数据，不传递 interaction/cog/user
         timeout_minutes = config.ROLE_MANAGER_CONFIG.get("private_panel_timeout_minutes", 3)
         get_all_fashion_options = lambda: all_fashion_options
         super().__init__(
@@ -56,7 +56,7 @@ class FashionManageView(PaginatedView):
             timeout=timeout_minutes * 60
         )
 
-    # [改动] 实现新的抽象方法 _rebuild_view
+    # 实现新的抽象方法 _rebuild_view
     async def _rebuild_view(self):
         self.clear_items()
 
@@ -88,7 +88,7 @@ class FashionManageView(PaginatedView):
             page_num=self.page, total_pages=self.total_pages,
         ))
 
-        # [改动] 从基类添加分页按钮
+        # 从基类添加分页按钮
         self._add_pagination_buttons(row=1)
 
         if self.cog.guide_url:

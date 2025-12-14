@@ -166,9 +166,12 @@ class PaginatedView(ui.View, ABC):
             return
 
         if interaction.response.is_done():
+            # 如果交互已经被响应（例如 defer() 或在 modal 之后），
+            # 我们必须使用 followup 或 edit_original_response。
+            # 在这种情况下，edit_original_response 几乎总是我们想要的。
             await interaction.edit_original_response(embeds=self.embeds_to_send, view=self)
-        # 如果 interaction 已经被响应 (例如，在 modal 之后)，我们直接编辑消息
-        elif self.message:
+        else:
+            # 如果这是一个新的交互（例如点击按钮），我们直接编辑按钮所在的消息。
             await interaction.response.edit_message(embeds=self.embeds_to_send, view=self)
 
     async def start(self, interaction: discord.Interaction, ephemeral: bool = False):

@@ -5,7 +5,6 @@ from typing import Dict, List, Optional
 
 import discord
 from discord import ui, Color
-from discord.ext import commands
 
 import config
 from core.embed_link.embed_manager import EmbedLinkManager
@@ -91,7 +90,8 @@ class SelfServicePanelButton(ui.Button):
             await interaction.followup.send("错误：无法获取您的服务器成员信息。", ephemeral=True)
             return
         view = SelfServiceManageView(self.cog, member)
-        await view.update_view(interaction)
+        await view.start(interaction, ephemeral=True)
+
 
 async def setup(bot: 'RoleBot'):
     """Cog的入口点。"""
