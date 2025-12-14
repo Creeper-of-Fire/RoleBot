@@ -70,10 +70,9 @@ class BackupCog(commands.Cog, name="Backup"):
         else:
             self.logger.info(f"备份模块已就绪，目标服务器: '{self.backup_guild.name}', 目标频道: '#{self.backup_channel.name}'")
 
-
     def cog_unload(self):
-            """Cog卸载时，取消任务。"""
-            self.auto_backup_task.cancel()
+        """Cog卸载时，取消任务。"""
+        self.auto_backup_task.cancel()
 
     # --- 核心备份逻辑 ---
 
@@ -101,6 +100,8 @@ class BackupCog(commands.Cog, name="Backup"):
                 "id": role.id,
                 "name": role.name,
                 "color": role.color.value,
+                "secondary_color": role.secondary_color.value if role.secondary_color is not None else None,
+                "tertiary_color": role.tertiary_color.value if role.tertiary_color is not None else None,
                 "hoist": role.hoist,
                 "position": role.position,
                 "permissions": role.permissions.value,
