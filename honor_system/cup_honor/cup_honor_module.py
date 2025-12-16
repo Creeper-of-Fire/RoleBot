@@ -15,7 +15,7 @@ from typing import Tuple
 from zoneinfo import ZoneInfo
 
 import discord
-from discord import app_commands
+from discord import app_commands, ui
 from discord.ext import commands, tasks
 
 import config_data
@@ -28,6 +28,149 @@ from .cup_honor_module_view import CupHonorManageView
 
 if typing.TYPE_CHECKING:
     from main import RoleBot
+
+class ExpiredHonorNoticeView(ui.View):
+    """
+    一个自包含的视图，用于处理杯赛头衔到期的通知。
+    它在初始化时执行数据健康检查，生成报告，并提供一键修复功能。
+    """
+
+    def __init__(
+            self,
+            cog: 'CupHonorModuleCog',
+            guild: discord.Guild,
+            honor_def: HonorDefinition,
+            admin_role_id: int
+    ):
+        super().__init__(timeout=86400)  # 按钮有效期24小时
+        self.cog = cog
+        self.guild = guild
+        self.honor_def = honor_def
+        self.admin_role_id = admin_role_id
+
+        # 将所有数据处理和状态计算都放在初始化函数中
+        self._perform_data_check()
+        self._configure_components()
+
+    def _perform_data_check(self):
+        """执行数据交叉验证，并将结果存储为实例属性。"""
+        self.role = self.guild.get_role(self.honor_def.role_id)
+        if not self.role:
+            # 如果身份组不存在，设置空状态
+            self.role_holders = set()
+            self.db_honor_holders = set()
+        else:
+            self.role_holders = set(self.role.members)
+
+        with self.cog.honor_data_manager.get_db() as db:
+            user_honor_records = db.query(UserHonor).filter(UserHonor.honor_uuid == str(self.honor_def.uuid)).all()
+            self.db_honor_holders = {
+                member for user_id in [r.user_id for r in user_honor_records]
+                if (member := self.guild.get_member(user_id))
+            }
+
+        # 计算差异
+        self.members_to_fix = list(self.role_holders - self.db_honor_holders)
+        self.members_ok = list(self.role_holders.intersection(self.db_honor_holders))
+        self.members_record_only = list(self.db_honor_holders - self.role_holders)
+
+    def _configure_components(self):
+        """根据数据检查的结果，配置视图中的按钮等组件。"""
+        # 获取按钮引用
+        fix_button: discord.ui.Button = self.children[0]
+
+        if not self.members_to_fix:
+            fix_button.disabled = True
+            fix_button.label = "无需补发"
+            fix_button.style = discord.ButtonStyle.secondary
+        else:
+            fix_button.disabled = False
+            fix_button.label = f"为 {len(self.members_to_fix)} 人补发荣誉记录"
+            fix_button.style = discord.ButtonStyle.primary
+
+    def create_initial_embed(self) -> discord.Embed:
+        """根据实例的状态创建初始的Embed消息。"""
+        color = discord.Color.orange() if self.members_to_fix else discord.Color.blue()
+        role_mention = self.role.mention if self.role else f"`ID: {self.honor_def.role_id}` (已删除)"
+
+        embed = discord.Embed(
+            title="🏆 杯赛头衔到期与数据检查",
+            description=f"荣誉 **{self.honor_def.name}** ({role_mention}) 已到期。",
+            color=color
+        )
+        embed.set_footer(text=f"荣誉UUID: {self.honor_def.uuid}")
+
+        if self.members_to_fix:
+            mentions = " ".join([m.mention for m in self.members_to_fix])
+            if len(mentions) > 1000: mentions = f"共 {len(self.members_to_fix)} 人，列表过长已省略。"
+            embed.add_field(
+                name="🚨 **危险：数据不一致**",
+                value=f"以下 **{len(self.members_to_fix)}** 人拥有身份组但**无**荣誉记录！\n"
+                      f"**请点击下方按钮为他们补发记录，否则荣誉将丢失！**\n{mentions}",
+                inline=False
+            )
+
+        if self.members_ok:
+            mentions = " ".join([m.mention for m in self.members_ok])
+            if len(mentions) > 1000: mentions = f"共 {len(self.members_ok)} 人，列表过长已省略。"
+            embed.add_field(
+                name="✅ **状态正常：请移除身份组**",
+                value=f"以下 **{len(self.members_ok)}** 人数据记录正常，请手动移除身份组。\n{mentions}",
+                inline=False
+            )
+
+        if not self.members_to_fix and not self.members_ok:
+            embed.add_field(name="ℹ️ 无需操作", value="当前没有成员佩戴此身份组。", inline=False)
+
+        if self.members_record_only:
+            embed.add_field(name="ℹ️ 备注", value=f"另有 **{len(self.members_record_only)}** 人有记录但无身份组，无需处理。", inline=False)
+
+        return embed
+
+    @ui.button(label="补发荣誉记录", style=discord.ButtonStyle.primary, custom_id="fix_cup_honor_records")
+    async def fix_records_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # 权限检查
+        if not any(role.id == self.admin_role_id for role in interaction.user.roles):
+            await interaction.response.send_message("❌ 你没有权限执行此操作。", ephemeral=True)
+            return
+
+        await interaction.response.defer()  # 使用defer来表示正在处理，避免交互超时
+
+        # --- 调用健壮的、复用的同步逻辑 ---
+        res = await self.cog._process_role_sync(self.guild, str(self.honor_def.uuid))
+
+        # --- 处理结果 ---
+        if not res["success"]:
+            # 如果同步过程出错，通知管理员
+            error_embed = discord.Embed(
+                title="❌ 荣誉记录补发失败",
+                description=f"在尝试同步荣誉 **{self.honor_def.name}** 时发生错误。\n"
+                            f"错误信息: `{res['error_msg']}`",
+                color=discord.Color.red()
+            )
+            await interaction.edit_original_response(embed=error_embed, view=None)
+            return
+
+        self.cog.logger.info(f"管理员 {interaction.user} 通过到期通知修复了荣誉 {self.honor_def.uuid}。"
+                             f"新授予: {res['newly_granted']}, 已拥有: {res['already_had']}.")
+
+        # 禁用所有按钮
+        for item in self.children:
+            item.disabled = True
+
+        # 创建成功的Embed
+        success_embed = discord.Embed(
+            title="✅ 荣誉记录补发完成",
+            description=f"已为所有拥有 {res['role_mention']} 身份组的成员检查并补发了荣誉 **{self.honor_def.name}**。",
+            color=discord.Color.green()
+        )
+        success_embed.add_field(name="新授予荣誉", value=f"`{res['newly_granted']}` 人", inline=True)
+        success_embed.add_field(name="本就拥有荣誉", value=f"`{res['already_had']}` 人", inline=True)
+        success_embed.add_field(name="下一步操作", value=f"现在可以安全地手动移除身份组了。", inline=False)
+        success_embed.set_footer(text=f"荣誉UUID: {self.honor_def.uuid}")
+
+        # 编辑原始消息
+        await interaction.edit_original_response(embed=success_embed, view=self)
 
 DATA_FILE_PATH = os.path.join('data', 'cup_honor_notified.json')
 
@@ -88,6 +231,18 @@ class NotificationStateManager:
             self.notified_uuids.add(honor_uuid)
             self._save_state()
             self.logger.info(f"已将荣誉 {honor_uuid} 标记为已通知并持久化。")
+
+    def remove_notified(self, honor_uuid: str) -> bool:
+        """
+        从已通知列表中移除一个UUID，并立即保存。
+        如果UUID存在并被成功移除，返回True。否则返回False。
+        """
+        if honor_uuid in self.notified_uuids:
+            self.notified_uuids.remove(honor_uuid)
+            self._save_state()
+            self.logger.info(f"已从已通知列表中移除荣誉 {honor_uuid}。")
+            return True
+        return False
 
     def has_been_notified(self, honor_uuid: str) -> bool:
         """检查一个UUID是否已被通知。"""
@@ -207,75 +362,34 @@ class CupHonorModuleCog(commands.Cog, name="CupHonorModule"):
 
     async def _notify_admin_for_expired_honor(self, guild: discord.Guild, honor_uuid: str, exp_date: datetime.datetime,
                                               notify_cfg: dict):
-        """为单个过期的荣誉构建并发送通知。
-        此版本逻辑基于数据库记录，并确保即使没有成员佩戴身份组也会发送通知。
-        """
-        # 1. 获取荣誉定义
+        """为单个过期的荣誉构建并发送包含数据健康检查的智能通知。"""
         honor_def = self.honor_data_manager.get_honor_definition_by_uuid(honor_uuid)
         if not honor_def or not honor_def.role_id:
             self.logger.warning(f"荣誉 {honor_uuid} 定义无效或未关联身份组，无法发送到期通知。")
             return
 
-        role = guild.get_role(honor_def.role_id)
-
-        # 2. 从数据库获取所有拥有此荣誉的用户，并检查哪些人仍佩戴对应身份组
-        members_to_action = []
-        with self.honor_data_manager.get_db() as db:
-            # 查找所有被授予该荣誉的用户记录
-            user_honor_records = db.query(UserHonor).filter(UserHonor.honor_uuid == honor_uuid).all()
-
-            # 仅当身份组实际存在时，才检查哪些成员仍需处理
-            if role:
-                for record in user_honor_records:
-                    member = guild.get_member(record.user_id)
-                    # 检查成员是否仍在服务器且拥有该身份组
-                    if member and role in member.roles:
-                        members_to_action.append(member)
-
-        # 3. 获取通知所需的对象
-        notification_channel = guild.get_channel(notify_cfg["channel_id"]) or await guild.fetch_channel(notify_cfg["channel_id"])
+        notification_channel = guild.get_channel(notify_cfg["channel_id"])
         admin_role = guild.get_role(notify_cfg["admin_role_id"])
 
         if not notification_channel or not admin_role:
             self.logger.error(f"无法在服务器 {guild.name} 中找到通知频道或管理员身份组。")
             return
 
-        # 4. 构建并发送通知 (无论是否有人需要处理)
-        embed = discord.Embed(
-            title="🏆 杯赛头衔身份组到期提醒",
-            color=discord.Color.orange()
-        )
-        embed.set_footer(text=f"荣誉: {honor_def.name} | UUID: {honor_uuid}")
+        # 1. 创建自包含的View实例，它会自己处理所有逻辑
+        view = ExpiredHonorNoticeView(self, guild, honor_def, admin_role.id)
 
-        # 根据是否有人需要处理来定制消息
-        if members_to_action:
-            embed.description = (
-                f"以下成员佩戴的荣誉身份组 {role.mention} "
-                f"已于 `{exp_date.strftime('%Y-%m-%d')}` 到期。\n"
-                f"请管理员手动移除他们的身份组，其荣誉勋章将被永久保留。"
-            )
-            member_mentions = " ".join([m.mention for m in members_to_action])
-            embed.add_field(name="需要处理的成员列表", value=member_mentions, inline=False)
-        else:
-            role_mention = role.mention if role else f"`{honor_def.name}` (身份组可能已被删除)"
-            embed.description = (
-                f"荣誉 **{honor_def.name}** (关联身份组: {role_mention}) "
-                f"已于 `{exp_date.strftime('%Y-%m-%d')}` 到期。"
-            )
-            embed.add_field(
-                name="状态检查",
-                value="根据数据库记录，当前没有成员佩戴此身份组。",
-                inline=False
-            )
-            embed.add_field(
-                name="建议操作",
-                value="管理员可以考虑从服务器的身份组列表中删除此身份组，以保持列表整洁。",
-                inline=False
-            )
+        # 2. 从View获取它生成的初始Embed
+        initial_embed = view.create_initial_embed()
 
+        # 3. 发送消息
         try:
-            await notification_channel.send(content=admin_role.mention, embed=embed, allowed_mentions=discord.AllowedMentions(roles=[admin_role]))
-            self.logger.info(f"已在服务器 {guild.name} 发送关于荣誉 {honor_def.name} 的到期通知。")
+            await notification_channel.send(
+                content=admin_role.mention,
+                embed=initial_embed,
+                view=view,
+                allowed_mentions=discord.AllowedMentions(roles=[admin_role])
+            )
+            self.logger.info(f"已在服务器 {guild.name} 发送关于荣誉 {honor_def.name} 的增强版到期通知。")
         except discord.Forbidden:
             self.logger.error(f"无法在频道 {notification_channel.name} 发送通知，权限不足。")
 
@@ -889,6 +1003,45 @@ class CupHonorModuleCog(commands.Cog, name="CupHonorModule"):
             final_embed.add_field(name="⚠️ 操作失败详情 (通常为权限问题)", value=error_details, inline=False)
 
         await interaction.edit_original_response(content="", embed=final_embed)
+
+    @cup_honor_group.command(name="重置通知状态", description="【维护】重置一个杯赛头衔的“已通知”状态，使其可以再次触发到期提醒。")
+    @app_commands.describe(honor_uuid="选择要重置通知状态的杯赛头衔。")
+    @app_commands.autocomplete(honor_uuid=honor_uuid_autocomplete)
+    @app_commands.checks.has_permissions(manage_roles=True)
+    async def reset_notification_status(self, interaction: discord.Interaction, honor_uuid: str):
+        """
+        允许管理员手动从 'cup_honor_notified.json' 中移除一个荣誉UUID。
+        这在需要重新触发某个荣誉的到期通知时非常有用。
+        """
+        await interaction.response.defer(ephemeral=True)
+
+        # 验证荣誉是否存在（可选，但推荐）
+        honor_def = self.cup_honor_manager.get_cup_honor_by_uuid(honor_uuid)
+        if not honor_def:
+            await interaction.followup.send(f"❌ **操作失败**：找不到UUID为 `{honor_uuid}` 的杯赛荣誉定义。", ephemeral=True)
+            return
+
+        # 调用 NotificationStateManager 的新方法
+        was_removed = self.notification_manager.remove_notified(honor_uuid)
+
+        if was_removed:
+            embed = discord.Embed(
+                title="✅ 通知状态已重置",
+                description=f"荣誉 **{honor_def.name}** 的“已通知”标记已被移除。\n"
+                            f"在下一次到期检查时，如果它仍然符合过期条件，将会**重新发送通知**。",
+                color=discord.Color.green()
+            )
+            embed.set_footer(text=f"UUID: {honor_uuid}")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        else:
+            embed = discord.Embed(
+                title="ℹ️ 无需操作",
+                description=f"荣誉 **{honor_def.name}** 本来就**不**在已通知列表中。\n"
+                            f"无需进行重置。",
+                color=discord.Color.blue()
+            )
+            embed.set_footer(text=f"UUID: {honor_uuid}")
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 async def setup(bot: 'RoleBot'):
