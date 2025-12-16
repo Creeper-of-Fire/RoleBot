@@ -51,7 +51,7 @@ def create_dashboard_embed(guild: discord.Guild, all_tracks: List[Track], mode: 
         # 优先使用自定义名称，否则回退到身份组名称
         display_name = t.name or role.name
         mode_str = "随机" if t.mode == TrackMode.RANDOM else "顺序"
-        summary_line = f"⏱️ {t.interval_minutes}m | 🔁 {mode_str} | 🎨 {len(t.presets)}个预设"
+        summary_line = f"⏱️ {t.interval_seconds}秒 | 🔁 {mode_str} | 🎨 {len(t.presets)}个预设"
 
         field_value = f"目标: {role.mention}\n{summary_line}"
 

@@ -83,7 +83,7 @@ class UserTrackBtn(ui.Button):
 
         embed.description = (
             f"{status_text}\n\n"
-            f"**频率**: 每 {self.track.interval_minutes} 分钟\n"
+            f"**频率**: 每 {self.track.interval_seconds} 秒\n"
             f"**模式**: {mode_text}\n"
             f"**包含外观**: {len(self.track.presets)} 种"
         )

@@ -153,7 +153,7 @@ class TrackDetailView(PaginatedView):
             f"----------------\n"
             f"**状态**: {status}\n"
             f"**模式**: {mode}\n"
-            f"**间隔**: {self.track.interval_minutes} 分钟\n"
+            f"**间隔**: {self.track.interval_seconds} 秒\n"
             f"**名称前缀**: {prefix_display}\n"
             f"----------------"
         )
@@ -193,7 +193,7 @@ class TrackDetailView(PaginatedView):
         # Row 1: 核心控制
         self.add_item(ToggleBtn(self.track.enabled, row=1))
         self.add_item(ModeBtn(self.track.mode, row=1))
-        self.add_item(IntervalBtn(self.track.interval_minutes, row=1))
+        self.add_item(IntervalBtn(self.track.interval_seconds, row=1))
 
         # Row 2: 播放控制
         self.add_item(PrevBtn(disabled=not self.track.presets, row=2))
@@ -384,7 +384,7 @@ class ModeBtn(ui.Button):
 
 class IntervalBtn(ui.Button):
     def __init__(self, current_interval: int, **kwargs):
-        super().__init__(label=f"间隔 ({current_interval}m)", style=ButtonStyle.secondary, **kwargs, emoji="⏱️")
+        super().__init__(label=f"间隔 ({current_interval}秒)", style=ButtonStyle.secondary, **kwargs, emoji="⏱️")
 
     async def callback(self, itx: discord.Interaction):
         await itx.response.send_modal(IntervalModal(self.view))
@@ -420,7 +420,7 @@ class RenameTrackModal(ui.Modal, title="重命名轨道"):
 
 
 class IntervalModal(ui.Modal, title="设置轮播间隔"):
-    val = ui.TextInput(label="间隔 (分钟)", placeholder="例如: 60", min_length=1, max_length=4)
+    val = ui.TextInput(label="间隔 (秒)", placeholder="例如: 3600", min_length=1)
 
     def __init__(self, parent_view: TrackDetailView):
         super().__init__()
@@ -430,12 +430,12 @@ class IntervalModal(ui.Modal, title="设置轮播间隔"):
         try:
             v = int(self.val.value)
             if v < 1:
-                return await itx.response.send_message("❌ 间隔至少为1分钟", ephemeral=True)
+                return await itx.response.send_message("❌ 间隔至少为1秒钟。", ephemeral=True)
 
             await self.parent_view.cog.manager.update_track(
                 self.parent_view.guild.id,
                 self.parent_view.role_id,
-                interval_minutes=v  # 使用正确的字段名
+                interval_seconds=v  # 使用正确的字段名
             )
 
             # 因为是在详情页内部修改参数，所以我们编辑当前消息，而不是发新的

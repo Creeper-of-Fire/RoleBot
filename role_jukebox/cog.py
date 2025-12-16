@@ -213,9 +213,104 @@ class RoleJukeboxCog(FeatureCog, name="RoleJukebox"):
         display_name = track_obj.name or target_role.name
         return await interaction.followup.send(f"✅ 已从 {source_role.name} 克隆预设到 **{display_name}**。", ephemeral=True)
 
+    @jukebox.command(name="狂暴模式", description="⚡ 开启限时极速轮播 (慎用！极消耗每日限额)")
+    @app_commands.describe(
+        track="要加速的轨道",
+        duration="持续时间 (秒)，建议不超过 300秒",
+        confirm="确认你知道这会消耗大量 API 配额",
+        interval="[可选] 狂暴模式下的轮播间隔 (秒)，默认为1秒"
+    )
+    @app_commands.checks.has_permissions(manage_roles=True)
+    @app_commands.autocomplete(track=track_autocomplete)
+    async def hyper_mode(
+            self,
+            interaction: discord.Interaction,
+            track: str,
+            duration: int,
+            confirm: bool,
+            interval: int = 1
+    ):
+        """
+        开启限时狂暴模式。
+        """
+        if not confirm:
+            return await interaction.response.send_message("❌ 你必须确认你知道这会消耗 API 配额才能使用。", ephemeral=True)
+
+        # 安全限制：防止误操作设太久，直接把号封了
+        MAX_DURATION = 900  # 最多 900次切换
+        if duration > MAX_DURATION * interval:
+            return await interaction.response.send_message(f"❌ 为了安全，狂暴模式一次最多只能持续 {MAX_DURATION} 次切换，而你设置了 {duration // interval} 次。",
+                                                           ephemeral=True)
+
+        try:
+            target_role_id = int(track)
+        except ValueError:
+            return await interaction.response.send_message("❌ 无效的轨道。", ephemeral=True)
+
+        track_obj = self.manager.get_track(interaction.guild_id, target_role_id)
+        if not track_obj:
+            return await interaction.response.send_message("❌ 轨道不存在。", ephemeral=True)
+
+        # 计算油耗
+        cost = duration // interval
+        daily_limit = 1000
+        cost_percent = (cost / daily_limit) * 100
+
+        await interaction.response.defer()
+
+        # 1. 记录原始速度
+        original_interval = track_obj.interval_seconds
+
+        # 如果原本的速度已经比狂暴模式还快了，就提示一下
+        if original_interval <= interval:
+            return await interaction.followup.send(f"⚠️ 该轨道当前速度 ({original_interval}秒/次) 已快于或等于你设置的狂暴速度 ({interval}秒/次)！",
+                                                   ephemeral=True)
+
+        # 2. 开启狂暴
+        await self.manager.set_hyper_mode(
+            interaction.guild_id,
+            target_role_id,
+            active=True,
+            hyper_interval=interval
+        )
+
+        target_role = interaction.guild.get_role(target_role_id)
+        role_name = target_role.name if target_role else "未知身份组"
+
+        embed = discord.Embed(
+            title="⚡ 狂暴模式已启动！",
+            description=(
+                f"**轨道**: {role_name}\n"
+                f"**持续**: {duration} 秒\n"
+                f"**频率**: **{interval} 秒/次**\n"
+                f"**预计消耗配额**: {cost} 次 (约占每日限额的 {cost_percent:.1f}%，每日限额大约1000，为估算值，可能略微浮动。)\n\n"
+                "🔥 *Enjoy the show!*"
+            ),
+            color=discord.Color.brand_red()
+        )
+        embed.set_footer(text="倒计时结束后将自动恢复原速")
+        await interaction.followup.send(embed=embed)
+
+        # 3. 倒计时等待 (非阻塞方式)
+        await asyncio.sleep(duration)
+
+        # 4. 恢复原速
+        # 重新获取轨道对象（防止中途被删）
+        current_track = self.manager.get_track(interaction.guild_id, target_role_id)
+        if current_track:
+            await self.manager.set_hyper_mode(interaction.guild_id, target_role_id, active=False, original_interval=original_interval)
+
+            try:
+                await interaction.followup.send(
+                    f"✅ 狂暴模式结束。**{role_name}** 已恢复为 {original_interval}秒/次 的安全巡航速度。",
+                    ephemeral=True
+                )
+            except:
+                pass  # 如果原来消息被删了就算了
+
     # --- Rotation Task ---
 
-    @tasks.loop(minutes=1)
+    @tasks.loop(seconds=1)
     async def rotation_task(self):
         """每分钟检查一次是否有轨道需要轮换。"""
         try:

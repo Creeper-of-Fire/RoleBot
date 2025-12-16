@@ -187,9 +187,9 @@ class RoleJukeboxManager:
                 if not track.enabled or not track.presets:
                     continue
 
-                # 检查时间间隔 (分钟 -> 秒)
+                # 检查时间间隔 (秒)
                 # 或者如果是首次运行 (last_run_timestamp == 0)
-                if (now - track.last_run_timestamp) >= (track.interval_minutes * 60):
+                if (now - track.last_run_timestamp) >= track.interval_seconds:
                     next_preset = track.get_next_preset()
                     if next_preset:
                         track.last_run_timestamp = now
@@ -235,3 +235,25 @@ class RoleJukeboxManager:
 
         await self.save_data()
         return t.presets[t.current_index]
+
+    # --- 狂暴模式控制 ---
+
+    async def set_hyper_mode(self, guild_id: int, role_id: int, active: bool, hyper_interval: int = 1, original_interval: int = 60):
+        """
+        切换狂暴模式状态。
+        active=True: 将间隔设为 1秒 (或者你敢设的最低值)
+        active=False: 恢复原来的间隔
+        """
+        t = self.get_track(guild_id, role_id)
+        if t:
+            if active:
+                # 开启狂暴：直接修改间隔为 1 秒
+                # 注意：这里我们不修改 name_prefix，但你可以加上 "[狂暴]" 前缀如果想的话
+                t.interval_seconds = hyper_interval
+                # 强制重置时间戳，确保立刻触发下一次轮换
+                t.last_run_timestamp = 0
+            else:
+                # 关闭狂暴：恢复原状
+                t.interval_seconds = original_interval
+
+            await self.save_data()

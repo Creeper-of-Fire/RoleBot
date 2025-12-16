@@ -58,7 +58,7 @@ class Track:
 
     # 配置参数
     mode: TrackMode = TrackMode.RANDOM  # 轮播模式
-    interval_minutes: int = 60  # 轮播间隔（分钟）
+    interval_seconds: int = 3600  # 轮播间隔（秒）
     enabled: bool = True  # 是否开启轮播
 
     # 运行时状态 (不一定需要严格序列化，但为了重启后保持状态，建议存下来)
