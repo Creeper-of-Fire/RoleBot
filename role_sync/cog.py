@@ -14,7 +14,7 @@ import config
 import config_data
 from role_sync.role_sync_data_manager import RoleSyncDataManager, create_rule_key
 from utility.auth import is_role_dangerous
-from utility.feature_cog import FeatureCog
+from utility.feature_cog import FeatureCog, PanelEntry
 from utility.helpers import create_progress_bar
 from utility.permison import is_super_admin
 from utility.views import ConfirmationView
@@ -46,9 +46,9 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
     def cog_unload(self):
         self.daily_sync_task.cancel()
 
-    def get_main_panel_buttons(self) -> Optional[List[discord.ui.Button]]:
+    def get_main_panel_entries(self) -> Optional[List[PanelEntry]]:
         """此模块没有面向普通用户的前端面板按钮。"""
-        return None
+        pass
 
     async def update_safe_roles_cache(self):
         """【接口方法】更新本模块的安全身份组缓存。"""

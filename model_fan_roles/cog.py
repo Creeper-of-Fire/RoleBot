@@ -14,7 +14,7 @@ from discord import ui
 from model_fan_roles.model_config import MODEL_ROLES_CONFIG
 from model_fan_roles.view import ModelRolesView
 from utility.auth import is_role_dangerous
-from utility.feature_cog import FeatureCog
+from utility.feature_cog import FeatureCog, PanelEntry
 from utility.helpers import safe_defer, try_get_member
 
 if typing.TYPE_CHECKING:
@@ -22,6 +22,7 @@ if typing.TYPE_CHECKING:
 
 # 统计缓存过期时间（分钟）
 STATS_CACHE_TIMEOUT_MINUTES = 1
+
 
 class ModelFanRolesCog(FeatureCog, name="ModelFanRoles"):
     """管理大语言模型相关身份组的功能模块。"""
@@ -37,9 +38,14 @@ class ModelFanRolesCog(FeatureCog, name="ModelFanRoles"):
         # 上次更新统计的时间: { guild_id: datetime }
         self.stats_last_updated: Dict[int, datetime.datetime] = {}
 
-    def get_main_panel_buttons(self) -> Optional[List[discord.ui.Button]]:
+    def get_main_panel_entries(self) -> Optional[List[PanelEntry]]:
         """【接口方法】返回显示在主面板上的入口按钮。"""
-        return [ModelFanPanelButton(self)]
+        return [
+            PanelEntry(
+                button=ModelFanPanelButton(self),
+                description="获取专属大模型粉丝身份组！"
+            )
+        ]
 
     async def update_safe_roles_cache(self):
         """【接口方法】从配置中加载并验证身份组安全性。"""

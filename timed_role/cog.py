@@ -15,7 +15,7 @@ from timed_role.buttons import TimedRolePanelButton
 from timed_role.timed_role_data_manager import TimedRoleDataManager
 from timed_role.timer import UTC8
 from utility.auth import is_role_dangerous
-from utility.feature_cog import FeatureCog
+from utility.feature_cog import FeatureCog, PanelEntry
 from utility.helpers import try_get_member
 
 if typing.TYPE_CHECKING:
@@ -31,8 +31,8 @@ class TimedRolesCog(FeatureCog, name="TimedRoles"):
     - 实现 update_safe_roles_cache 方法供 CoreCog 调用。
     """
 
-    def get_main_panel_buttons(self) -> Optional[List[discord.ui.Button]]:
-        return [TimedRolePanelButton(self)]
+    def get_main_panel_entries(self) -> Optional[List[PanelEntry]]:
+        return [PanelEntry(button=TimedRolePanelButton(self), description="限时身份组。")]
 
     def __init__(self, bot: 'RoleBot'):
         super().__init__(bot)

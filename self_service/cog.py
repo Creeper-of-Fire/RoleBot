@@ -10,7 +10,7 @@ import config
 from core.embed_link.embed_manager import EmbedLinkManager
 from self_service.self_service_view import SelfServiceManageView
 from utility.auth import is_role_dangerous
-from utility.feature_cog import FeatureCog
+from utility.feature_cog import FeatureCog, PanelEntry
 from utility.helpers import safe_defer, try_get_member
 
 if typing.TYPE_CHECKING:
@@ -48,8 +48,13 @@ class SelfServiceCog(FeatureCog, name="SelfService"):
     def guide_url(self) -> Optional[str]:
         return self.guide_manager.url
 
-    def get_main_panel_buttons(self) -> Optional[List[discord.ui.Button]]:
-        return [SelfServicePanelButton(self)]
+    def get_main_panel_entries(self) -> Optional[List[PanelEntry]]:
+        return [
+            PanelEntry(
+                button=SelfServicePanelButton(self),
+                description="为避免频繁`@全体成员`，大部分通知需要您领取这些身份组以订阅。"
+            )
+        ]
 
     async def update_safe_roles_cache(self):
         """【接口方法】更新本模块的安全身份组缓存。"""

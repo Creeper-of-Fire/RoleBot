@@ -25,6 +25,7 @@ from model_fan_roles.cog import ModelFanRolesCog
 from role_application.cog import RoleApplicationCog
 from role_jukebox.cog import RoleJukeboxCog
 from role_sync.cog import RoleSyncCog
+from role_viewer.cog import RoleViewerCog
 from self_service.cog import SelfServiceCog
 from timed_role.cog import TimedRolesCog
 
@@ -155,6 +156,7 @@ class CogManager:
             "role_application": RoleApplicationCog,
             "track_activity": TrackActivityCog,
             "role_jukebox": RoleJukeboxCog,
+            "role_viewer": RoleViewerCog,
             "honor_system": [
                 HonorCog,
                 HonorAnniversaryModuleCog,

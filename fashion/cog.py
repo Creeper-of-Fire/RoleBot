@@ -11,7 +11,7 @@ import config_data
 from core.embed_link.embed_manager import EmbedLinkManager
 from fashion.fashion_view import FashionManageView
 from utility.auth import is_role_dangerous
-from utility.feature_cog import FeatureCog
+from utility.feature_cog import FeatureCog, PanelEntry
 from utility.helpers import safe_defer, try_get_member
 
 if typing.TYPE_CHECKING:
@@ -27,8 +27,13 @@ FASHION_GUIDE_POST = {
 class FashionCog(FeatureCog, name="Fashion"):
     """管理所有幻化身份组相关的功能。"""
 
-    def get_main_panel_buttons(self) -> Optional[List[discord.ui.Button]]:
-        return [FashionPanelButton(self)]
+    def get_main_panel_entries(self) -> Optional[List[PanelEntry]]:
+        return [
+            PanelEntry(
+                description="基于你的基础身份组，获得幻化能力。",
+                button=FashionPanelButton(self)
+            ),
+        ]
 
     def __init__(self, bot: 'RoleBot'):
         super().__init__(bot)

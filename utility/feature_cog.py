@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from abc import ABC, abstractmethod, ABCMeta
+from dataclasses import dataclass
 from typing import List, TYPE_CHECKING, Optional
 
 import discord
@@ -11,6 +12,11 @@ if TYPE_CHECKING:
     from core.cog import CoreCog
     from main import RoleBot
 
+@dataclass
+class PanelEntry:
+    """主面板上的一个功能入口"""
+    button: discord.ui.Button
+    description: Optional[str] = None # 描述是可选的
 
 # 1. 定义一个新的组合元类
 #    这个新元类同时继承了 CogMeta 和 ABCMeta，解决了冲突
@@ -79,18 +85,15 @@ class FeatureCog(commands.Cog, ABC, metaclass=CogABCMeta):
         """
         raise NotImplementedError(f"{self.__class__.__name__} 必须实现 update_safe_roles_cache 方法。")
 
-    # ===================================================================
-    # 新增的抽象方法
-    # ===================================================================
     @abstractmethod
-    def get_main_panel_buttons(self) -> Optional[List[discord.ui.Button]]:
+    def get_main_panel_entries(self) -> Optional[List[PanelEntry]]:
         """
-        【抽象接口方法】返回一个用于主控制面板的入口按钮。
+        【抽象接口方法】返回用于主控制面板的一系列功能入口。
 
-        如果此模块没有主面板入口，则应返回 None。
-        按钮的回调逻辑应在该模块的 Cog 或 View 中定义。
+        每个入口包含一个按钮实例和一段可选的描述文本。
+        如果此模块没有主面板入口，则应返回 None 或一个空列表。
 
         返回:
-            List[discord.ui.Button] | None: 代表此模块入口的按钮实例，或 None。
+            List[PanelEntry] | None: 代表此模块所有入口的列表，或 None。
         """
-        raise NotImplementedError(f"{self.__class__.__name__} 必须实现 get_main_panel_button 方法。")
+        raise NotImplementedError(f"{self.__class__.__name__} 必须实现 get_main_panel_entries 方法。")

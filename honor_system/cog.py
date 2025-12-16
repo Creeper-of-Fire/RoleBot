@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import cast, Optional, TYPE_CHECKING, Dict, List, Any
+from typing import cast, Optional, TYPE_CHECKING, Dict, List
 
 import discord
 from discord import ui, Color, app_commands
@@ -11,7 +11,7 @@ import config
 import config_data
 from core.embed_link.embed_manager import EmbedLinkManager
 from honor_system.cup_honor.cup_honor_json_manager import CupHonorJsonManager
-from utility.feature_cog import FeatureCog
+from utility.feature_cog import FeatureCog, PanelEntry
 from .common_models import BaseHonorDefinition
 from .getCogs import getHonorAnniversaryModuleCog, getRoleClaimHonorModuleCog
 from .honor_data_manager import HonorDataManager
@@ -72,7 +72,7 @@ class HonorCog(FeatureCog, name="Honor"):
         self.safe_honor_role_ids = new_cache
         self.logger.info(f"模块 '{self.qualified_name}' 安全缓存更新完毕，共加载 {len(self.safe_honor_role_ids)} 个身份组。")
 
-    def get_main_panel_buttons(self) -> Optional[List[discord.ui.Button]]:
+    def get_main_panel_entries(self) -> Optional[List[PanelEntry]]:
         """
         [接口实现] 返回一个用于主面板的 "我的荣誉墙" 按钮。
         """
@@ -110,7 +110,12 @@ class HonorCog(FeatureCog, name="Honor"):
         )
         honor_button.callback = honor_panel_callback
 
-        return [honor_button]
+        return [
+            PanelEntry(
+                button=honor_button,
+                description="管理/查看你的荣誉，__包括杯赛荣誉__。"
+            )
+        ]
 
     def get_all_config_honor_definitions(self) -> list[BaseHonorDefinition]:
         """

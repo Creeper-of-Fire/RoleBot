@@ -9,3 +9,4 @@ deploy.env
 rolebot_image.tar
 data/*.db
 /model_fan_roles/model_config.py
+/role_viewer/role_view_config.py

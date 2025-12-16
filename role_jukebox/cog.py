@@ -2,9 +2,8 @@
 from __future__ import annotations
 
 import asyncio
-import typing
-from typing import Optional, TYPE_CHECKING, Any
 from typing import List
+from typing import Optional, TYPE_CHECKING, Any
 
 import aiohttp
 import discord
@@ -15,7 +14,7 @@ from role_jukebox.admin_view import AdminDashboardView
 from role_jukebox.manager import RoleJukeboxManager
 from role_jukebox.models import Preset
 from role_jukebox.user_view import UserJukeboxView
-from utility.feature_cog import FeatureCog
+from utility.feature_cog import FeatureCog, PanelEntry
 
 if TYPE_CHECKING:
     from main import RoleBot
@@ -30,13 +29,18 @@ class RoleJukeboxCog(FeatureCog, name="RoleJukebox"):
     async def update_safe_roles_cache(self):
         pass
 
-    def get_main_panel_buttons(self) -> List[discord.ui.Button]:
+    def get_main_panel_entries(self) -> Optional[List[PanelEntry]]:
         """
         [框架方法]
         返回要显示在机器人主控面板（/panel）上的按钮。
         管理员用指令配置，所以这里只提供给用户的入口。
         """
-        return [OpenLobbyButton(self)]
+        return [
+            PanelEntry(
+                button=OpenLobbyButton(self),
+                description="随着时间变换的有趣身份组。"
+            )
+        ]
 
     def __init__(self, bot: RoleBot):
         super().__init__(bot)
@@ -299,7 +303,7 @@ class OpenLobbyButton(ui.Button):
     def __init__(self, cog: RoleJukeboxCog):
         # 放在主面板上的按钮，负责打开 User View
         super().__init__(
-            label="身份点歌机",
+            label="轮播身份组",
             style=discord.ButtonStyle.primary,
             emoji="🎶",
             custom_id="role_jukebox:open_panel"

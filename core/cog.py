@@ -25,7 +25,7 @@ import psutil
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from core.main_panel_view import MainPanelView
+from core.main_panel_view import MainPanelView, create_main_panel_ui
 
 if typing.TYPE_CHECKING:
     from main import RoleBot
@@ -106,7 +106,6 @@ class CoreCog(commands.Cog, name="Core"):
         self.bot.add_view(MainPanelView(self))  # MainPanelView 现在由 CoreCog 负责
         self.logger.info("核心模块已就绪，主控制面板持久化视图已注册。")
 
-
     @tasks.loop(minutes=15)
     async def update_registered_embeds_task(self):
         """定时刷新所有已注册的EmbedLinkManager。"""
@@ -157,7 +156,6 @@ class CoreCog(commands.Cog, name="Core"):
             except Exception:
                 pass  # 避免在无法发送错误消息时出现级联错误
 
-
     @_backup_data_task.before_loop
     @update_registered_embeds_task.before_loop
     @_update_all_caches_task.before_loop
@@ -179,13 +177,7 @@ class CoreCog(commands.Cog, name="Core"):
     @app_commands.checks.has_permissions(manage_roles=True)
     async def send_panel(self, interaction: discord.Interaction):
         """发送一个公共的身份组管理入口面板。"""
-        # 此命令现在不关心任何具体配置，只是发送面板
-        embed = discord.Embed(title="✨ 身份组自助中心 ✨", description="欢迎来到身份组自助中心！\n\n点击下方的按钮来管理你的身份组或查询状态。",
-                              color=discord.Color.blurple())
-        embed.set_footer(text="所有操作都将在只有你自己可见的消息中进行。")
-
-        # MainPanelView 的 __init__ 需要修改，以动态地从 bot 获取 cogs
-        view = MainPanelView(self)
+        embed, view = create_main_panel_ui(self)
         await interaction.response.send_message(embed=embed, view=view)
 
     async def link_module_autocomplete(self, interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
@@ -385,8 +377,6 @@ class CoreCog(commands.Cog, name="Core"):
         else:
             # message 包含原因 (例如，目录为空、出错等)
             await interaction.followup.send(content=message, ephemeral=True)
-
-
 
     def register_feature_cog(self, cog: FeatureCog):
         """允许其他功能模块向核心Cog注册自己。"""

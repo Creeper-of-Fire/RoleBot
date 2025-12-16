@@ -6,7 +6,7 @@ from typing import Optional, List
 
 import discord
 
-from utility.feature_cog import FeatureCog
+from utility.feature_cog import FeatureCog, PanelEntry
 from .getCogs import getHonorCog
 from .honor_data_manager import HonorDataManager
 
@@ -26,7 +26,7 @@ class RoleClaimHonorModuleCog(FeatureCog, name="RoleClaimHonorModule"):
     用户之后便可以通过荣誉墙自由佩戴或卸下这些身份组。
     """
 
-    def get_main_panel_buttons(self) -> Optional[List[discord.ui.Button]]:
+    def get_main_panel_entries(self) -> Optional[List[PanelEntry]]:
         pass
 
     async def update_safe_roles_cache(self):
