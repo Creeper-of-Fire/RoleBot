@@ -1,6 +1,4 @@
-config_data.py
 .venv
-config.py
 .idea/*
 /data/user_data.json
 __pycache__/
@@ -8,5 +6,3 @@ __pycache__/
 deploy.env
 rolebot_image.tar
 data/*.db
-/model_fan_roles/model_config.py
-/role_viewer/role_view_config.py
