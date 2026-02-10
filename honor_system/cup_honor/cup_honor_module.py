@@ -325,6 +325,8 @@ class CupHonorModuleCog(commands.Cog, name="CupHonorModule"):
             db_def.description = honor_def.description
             db_def.role_id = honor_def.role_id
             db_def.hidden_until_earned = honor_def.hidden_until_earned
+            # 杯赛荣誉不使用“获得后 N 天过期”策略
+            db_def.expire_after_days = None
             db_def.is_archived = False  # 确保是激活状态
 
             db.add(db_def)

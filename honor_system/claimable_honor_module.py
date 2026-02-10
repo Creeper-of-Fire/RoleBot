@@ -55,6 +55,11 @@ class ClaimableHonorView(ui.View):
         await interaction.response.defer(ephemeral=True)
         member = cast(discord.Member, interaction.user)
 
+        # 过期荣誉清理与角色一致性修复（仅清理 HonorCog 管理的 safe roles）
+        main_honor_cog: Optional[HonorCog] = self.cog.bot.get_cog("Honor")
+        if main_honor_cog:
+            await main_honor_cog.cleanup_expired_honors_for_member(member, cast(discord.Guild, interaction.guild))
+
         panel_info = self.cog.json_manager.get_panel(interaction.message.id)
         if not panel_info:
             await interaction.followup.send("❌ 错误：无法识别此面板，它可能已被弃用。", ephemeral=True)
@@ -98,6 +103,11 @@ class ClaimableHonorView(ui.View):
         await interaction.response.defer(ephemeral=True)
         member = cast(discord.Member, interaction.user)
 
+        # 过期荣誉清理与角色一致性修复
+        main_honor_cog: Optional[HonorCog] = self.cog.bot.get_cog("Honor")
+        if main_honor_cog:
+            await main_honor_cog.cleanup_expired_honors_for_member(member, cast(discord.Guild, interaction.guild))
+
         panel_info = self.cog.json_manager.get_panel(interaction.message.id)
         if not panel_info:
             await interaction.followup.send("❌ 错误：无法识别此面板，它可能已被弃用。", ephemeral=True)
@@ -140,6 +150,9 @@ class ClaimableHonorView(ui.View):
         await interaction.response.defer(ephemeral=True)
         member = cast(discord.Member, interaction.user)
         guild = cast(discord.Guild, interaction.guild)
+
+        # 确保在打开荣誉墙前做一次过期清理
+        await main_honor_cog.cleanup_expired_honors_for_member(member, guild)
         view = HonorManageView(main_honor_cog, member, guild)
         await view.start(interaction, ephemeral=True)
 
