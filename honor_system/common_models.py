@@ -18,8 +18,6 @@ class BaseHonorDefinition(BaseModel):
     hidden_until_earned: bool = True
     role_sync_honor: bool = False  # 关键字段，默认False
     icon_url: Optional[str] = None # 从config.py中同步过来的字段
-    # 普通荣誉：获得后 N 天过期；缺省/None 代表永不过期
-    expire_after_days: Optional[int] = Field(default=None, ge=1)
 
     class Config:
         # 允许从非Pydantic对象创建模型

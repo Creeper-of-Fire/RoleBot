@@ -61,9 +61,6 @@ COGS = {
     "honor_system": {
         "enabled": True,
     },
-    "timed_honor": {
-        "enabled": True,
-    },
     "heartbeat_information": {
         "enabled": True,
     },
@@ -83,22 +80,6 @@ STATUS_TYPE = 'watching'
 
 # CoreCog的CommandGroup
 COMMAND_GROUP_NAME = "李曦曦"
-
-# ===================================================================
-# Timed Honor 配置
-# ===================================================================
-TIMED_HONOR_ADMIN_USER_IDS: typing.Set[int] = {
-    942388408800669707,
-}
-
-# 用户至少拥有以下身份组之一才允许进入领取流程（可为空表示不限制）
-TIMED_HONOR_ELIGIBLE_ROLE_IDS: typing.Set[int] = set()
-
-# 允许管理员发送“升级面板”的频道（None 或空集合表示不限制）
-TIMED_HONOR_PANEL_CHANNEL_IDS: typing.Optional[typing.Set[int]] = None
-
-# 过期检查任务间隔（分钟）
-TIMED_HONOR_EXPIRE_CHECK_INTERVAL_MINUTES: int = 5
 
 # ===================================================================
 # 新增：权限控制

@@ -2,11 +2,10 @@
 from __future__ import annotations
 
 import contextlib
-import datetime
 import logging
 from typing import List, Optional, TypeVar, Type, Self
 
-from sqlalchemy import select, or_
+from sqlalchemy import select
 from sqlalchemy.orm import class_mapper
 
 from .models import SessionLocal, HonorDefinition, UserHonor
@@ -81,22 +80,6 @@ class HonorDataManager:
             ).scalar_one_or_none()
             return clone_orm_object(definition)
 
-    @staticmethod
-    def _utcnow() -> datetime.datetime:
-        # 统一使用 naive UTC
-        return datetime.datetime.utcnow()
-
-    @staticmethod
-    def _calc_expires_at(now: datetime.datetime, expire_after_days: int | None) -> datetime.datetime | None:
-        if not expire_after_days:
-            return None
-        return now + datetime.timedelta(days=expire_after_days)
-
-    @staticmethod
-    def _calc_expires_at_hours(now: datetime.datetime, duration_hours: int) -> datetime.datetime:
-        # Timed Honor 使用小时级有效期
-        return now + datetime.timedelta(hours=duration_hours)
-
     def grant_honor(self, user_id: int, honor_uuid: str) -> Optional[HonorDefinition]:
         """
         授予用户一个荣誉（通过荣誉UUID）。
@@ -113,8 +96,6 @@ class HonorDataManager:
                 print(f"错误：找不到UUID为 '{honor_uuid}' 的荣誉定义。")
                 return None
 
-            now = self._utcnow()
-
             # 2. 检查用户是否已拥有该荣誉
             existing_honor = db.execute(
                 select(UserHonor).where(
@@ -124,96 +105,27 @@ class HonorDataManager:
             ).scalar_one_or_none()
 
             if existing_honor:
-                # 若已过期：续期（并视为本次新授予成功）
-                if existing_honor.expires_at is not None and existing_honor.expires_at <= now:
-                    existing_honor.earned_at = now
-                    existing_honor.expires_at = self._calc_expires_at(now, honor_def.expire_after_days)
-                    db.commit()
-                    return clone_orm_object(honor_def)
-
-                return None  # 未过期：保持原行为
+                return None  # 已拥有，不重复授予
 
             # 3. 创建新的授予记录
-            new_user_honor = UserHonor(
-                user_id=user_id,
-                honor_uuid=honor_def.uuid,
-                earned_at=now,
-                expires_at=self._calc_expires_at(now, honor_def.expire_after_days),
-            )
+            new_user_honor = UserHonor(user_id=user_id, honor_uuid=honor_def.uuid)
             db.add(new_user_honor)
             db.commit()
 
             return clone_orm_object(honor_def)
 
-    def grant_honor_with_duration_hours(self, user_id: int, honor_uuid: str, duration_hours: int) -> Optional[HonorDefinition]:
-        """
-        授予用户一个限时荣誉（通过 honor_uuid + duration_hours）。
-
-        规则：
-        - 用户未拥有：创建记录并设置 expires_at = now + duration_hours。
-        - 用户已拥有且已过期：重置 earned_at/expires_at，视为重新领取成功。
-        - 用户已拥有且未过期：返回 None（不延长有效期）。
-        """
-        if duration_hours < 1:
-            raise ValueError("duration_hours 必须 >= 1")
-
-        with self.get_db() as db:
-            honor_def: HonorDefinition = db.execute(
-                select(HonorDefinition).where(HonorDefinition.uuid == honor_uuid)
-            ).scalar_one_or_none()
-
-            if not honor_def:
-                self.logger.warning(f"grant_honor_with_duration_hours: 找不到 honor_uuid={honor_uuid} 的荣誉定义")
-                return None
-
-            now = self._utcnow()
-            target_expires_at = self._calc_expires_at_hours(now, duration_hours)
-
-            existing_honor = db.execute(
-                select(UserHonor).where(
-                    UserHonor.user_id == user_id,
-                    UserHonor.honor_uuid == honor_uuid
-                )
-            ).scalar_one_or_none()
-
-            if existing_honor:
-                # 已过期可重领；未过期不可续期
-                if existing_honor.expires_at is not None and existing_honor.expires_at <= now:
-                    existing_honor.earned_at = now
-                    existing_honor.expires_at = target_expires_at
-                    db.commit()
-                    return clone_orm_object(honor_def)
-                return None
-
-            new_user_honor = UserHonor(
-                user_id=user_id,
-                honor_uuid=honor_def.uuid,
-                earned_at=now,
-                expires_at=target_expires_at,
-            )
-            db.add(new_user_honor)
-            db.commit()
-
-            return clone_orm_object(honor_def)
-
-    def get_user_honors(self, user_id: int, include_expired: bool = False) -> List[UserHonor]:
-        """获取一个用户拥有的所有荣誉（默认不包含已过期）。"""
+    def get_user_honors(self, user_id: int) -> List[UserHonor]:
+        """获取一个用户拥有的所有荣誉"""
         with self.get_db() as db:
             # 使用 eager loading (joinedload) 来一次性加载关联的 HonorDefinition
             # 这样在后续访问 user_honor.definition 时不会再触发新的数据库查询
             from sqlalchemy.orm import joinedload
 
-            stmt = (
+            honors: List[UserHonor] = db.execute(
                 select(UserHonor)
                 .where(UserHonor.user_id == user_id)
                 .options(joinedload(UserHonor.definition))
-            )
-
-            if not include_expired:
-                now = self._utcnow()
-                stmt = stmt.where(or_(UserHonor.expires_at.is_(None), UserHonor.expires_at > now))
-
-            honors: List[UserHonor] = db.execute(stmt).scalars().all()
+            ).scalars().all()
             # 注意：这里的 'definition' 是关联对象，也需要处理。
             # 为了安全，我们也克隆关联的对象。
             safe_honors = []
@@ -224,31 +136,6 @@ class HonorDataManager:
                 safe_h.definition = clone_orm_object(h.definition)
                 safe_honors.append(safe_h)
             return safe_honors
-
-    def purge_expired_user_honors(self, user_id: int) -> int:
-        """删除指定用户所有已过期的荣誉记录，返回删除数量。"""
-        now = self._utcnow()
-        with self.get_db() as db:
-            deleted_count = db.query(UserHonor).filter(
-                UserHonor.user_id == user_id,
-                UserHonor.expires_at.isnot(None),
-                UserHonor.expires_at <= now,
-            ).delete(synchronize_session=False)
-            db.commit()
-            return deleted_count
-
-    def revoke_expired_honor_for_user(self, user_id: int, honor_uuid: str) -> int:
-        """删除指定用户在某荣誉下的已过期记录，返回删除数量。"""
-        now = self._utcnow()
-        with self.get_db() as db:
-            deleted_count = db.query(UserHonor).filter(
-                UserHonor.user_id == user_id,
-                UserHonor.honor_uuid == honor_uuid,
-                UserHonor.expires_at.isnot(None),
-                UserHonor.expires_at <= now,
-            ).delete(synchronize_session=False)
-            db.commit()
-            return deleted_count
 
     def revoke_honor_from_users(self, user_ids: List[int], honor_uuid: str) -> int:
         """
@@ -266,36 +153,10 @@ class HonorDataManager:
             db.commit()
             return deleted_count
 
-    def get_honor_holders(self, honor_uuid: str, include_expired: bool = False) -> List[UserHonor]:
-        """获取拥有特定荣誉的所有用户记录（默认不包含已过期）。"""
+    def get_honor_holders(self, honor_uuid: str) -> List[UserHonor]:
+        """获取拥有特定荣誉的所有用户记录。"""
         with self.get_db() as db:
-            stmt = select(UserHonor).where(UserHonor.honor_uuid == honor_uuid)
-            if not include_expired:
-                now = self._utcnow()
-                stmt = stmt.where(or_(UserHonor.expires_at.is_(None), UserHonor.expires_at > now))
-
-            holders = db.execute(stmt).scalars().all()
+            holders = db.execute(
+                select(UserHonor).where(UserHonor.honor_uuid == honor_uuid)
+            ).scalars().all()
             return holders
-
-    def get_expired_honor_holders(self, honor_uuid: str) -> List[UserHonor]:
-        """获取某荣誉所有已过期持有记录。"""
-        now = self._utcnow()
-        with self.get_db() as db:
-            stmt = select(UserHonor).where(
-                UserHonor.honor_uuid == honor_uuid,
-                UserHonor.expires_at.isnot(None),
-                UserHonor.expires_at <= now,
-            )
-            return db.execute(stmt).scalars().all()
-
-    def revoke_expired_honor_records(self, honor_uuid: str) -> int:
-        """删除某荣誉所有已过期记录，返回删除数量。"""
-        now = self._utcnow()
-        with self.get_db() as db:
-            deleted_count = db.query(UserHonor).filter(
-                UserHonor.honor_uuid == honor_uuid,
-                UserHonor.expires_at.isnot(None),
-                UserHonor.expires_at <= now,
-            ).delete(synchronize_session=False)
-            db.commit()
-            return deleted_count

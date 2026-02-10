@@ -28,7 +28,6 @@ from role_sync.cog import RoleSyncCog
 from role_viewer.cog import RoleViewerCog
 from self_service.cog import SelfServiceCog
 from timed_role.cog import TimedRolesCog
-from timed_honor.cog import TimedHonorCog
 
 # ===================================================================
 # 日志设置
@@ -153,7 +152,6 @@ class CogManager:
             "model_fan_roles": ModelFanRolesCog,
             "heartbeat_information": HeartbeatInformationCog,
             "timed_role": TimedRolesCog,
-            "timed_honor": TimedHonorCog,
             "role_sync": RoleSyncCog,
             "role_application": RoleApplicationCog,
             "track_activity": TrackActivityCog,
