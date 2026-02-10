@@ -6,3 +6,5 @@ __pycache__/
 deploy.env
 rolebot_image.tar
 data/*.db
+.limcode/
+temp/

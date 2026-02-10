@@ -11,7 +11,9 @@ from sqlalchemy import (
     DateTime,
     String,
     Boolean,
-    BigInteger, UniqueConstraint
+    BigInteger,
+    Integer,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import (
     sessionmaker,
@@ -52,6 +54,9 @@ class HonorDefinition(Base):
     # 是否在未获得时隐藏，默认隐藏
     hidden_until_earned: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
+    # 普通荣誉：获得后 N 天过期；NULL 代表永不过期
+    expire_after_days: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="获得后 N 天过期；NULL=永不过期")
+
     # 标记该荣誉是否已在配置中弃用，但为了保留用户历史记录而不删除
     is_archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
@@ -67,7 +72,11 @@ class UserHonor(Base):
     user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
     honor_uuid: Mapped[str] = mapped_column(ForeignKey("honor_definitions.uuid"), nullable=False)
 
-    earned_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=lambda: datetime.datetime.now(datetime.UTC))
+    # 统一使用 naive UTC，避免 SQLite 时区处理不一致
+    earned_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)
+
+    # NULL 代表永不过期；naive UTC
+    expires_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
 
     # 关系，让我们可以通过 UserHonor.definition 访问到荣誉的详细信息
     definition: Mapped["HonorDefinition"] = relationship(back_populates="owners", foreign_keys=[honor_uuid])

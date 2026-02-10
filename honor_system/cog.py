@@ -46,6 +46,49 @@ class HonorCog(FeatureCog, name="Honor"):
             )
         )
 
+    async def cleanup_expired_honors_for_member(self, member: discord.Member, guild: discord.Guild) -> None:
+        """清理已过期荣誉导致的“DB/角色不一致”问题（轻量、仅针对当前用户）。"""
+
+        # 1) 清理 DB 中已过期记录（可选但推荐）
+        try:
+            purged_count = self.data_manager.purge_expired_user_honors(member.id)
+            if purged_count:
+                self.logger.info(f"已为用户 {member.id} 清理 {purged_count} 条过期荣誉记录")
+        except Exception as e:
+            self.logger.error(f"清理用户 {member.id} 过期荣誉记录时出错: {e}", exc_info=True)
+
+        # 2) 计算用户当前有效荣誉对应的角色集合
+        user_honors = self.data_manager.get_user_honors(member.id)
+        active_role_ids = {
+            uh.definition.role_id
+            for uh in user_honors
+            if uh.definition is not None and uh.definition.role_id is not None
+        }
+
+        # 3) 从成员身上移除：属于 safe_honor_role_ids 但不在 active_role_ids 的角色
+        if not self.safe_honor_role_ids:
+            return
+
+        member_role_ids = {role.id for role in member.roles}
+        roles_to_remove_ids = (member_role_ids & self.safe_honor_role_ids) - active_role_ids
+        if not roles_to_remove_ids:
+            return
+
+        roles_to_remove = [guild.get_role(rid) for rid in roles_to_remove_ids]
+        roles_to_remove = [r for r in roles_to_remove if r]
+        if not roles_to_remove:
+            return
+
+        try:
+            await member.remove_roles(*roles_to_remove, reason="荣誉过期/数据一致性修复")
+            self.logger.info(
+                f"已为用户 {member.id} 移除 {len(roles_to_remove)} 个过期荣誉角色: {[r.id for r in roles_to_remove]}"
+            )
+        except discord.Forbidden:
+            self.logger.warning(f"权限不足，无法为用户 {member.id} 移除过期荣誉角色")
+        except Exception as e:
+            self.logger.error(f"为用户 {member.id} 移除过期荣誉角色时出错: {e}", exc_info=True)
+
     # --- FeatureCog 接口实现 ---
     async def update_safe_roles_cache(self):
         """
@@ -97,6 +140,9 @@ class HonorCog(FeatureCog, name="Honor"):
                 await role_claim_cog.check_and_grant_role_sync_honor(member, guild)
             else:
                 self.logger.warning("无法找到 RoleClaimHonorModule 来检查基于身份组的荣誉。")
+
+            # --- 过期荣誉清理与角色一致性修复 ---
+            await self.cleanup_expired_honors_for_member(member, guild)
 
             view = HonorManageView(self, member, guild)
 
@@ -159,6 +205,7 @@ class HonorCog(FeatureCog, name="Honor"):
                         db_def.description = config_def['description']
                         db_def.role_id = config_def.get('role_id', None)
                         db_def.icon_url = config_def.get('icon_url', None)
+                        db_def.expire_after_days = config_def.get('expire_after_days', None)
                         db_def.guild_id = guild_id
                         db_def.hidden_until_earned = config_def.get('hidden_until_earned', True)  # 确保有默认值
                         db_def.is_archived = False  # 确保它处于激活状态
@@ -172,6 +219,7 @@ class HonorCog(FeatureCog, name="Honor"):
                             role_id=config_def.get('role_id', None),
                             icon_url=config_def.get('icon_url', None),
                             hidden_until_earned=config_def.get('hidden_until_earned', True),  # 确保有默认值
+                            expire_after_days=config_def.get('expire_after_days', None),
                         )
                         db.add(new_def)
                         self.logger.info(f"  -> 已创建新荣誉: {config_def['name']}")
