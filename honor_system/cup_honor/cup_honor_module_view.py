@@ -16,6 +16,7 @@ from honor_system.cup_honor.cup_honor_models import CupHonorDefinition, CupHonor
 from honor_system.honor_def_models import HonorDefinition
 from utility.paginated_view import PaginatedView
 from utility.views import ConfirmationView
+
 if typing.TYPE_CHECKING:
     from honor_system.cup_honor.cup_honor_module import CupHonorModuleCog
 
@@ -118,8 +119,8 @@ class CupHonorEditModal(ui.Modal):
         # 5. 保存到JSON文件
         # 如果是编辑且UUID变了，需要先删除旧的记录
         if self.original_uuid and self.original_uuid != new_uuid_str:
-            self.cog.cup_honor_manager.delete_cup_honor(self.original_uuid)
-        self.cog.cup_honor_manager.add_or_update_cup_honor(new_honor_def)
+            await self.cog.cup_honor_manager.delete_cup_honor(self.original_uuid)
+        await self.cog.cup_honor_manager.add_or_update_cup_honor(new_honor_def)
 
         # 6. 反馈
         embed = discord.Embed(
@@ -279,7 +280,7 @@ class CupHonorManageView(PaginatedView):
                 # 归档数据库记录
                 await self.cog.archive_honor_in_db(uuid_str)
                 # 从JSON删除
-                if self.cog.cup_honor_manager.delete_cup_honor(uuid_str):
+                if await self.cog.cup_honor_manager.delete_cup_honor(uuid_str):
                     deleted_count += 1
 
             await interaction.edit_original_response(content=f"✅ 成功删除 {deleted_count} 个荣誉。", view=None)

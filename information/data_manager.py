@@ -6,9 +6,11 @@ import logging
 from datetime import datetime
 from typing import Dict, Optional, List
 
-from pydantic import BaseModel
+from pydantic import BaseModel, RootModel, Field
 
-CONFIG_FILE_PATH = "./data/heartbeat_info.json"
+from utility.base_data_manager import AsyncJsonDataManager
+
+DATA_NAME = "heartbeat_info"
 
 
 class HeartbeatInfo(BaseModel):
@@ -52,47 +54,17 @@ class HeartbeatInfo(BaseModel):
             return f"https://discord.com/channels/{self.target_guild_id}/{self.target_channel_id}/{self.target_message_id}"
         return "N/A"  # 如果没有目标消息ID
 
+class HeartbeatStore(RootModel):
+    root: Dict[str, HeartbeatInfo] = Field(default_factory=dict)
 
-class HeartbeatDataManager:
+class HeartbeatDataManager(AsyncJsonDataManager[HeartbeatStore]):
     """管理所有心跳资讯的加载、保存和操作。"""
+    DATA_FILENAME = DATA_NAME
+    DATA_MODEL = HeartbeatStore
 
-    def __init__(self):
-        self.logger = logging.getLogger("HeartbeatDataManager")
-        # 将心跳资讯存储在字典中，以目标消息ID作为键，方便快速查找和停止任务
-        self._heartbeats: Dict[str, HeartbeatInfo] = {}
-        self._lock = asyncio.Lock()  # 用于文件I/O的异步锁
-
-    async def load_data(self):
-        """从JSON文件加载数据到内存。"""
-        async with self._lock:
-            try:
-                with open(CONFIG_FILE_PATH, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    self._heartbeats = {
-                        key: HeartbeatInfo.model_validate(value)
-                        for key, value in data.items()
-                    }
-                self.logger.info(f"成功加载了 {len(self._heartbeats)} 条心跳资讯记录。")
-            except FileNotFoundError:
-                self.logger.info(f"心跳资讯配置文件 {CONFIG_FILE_PATH} 未找到，将自动创建。")
-                self._heartbeats = {}
-            except json.JSONDecodeError:
-                self.logger.error(f"解析心跳资讯配置文件失败，将使用空数据。")
-                self._heartbeats = {}
-            except Exception as e:
-                self.logger.error(f"加载心跳资讯数据时发生未知错误: {e}")
-                self._heartbeats = {}
-
-    async def _save_data(self):
-        """将内存中的数据保存到JSON文件。"""
-        async with self._lock:
-            try:
-                # 将 HeartbeatInfo 对象转换为字典以便序列化
-                data_to_save = {key: info.model_dump(mode='json') for key, info in self._heartbeats.items()}
-                with open(CONFIG_FILE_PATH, 'w', encoding='utf-8') as f:
-                    json.dump(data_to_save, f, indent=4)
-            except Exception as e:
-                self.logger.error(f"保存心跳资讯数据时发生错误: {e}")
+    @property
+    def _heartbeats(self) -> Dict[str, HeartbeatInfo]:
+        return self.data.root
 
     async def add_heartbeat(self, info: HeartbeatInfo):
         """添加一条新的心跳资讯记录并保存。"""
@@ -100,7 +72,7 @@ class HeartbeatDataManager:
             self.logger.error(f"尝试添加无 target_message_id 的 HeartbeatInfo: {info.title}")
             return
         self._heartbeats[info.key] = info
-        await self._save_data()
+        await self.save_data()
         self.logger.info(f"已添加新的心跳资讯: {info.title} (ID: {info.key})")
 
     async def update_heartbeat(self, info: HeartbeatInfo):
@@ -112,7 +84,7 @@ class HeartbeatDataManager:
             self.logger.warning(f"尝试更新不存在的心跳资讯: {info.title} (ID: {info.key})")
             return
         self._heartbeats[info.key] = info
-        await self._save_data()
+        await self.save_data()
         self.logger.debug(f"已更新心跳资讯: {info.title} (ID: {info.key})")
 
     async def remove_heartbeat(self, target_message_id: int) -> Optional[HeartbeatInfo]:
@@ -120,7 +92,7 @@ class HeartbeatDataManager:
         key = str(target_message_id)
         info = self._heartbeats.pop(key, None)
         if info:
-            await self._save_data()
+            await self.save_data()
             self.logger.info(f"已移除心跳资讯: {info.title} (ID: {key})")
         return info
 

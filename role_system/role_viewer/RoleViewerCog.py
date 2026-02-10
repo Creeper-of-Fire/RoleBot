@@ -25,7 +25,7 @@ class RoleViewerCog(FeatureCog, name="RoleViewer"):
     def __init__(self, bot: 'RoleBot'):
         super().__init__(bot)
         # 初始化数据管理器
-        self.data_manager = SeparatorDataManager()
+        self.data_manager = SeparatorDataManager.get_instance(logger=self.logger)
 
     def get_main_panel_entries(self) -> Optional[List[PanelEntry]]:
         """【接口方法】返回显示在主面板上的入口按钮。"""

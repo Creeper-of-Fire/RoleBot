@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import random
 import uuid
-from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Optional, Dict, Any, Type, TypeVar
+from typing import List, Optional, Dict, TypeVar
+
+from pydantic import BaseModel, Field, ConfigDict
 
 T = TypeVar('T')
 
@@ -28,31 +29,28 @@ class DashboardMode(str, Enum):
     USER = 'user'
 
 
-@dataclass
-class Preset:
+class Preset(BaseModel):
     """单个外观预设（名字、颜色、图标）。"""
+    # Pydantic V2 会自动处理多余字段的过滤（默认忽略不匹配字段）
+    model_config = ConfigDict(from_attributes=True)
+
     name: str
     color: str  # Hex 字符串 (#RRGGBB) - 主色
-    secondary_color: Optional[str] = None  # 副色，用于渐变
-    tertiary_color: Optional[str] = None   # 第三种颜色，用于触发全息模式
-    uuid: str = field(default_factory=lambda: str(uuid.uuid4()))
+    secondary_color: Optional[str] = None
+    tertiary_color: Optional[str] = None
+    uuid: str = Field(default_factory=lambda: str(uuid.uuid4()))
     icon_filename: Optional[str] = None
 
-    @classmethod
-    def from_dict(cls: Type[T], data: Dict[str, Any]) -> T:
-        # 过滤掉不需要的旧字段
-        clean_data = {k: v for k, v in data.items() if k in cls.__annotations__}
-        return cls(**clean_data)
 
-
-@dataclass
-class Track:
+class Track(BaseModel):
     """
     轨道：对应一个身份组的轮播配置。
     包含一组预设池，以及轮播的规则。
     """
+    model_config = ConfigDict(from_attributes=True)
+
     role_id: int
-    presets: List[Preset] = field(default_factory=list)
+    presets: List[Preset] = Field(default_factory=list)
     name: Optional[str] = None
     name_prefix: Optional[str] = DEFAULT_NAME_PREFIX
 
@@ -86,46 +84,12 @@ class Track:
             self.current_index = (self.current_index + 1) % len(self.presets)
             return self.presets[self.current_index]
 
-    @classmethod
-    def from_dict(cls: Type[T], data: Dict[str, Any]) -> T:
-        presets_data = data.get('presets', [])
-        data['presets'] = [Preset.from_dict(p) for p in presets_data]
 
-        if 'mode' in data and isinstance(data['mode'], str):
-            try:
-                data['mode'] = TrackMode(data['mode'])
-            except ValueError:
-                data['mode'] = TrackMode.SEQUENCE
-
-                # 自动填充新增字段的默认值
-        clean_data = {k: v for k, v in data.items() if k in cls.__annotations__}
-        return cls(**clean_data)
-
-
-@dataclass
-class GuildData:
+class GuildData(BaseModel):
     """服务器数据：存储该服务器下所有的轨道。"""
-    tracks: Dict[str, Track] = field(default_factory=dict)  # key: role_id (str)
-
-    @classmethod
-    def from_dict(cls: Type[T], data: Dict[str, Any]) -> T:
-        tracks_data = data.get('tracks', {})
-        valid_tracks = {}
-        for k, v in tracks_data.items():
-            try:
-                valid_tracks[k] = Track.from_dict(v)
-            except Exception:
-                continue
-        return cls(tracks=valid_tracks)
+    tracks: Dict[str, Track] = Field(default_factory=dict)  # key: role_id (str)
 
 
-@dataclass
-class JukeboxData:
+class JukeboxData(BaseModel):
     """根数据结构。"""
-    guilds: Dict[str, GuildData] = field(default_factory=dict)  # key: guild_id (str)
-
-    @classmethod
-    def from_dict(cls: Type[T], data: Dict[str, Any]) -> T:
-        guilds_data = data.get('guilds', {})
-        parsed_guilds = {k: GuildData.from_dict(v) for k, v in guilds_data.items()}
-        return cls(guilds=parsed_guilds)
+    guilds: Dict[str, GuildData] = Field(default_factory=dict)  # key: guild_id (str)

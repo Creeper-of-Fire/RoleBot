@@ -44,7 +44,7 @@ class RoleJukeboxCog(FeatureCog, name="RoleJukebox"):
 
     def __init__(self, bot: RoleBot):
         super().__init__(bot)
-        self.manager = RoleJukeboxManager()
+        self.manager = RoleJukeboxManager.get_instance(logger=self.logger)
         self.session = aiohttp.ClientSession()
         self.rotation_task.start()
 

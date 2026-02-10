@@ -36,7 +36,7 @@ class TimedRolesCog(FeatureCog, name="TimedRoles"):
 
     def __init__(self, bot: 'RoleBot'):
         super().__init__(bot)
-        self.timed_role_data_manager = TimedRoleDataManager()
+        self.timed_role_data_manager = TimedRoleDataManager.get_instance(logger=self.logger)
         self.safe_timed_role_ids_cache: Dict[int, List[int]] = {}
 
         self.daily_reset_task.start()

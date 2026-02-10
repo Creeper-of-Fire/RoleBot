@@ -2,11 +2,7 @@
 from __future__ import annotations
 
 import datetime
-import json
-import logging
-import os
 import re
-import threading
 import typing
 from typing import List
 from typing import Optional
@@ -24,6 +20,7 @@ from .cup_honor_json_manager import CupHonorJsonManager
 from .cup_honor_models import CupHonorDefinition
 from honor_system.data_manager.honor_data_manager import HonorDataManager
 from honor_system.honor_def_models import UserHonor, HonorDefinition
+from .cup_honor_module_notification_state_data_manager import NotificationStateManager
 from .cup_honor_module_view import CupHonorManageView
 
 if typing.TYPE_CHECKING:
@@ -172,82 +169,6 @@ class ExpiredHonorNoticeView(ui.View):
         # 编辑原始消息
         await interaction.edit_original_response(embed=success_embed, view=self)
 
-DATA_FILE_PATH = os.path.join('data', 'cup_honor_notified.json')
-
-
-class NotificationStateManager:
-    """
-    一个单例类，用于管理已发送通知的杯赛荣誉状态，并将其持久化到JSON文件中。
-    """
-    _instance = None
-    _lock = threading.Lock()
-
-    def __init__(self, logger: logging.Logger):
-        self.logger = logger
-        self.notified_uuids: set[str] = set()
-        self._ensure_data_file()
-        self.load_state()
-
-    @classmethod
-    def get_instance(cls, logger: logging.Logger) -> 'NotificationStateManager':
-        """获取本类的单例实例。"""
-        if cls._instance is None:
-            if cls._instance is None:
-                cls._instance = cls(logger)
-        return cls._instance
-
-    def _ensure_data_file(self):
-        """确保数据文件和目录存在。"""
-        os.makedirs(os.path.dirname(DATA_FILE_PATH), exist_ok=True)
-        if not os.path.exists(DATA_FILE_PATH):
-            with open(DATA_FILE_PATH, 'w', encoding='utf-8') as f:
-                json.dump([], f)  # 初始为空列表
-
-    def load_state(self):
-        """从JSON文件加载已通知的UUID列表。"""
-        with self._lock:
-            try:
-                with open(DATA_FILE_PATH, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    self.notified_uuids = set(data)
-                    self.logger.info(f"成功从 {DATA_FILE_PATH} 加载了 {len(self.notified_uuids)} 条已通知荣誉记录。")
-            except (IOError, json.JSONDecodeError) as e:
-                self.logger.error(f"无法加载杯赛荣誉通知状态: {e}", exc_info=True)
-                self.notified_uuids = set()
-
-    def _save_state(self):
-        """将当前状态保存到JSON文件。"""
-        with self._lock:
-            try:
-                with open(DATA_FILE_PATH, 'w', encoding='utf-8') as f:
-                    # JSON不支持set，需要转换为list
-                    json.dump(list(self.notified_uuids), f, indent=4)
-            except IOError as e:
-                self.logger.error(f"无法保存杯赛荣誉通知状态: {e}", exc_info=True)
-
-    def add_notified(self, honor_uuid: str):
-        """将一个UUID标记为已通知，并立即保存。"""
-        if honor_uuid not in self.notified_uuids:
-            self.notified_uuids.add(honor_uuid)
-            self._save_state()
-            self.logger.info(f"已将荣誉 {honor_uuid} 标记为已通知并持久化。")
-
-    def remove_notified(self, honor_uuid: str) -> bool:
-        """
-        从已通知列表中移除一个UUID，并立即保存。
-        如果UUID存在并被成功移除，返回True。否则返回False。
-        """
-        if honor_uuid in self.notified_uuids:
-            self.notified_uuids.remove(honor_uuid)
-            self._save_state()
-            self.logger.info(f"已从已通知列表中移除荣誉 {honor_uuid}。")
-            return True
-        return False
-
-    def has_been_notified(self, honor_uuid: str) -> bool:
-        """检查一个UUID是否已被通知。"""
-        return honor_uuid in self.notified_uuids
-
 
 class CupHonorModuleCog(commands.Cog, name="CupHonorModule"):
     """【荣誉子模块】管理手动的、有时效性的杯赛头衔。"""
@@ -358,7 +279,7 @@ class CupHonorModuleCog(commands.Cog, name="CupHonorModule"):
             if now >= expiration_date:
                 self.logger.info(f"荣誉 {honor_uuid} 在服务器 {guild.name} 已过期，开始检查用户...")
                 await self._notify_admin_for_expired_honor(guild, honor_uuid, expiration_date, notification_cfg)
-                self.notification_manager.add_notified(honor_uuid)
+                await self.notification_manager.add_notified(honor_uuid)
 
     async def _notify_admin_for_expired_honor(self, guild: discord.Guild, honor_uuid: str, exp_date: datetime.datetime,
                                               notify_cfg: dict):
@@ -1022,7 +943,7 @@ class CupHonorModuleCog(commands.Cog, name="CupHonorModule"):
             return
 
         # 调用 NotificationStateManager 的新方法
-        was_removed = self.notification_manager.remove_notified(honor_uuid)
+        was_removed = await self.notification_manager.remove_notified(honor_uuid)
 
         if was_removed:
             embed = discord.Embed(

@@ -1,86 +1,58 @@
 # role_manager/timed_role_data_manager.py
 from __future__ import annotations
 
-import asyncio
-import json
-import os
 from datetime import datetime, timedelta, timezone, time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict
 
 import discord
 
 import config
 from role_system.timed_role import timer
+from utility.base_data_manager import AsyncJsonDataManager
 from utility.role_service import batch_update_member_roles
 
 if TYPE_CHECKING:
     from utility.feature_cog import FeatureCog
 
-DATA_DIR = "data"
-DATA_FILE = os.path.join(DATA_DIR, "user_data.json")
+DATA_NAME = "timed_role_user_data"
 UTC8 = timezone(timedelta(hours=8))
 
 RESET_HOUR = config.ROLE_MANAGER_CONFIG.get("reset_hour_utc8", 16)
 RESET_TIME = time(RESET_HOUR, 0, 0, tzinfo=UTC8)
 
 
-class TimedRoleDataManager:
-    def __init__(self):
-        self._data = {}
-        self._lock = asyncio.Lock()
-        self._dirty = False  # 标记数据是否被修改
-        self._save_task = None  # 后台保存任务
-        os.makedirs(DATA_DIR, exist_ok=True)
-        self.load_data()
+class TimedRoleDataManager(AsyncJsonDataManager[Dict[str, Any]]):
+    """
+    限时身份组数据管理器。
+    继承自 AsyncJsonDataManager，使用原生 Dict 模式（不使用 Pydantic Model）
+    """
+    DATA_FILENAME = DATA_NAME
+    # 不传 DATA_MODEL，默认 data 为 dict
+    DATA_MODEL = None
 
-    def load_data(self):
-        try:
-            with open(DATA_FILE, 'r', encoding='utf-8') as f:
-                self._data = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            self._data = {"users": {}, "last_reset": datetime.min.isoformat()}
+    def _reset_data(self):
+        """
+        覆盖基类方法：当 JSON 文件不存在时，初始化默认的字典结构。
+        """
+        self.data = {
+            "users": {},
+            "last_reset": datetime.min.isoformat()
+        }
 
-    async def save_data(self, force=False):
-        """保存数据，支持防抖和增量更新"""
-        self._dirty = True
-
-        # 如果强制保存或没有正在进行的保存任务
-        if force or self._save_task is None:
-            if self._save_task:
-                self._save_task.cancel()
-
-            # 延迟1秒保存，实现防抖
-            self._save_task = asyncio.create_task(self._delayed_save())
-
-    async def _delayed_save(self):
-        """延迟保存实现防抖"""
-        try:
-            await asyncio.sleep(1)
-            async with self._lock:
-                if self._dirty:
-                    with open(DATA_FILE, 'w', encoding='utf-8') as f:
-                        json.dump(self._data, f, indent=4)
-                    self._dirty = False
-        except asyncio.CancelledError:
-            pass
-        finally:
-            self._save_task = None
-
-    # 【核心改动】数据结构变更为 per-guild
     def _get_guild_user_data(self, user_id: int, guild_id: int):
         """获取指定服务器中用户的数据，如果不存在则创建默认结构。"""
         user_id_str, guild_id_str = str(user_id), str(guild_id)
 
-        if user_id_str not in self._data["users"]:
-            self._data["users"][user_id_str] = {}
+        if user_id_str not in self.data["users"]:
+            self.data["users"][user_id_str] = {}
 
-        if guild_id_str not in self._data["users"][user_id_str]:
-            self._data["users"][user_id_str][guild_id_str] = {
+        if guild_id_str not in self.data["users"][user_id_str]:
+            self.data["users"][user_id_str][guild_id_str] = {
                 "used_seconds": 0,
-                "current_timed_roles": [],  # 【改动】从单个 role 变为 roles 列表
+                "current_timed_roles": [],
                 "last_claim_timestamp": None,
             }
-        return self._data["users"][user_id_str][guild_id_str]
+        return self.data["users"][user_id_str][guild_id_str]
 
     # 【核心改动】方法现在需要 guild_id
     def get_remaining_seconds(self, user_id: int, guild_id: int) -> int:
@@ -100,7 +72,7 @@ class TimedRoleDataManager:
 
         user_data["current_timed_roles"] = role_ids
 
-        await self.save_data(force=False)
+        await self.save_data()
 
     # 【核心改动】方法现在需要 guild_id
     async def return_timed_roles(self, user_id: int, guild_id: int) -> float:
@@ -117,7 +89,7 @@ class TimedRoleDataManager:
         user_data["current_timed_roles"] = []
         user_data["last_claim_timestamp"] = None
 
-        await self.save_data(force=False)
+        await self.save_data()
         return used_this_session
 
     async def force_return_timed_roles(self, user_id: int, guild_id: int):
@@ -126,22 +98,20 @@ class TimedRoleDataManager:
         if user_data["current_timed_roles"]:
             user_data["current_timed_roles"] = []
             user_data["last_claim_timestamp"] = None
-            await self.save_data(force=False)
+            await self.save_data()
 
     async def get_last_reset_time(self) -> datetime:
         """获取上次重置的时间。"""
-        async with self._lock:
-            last_reset_iso_str = self._data.get("last_reset", datetime.min.isoformat())
-            last_reset_time = datetime.fromisoformat(last_reset_iso_str)
-            if last_reset_time.tzinfo is None:
-                last_reset_time = last_reset_time.replace(tzinfo=UTC8)
-            return last_reset_time
+        last_reset_iso_str = self.data.get("last_reset", datetime.min.isoformat())
+        last_reset_time = datetime.fromisoformat(last_reset_iso_str)
+        if last_reset_time.tzinfo is None:
+            last_reset_time = last_reset_time.replace(tzinfo=UTC8)
+        return last_reset_time
 
     async def update_last_reset_time(self):
         """仅更新重置时间戳。"""
-        async with self._lock:
-            self._data["last_reset"] = datetime.now(UTC8).isoformat()
-            await self.save_data(force=True)
+        self.data["last_reset"] = datetime.now(UTC8).isoformat()
+        await self.save_data()
 
     async def daily_reset(self, cog: 'FeatureCog', guilds_to_reset: list[discord.Guild]):
         """
@@ -157,7 +127,7 @@ class TimedRoleDataManager:
             exclusion_map = {}
 
             # 遍历数据库，处理正在计时的用户
-            for user_id_str, guilds_data in list(self._data["users"].items()):
+            for user_id_str, guilds_data in list(self.data["users"].items()):
                 user_id = int(user_id_str)
                 for guild_id_str, user_data in list(guilds_data.items()):
                     guild_id = int(guild_id_str)
@@ -198,7 +168,6 @@ class TimedRoleDataManager:
                                 all_members_with_timed_roles[guild.id][member.id] = set()
                             all_members_with_timed_roles[guild.id][member.id].add(role.id)
 
-
             # 3. 同步和清理身份组
             cog.logger.info(f"每日重置：开始处理 {len(guilds_to_reset)} 个服务器的身份组同步...")
             for guild in guilds_to_reset:
@@ -213,10 +182,10 @@ class TimedRoleDataManager:
                         # 不在豁免名单内，移除所有限时身份组
                         members_to_update[member_id] = {"add": [], "remove": list(role_ids_on_server)}
                         # 清理数据库中这些用户在该服务器的数据
-                        if str(member_id) in self._data["users"] and str(guild_id) in self._data["users"][str(member_id)]:
-                            del self._data["users"][str(member_id)][str(guild_id)]
-                            if not self._data["users"][str(member_id)]:
-                                del self._data["users"][str(member_id)]
+                        if str(member_id) in self.data["users"] and str(guild_id) in self.data["users"][str(member_id)]:
+                            del self.data["users"][str(member_id)][str(guild_id)]
+                            if not self.data["users"][str(member_id)]:
+                                del self.data["users"][str(member_id)]
 
                 # 3.1. 对于豁免名单内的用户，重新上号，确保他们的身份组是最新的
                 guild_exclusion_map = exclusion_map.get(guild_id, {})
@@ -235,14 +204,14 @@ class TimedRoleDataManager:
             for guild_exclusion in exclusion_map.values():
                 all_exclusion_user_ids.update(guild_exclusion.keys())
 
-            users_to_clear = [uid for uid in self._data["users"].keys() if int(uid) not in all_exclusion_user_ids]
+            users_to_clear = [uid for uid in self.data["users"].keys() if int(uid) not in all_exclusion_user_ids]
             for user_id_str in users_to_clear:
-                if user_id_str in self._data["users"]:
-                    del self._data["users"][user_id_str]
+                if user_id_str in self.data["users"]:
+                    del self.data["users"][user_id_str]
 
             # 更新重置时间戳
-            self._data["last_reset"] = now.isoformat()
-            await self.save_data(force=True)
+            self.data["last_reset"] = now.isoformat()
+            await self.save_data()
             cog.logger.info("指定服务器的每日重置任务已成功完成。")
 
     async def reset_user_used_seconds(self, user_id: int, guild_id: int):
@@ -260,7 +229,7 @@ class TimedRoleDataManager:
         # 仅当已用时间异常地超过了总上限时，才触发修复
         if current_used > daily_limit_seconds:
             user_data["used_seconds"] = 0
-            await self.save_data(force=False)
+            await self.save_data()
             return True  # 表示已修复
 
         return False  # 表示数据正常，无需修复
@@ -272,7 +241,7 @@ class TimedRoleDataManager:
         返回列表中的每个元素是 (user_id, guild_id, role_ids)。
         """
         active_users = []
-        for user_id_str, guilds_data in self._data["users"].items():
+        for user_id_str, guilds_data in self.data["users"].items():
             for guild_id_str, user_data in guilds_data.items():
                 if user_data["current_timed_roles"]:
                     active_users.append((

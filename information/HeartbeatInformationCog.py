@@ -30,13 +30,13 @@ class HeartbeatInformationCog(commands.Cog, name="Heartbeat Information"):
 
     def __init__(self, bot: 'RoleBot'):
         self.bot = bot
-        self.data_manager = HeartbeatDataManager()
+        self.data_manager = HeartbeatDataManager.get_instance()
         # 存储每个心跳资讯的动态任务 (键仍为 target_message_id 的字符串形式)
         self.active_tasks: Dict[str, tasks.Loop] = {}
 
     async def cog_load(self):
         """Cog加载时，加载数据并为现有记录启动任务。"""
-        await self.data_manager.load_data()
+        self.data_manager.load_data()
         for info in self.data_manager.get_all_heartbeats():
             if info.target_message_id:  # 只有有目标消息ID的才启动心跳任务
                 self._start_heartbeat_task(info)

@@ -12,7 +12,7 @@ import config_data
 from honor_system.HonorCog import HonorCog  # 导入主模块的Cog和View
 from honor_system.HonorManageView import HonorManageView
 from honor_system.data_manager.honor_data_manager import HonorDataManager
-from honor_system.data_manager.json_data_manager import JsonDataManager
+from honor_system.data_manager.json_data_manager import HonorPanelDataManager
 
 if TYPE_CHECKING:
     from main import RoleBot
@@ -151,7 +151,7 @@ class ClaimableHonorModuleCog(commands.Cog, name="ClaimableHonorModule"):
         self.bot = bot
         self.logger = bot.logger
         self.data_manager = HonorDataManager.getDataManager(logger=self.logger)
-        self.json_manager = JsonDataManager.get_instance(logger=self.logger)
+        self.json_manager = HonorPanelDataManager.get_instance(logger=self.logger)
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -243,7 +243,7 @@ class ClaimableHonorModuleCog(commands.Cog, name="ClaimableHonorModule"):
             message = await target_channel.send(embed=embed, view=view)
 
             # 保存面板信息以供持久化
-            self.json_manager.add_panel(
+            await self.json_manager.add_panel(
                 message_id=message.id,
                 channel_id=message.channel.id,
                 guild_id=interaction.guild_id,

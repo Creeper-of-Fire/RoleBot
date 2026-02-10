@@ -1,59 +1,34 @@
 # role_jukebox/manager.py
 from __future__ import annotations
 
-import asyncio
-import json
 import os
 import random
 import time
-from dataclasses import asdict
 from typing import List, Optional, Tuple
 
 import aiofiles
 
 from role_system.role_jukebox.models import JukeboxData, GuildData, Track, Preset, TrackMode, PlayerAction
+from utility.base_data_manager import AsyncJsonDataManager, DATA_DIR
 
 # 使用新文件名以避免旧数据冲突，实现“不需要兼容”
-DATA_FILE = "data/jukebox_data.json"
-ICON_DIR = "data/jukebox_icons"
+DATA_NAME = "jukebox_data"
+ICON_DIR = f"{DATA_DIR}/jukebox_icons"
 
 
-class RoleJukeboxManager:
+class RoleJukeboxManager(AsyncJsonDataManager[JukeboxData]):
+    """
+    身份组点唱机数据管理器。
+    管理 JSON 配置以及本地图标文件的存取。
+    """
+    DATA_FILENAME = DATA_NAME
+    DATA_MODEL = JukeboxData
+
     def __init__(self):
-        self._data: JukeboxData = JukeboxData()
-        self._lock = asyncio.Lock()
-
-        # 确保存储目录存在
-        os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
+        # 初始化基类
+        super().__init__()
+        # 确保图片目录存在
         os.makedirs(ICON_DIR, exist_ok=True)
-
-        self.load_data()
-
-    def load_data(self):
-        if not os.path.exists(DATA_FILE):
-            self._data = JukeboxData()
-            return
-        try:
-            with open(DATA_FILE, 'r', encoding='utf-8') as f:
-                self._data = JukeboxData.from_dict(json.load(f))
-        except Exception as e:
-            print(f"[Jukebox] Error loading data: {e}, initializing empty.")
-            self._data = JukeboxData()
-
-    async def save_data(self):
-        """保存数据到磁盘。"""
-        async with self._lock:
-            with open(DATA_FILE, 'w', encoding='utf-8') as f:
-                json.dump(asdict(self._data), f, indent=4, ensure_ascii=False)
-
-    def _get_guild_data(self, guild_id: int) -> GuildData:
-        """
-        获取或创建服务器数据对象。
-        """
-        gid_str = str(guild_id)
-        if gid_str not in self._data.guilds:
-            self._data.guilds[gid_str] = GuildData()
-        return self._data.guilds[gid_str]
 
     # --- 图片文件管理 ---
 
@@ -95,9 +70,14 @@ class RoleJukeboxManager:
             print(f"Error deleting icon {filename}: {e}")
 
     # --- 轨道管理 --
-
-    def _get_gd(self, guild_id: int):
-        return self._data.guilds.setdefault(str(guild_id), type(self._data.guilds[str(guild_id)])())
+    def _get_gd(self, guild_id: int) -> GuildData:
+        """
+        获取或创建服务器数据对象。
+        """
+        gid_str = str(guild_id)
+        if gid_str not in self.data.guilds:
+            self.data.guilds[gid_str] = GuildData()
+        return self.data.guilds[gid_str]
 
     def get_track(self, guild_id: int, role_id: int) -> Optional[Track]:
         return self._get_gd(guild_id).tracks.get(str(role_id))
@@ -182,7 +162,7 @@ class RoleJukeboxManager:
         actions = []
         now = time.time()
 
-        for guild_id_str, guild_data in self._data.guilds.items():
+        for guild_id_str, guild_data in self.data.guilds.items():
             for track in guild_data.tracks.values():
                 if not track.enabled or not track.presets:
                     continue

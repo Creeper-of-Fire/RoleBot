@@ -34,7 +34,7 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
 
     def __init__(self, bot: 'RoleBot'):
         super().__init__(bot)
-        self.data_manager = RoleSyncDataManager()
+        self.data_manager = RoleSyncDataManager.get_instance(logger=self.logger)
         # 缓存安全的同步规则
         # {'guild_id': [{'source': source_id, 'target': target_id}]}
         self.safe_direct_sync_pairs_cache: Dict[int, List[Dict[str, int]]] = {}
@@ -451,11 +451,8 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
                     await interaction.followup.send("❌ 无效的规则格式。", ephemeral=True)
 
             elif action == "clear_all":
-                success = await self.data_manager.clear_all_logs()
-                if success:
-                    await interaction.followup.send("🗑️ 已成功删除所有同步记录文件。", ephemeral=True)
-                else:
-                    await interaction.followup.send("ℹ️ 记录文件不存在，无需操作。", ephemeral=True)
+                await self.data_manager.clear_all_data()
+                await interaction.followup.send("🗑️ 已成功删除所有同步记录文件。", ephemeral=True)
         else:  # 用户点击了取消
             await interaction.followup.send("❌ 操作已取消。", ephemeral=True)
 
