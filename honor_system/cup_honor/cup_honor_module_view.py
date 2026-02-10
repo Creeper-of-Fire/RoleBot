@@ -13,7 +13,7 @@ from pydantic import ValidationError
 
 import config_data
 from honor_system.cup_honor.cup_honor_models import CupHonorDefinition, CupHonorDetails
-from honor_system.models import HonorDefinition
+from honor_system.honor_def_models import HonorDefinition
 from utility.paginated_view import PaginatedView
 from utility.views import ConfirmationView
 if typing.TYPE_CHECKING:

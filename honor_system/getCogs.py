@@ -2,9 +2,9 @@ from typing import TYPE_CHECKING, Optional
 
 
 if TYPE_CHECKING:
-    from .anniversary_module import HonorAnniversaryModuleCog
-    from .role_sync_honor_module import RoleClaimHonorModuleCog
-    from .cog import HonorCog
+    from honor_system.module.anniversary_module import HonorAnniversaryModuleCog
+    from honor_system.module.role_sync_honor_module import RoleClaimHonorModuleCog
+    from honor_system.HonorCog import HonorCog
     from utility.feature_cog import FeatureCog
 
 def getHonorAnniversaryModuleCog(cog: 'FeatureCog') -> 'HonorAnniversaryModuleCog | None':

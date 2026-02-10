@@ -22,8 +22,8 @@ import config_data
 from utility.views import ConfirmationView
 from .cup_honor_json_manager import CupHonorJsonManager
 from .cup_honor_models import CupHonorDefinition
-from honor_system.honor_data_manager import HonorDataManager
-from honor_system.models import UserHonor, HonorDefinition
+from honor_system.data_manager.honor_data_manager import HonorDataManager
+from honor_system.honor_def_models import UserHonor, HonorDefinition
 from .cup_honor_module_view import CupHonorManageView
 
 if typing.TYPE_CHECKING:

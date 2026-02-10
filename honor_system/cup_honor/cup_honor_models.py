@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic import Field, field_validator, BaseModel
 
-from honor_system.common_models import BaseHonorDefinition
+from honor_system.module.common_models import BaseHonorDefinition
 
 
 class CupHonorDetails(BaseModel):

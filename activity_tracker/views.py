@@ -12,7 +12,7 @@ from activity_tracker.logic import UserReportData, SortedDisplayItem
 from utility.paginated_view import PaginatedView
 
 if typing.TYPE_CHECKING:
-    from .cog import TrackActivityCog
+    from .TrackActivityCog import TrackActivityCog
 
 # --- 常量定义 ---
 MAX_CHANNELS_PER_PAGE = 10

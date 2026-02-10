@@ -9,7 +9,7 @@ import discord
 from discord.ext import commands
 
 if TYPE_CHECKING:
-    from core.cog import CoreCog
+    from core.CoreCog import CoreCog
     from main import RoleBot
 
 @dataclass
@@ -37,7 +37,7 @@ class FeatureCog(commands.Cog, ABC, metaclass=CogABCMeta):
         初始化基类，设置 bot 和 logger 实例。
         """
         self.bot = bot
-        self.logger = bot.logger
+        self.logger = bot.logger.getChild(self.__class__.__name__)
 
     @property
     def core_cog(self) -> CoreCog | None:

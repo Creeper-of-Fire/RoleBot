@@ -9,25 +9,25 @@ from discord.ext import commands
 import config
 # 导入我们的配置和模块
 import config_data
-from activity_tracker.cog import TrackActivityCog
-from core.cog import CoreCog
+from activity_tracker.TrackActivityCog import TrackActivityCog
+from core.CoreCog import CoreCog
 from core.embed_link.embed_manager import EmbedLinkManager
 from core.role_backup_cog import BackupCog
-from fashion.cog import FashionCog
-from honor_system.anniversary_module import HonorAnniversaryModuleCog
-from honor_system.claimable_honor_module import ClaimableHonorModuleCog
-from honor_system.cog import HonorCog
+from role_system.fashion.FashionCog import FashionCog
+from honor_system.module.anniversary_module import HonorAnniversaryModuleCog
+from honor_system.module.claimable_honor_module import ClaimableHonorModuleCog
+from honor_system.HonorCog import HonorCog
 from honor_system.cup_honor.cup_honor_module import CupHonorModuleCog
-from honor_system.post_module import HonorPostModuleCog
-from honor_system.role_sync_honor_module import RoleClaimHonorModuleCog
-from information.cog import HeartbeatInformationCog
-from model_fan_roles.cog import ModelFanRolesCog
-from role_application.cog import RoleApplicationCog
-from role_jukebox.cog import RoleJukeboxCog
-from role_sync.cog import RoleSyncCog
-from role_viewer.cog import RoleViewerCog
-from self_service.cog import SelfServiceCog
-from timed_role.cog import TimedRolesCog
+from honor_system.module.post_module import HonorPostModuleCog
+from honor_system.module.role_sync_honor_module import RoleClaimHonorModuleCog
+from information.HeartbeatInformationCog import HeartbeatInformationCog
+from role_system.model_fan_roles.ModelFanRolesCog import ModelFanRolesCog
+from role_application.RoleApplicationCog import RoleApplicationCog
+from role_system.role_jukebox.RoleJukeboxCog import RoleJukeboxCog
+from role_sync import RoleSyncCog
+from role_system.role_viewer.RoleViewerCog import RoleViewerCog
+from role_system.self_service.SelfServiceCog import SelfServiceCog
+from role_system.timed_role.TimedRolesCog import TimedRolesCog
 
 # ===================================================================
 # 日志设置

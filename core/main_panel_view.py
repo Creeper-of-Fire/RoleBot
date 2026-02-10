@@ -6,7 +6,7 @@ import discord
 from discord import ui
 
 if typing.TYPE_CHECKING:
-    from core.cog import CoreCog
+    from core.CoreCog import CoreCog
     from utility.feature_cog import FeatureCog
 
 
