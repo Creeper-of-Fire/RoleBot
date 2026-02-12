@@ -24,9 +24,9 @@ class RoleJukeboxManager(AsyncJsonDataManager[JukeboxData]):
     DATA_FILENAME = DATA_NAME
     DATA_MODEL = JukeboxData
 
-    def __init__(self):
+    def __init__(self,*args,**kwargs):
         # 初始化基类
-        super().__init__()
+        super().__init__(*args,**kwargs)
         # 确保图片目录存在
         os.makedirs(ICON_DIR, exist_ok=True)
 

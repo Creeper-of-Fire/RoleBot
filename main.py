@@ -24,7 +24,7 @@ from information.HeartbeatInformationCog import HeartbeatInformationCog
 from role_system.model_fan_roles.ModelFanRolesCog import ModelFanRolesCog
 from role_application.RoleApplicationCog import RoleApplicationCog
 from role_system.role_jukebox.RoleJukeboxCog import RoleJukeboxCog
-from role_sync import RoleSyncCog
+from role_sync.RoleSyncCog import RoleSyncCog
 from role_system.role_viewer.RoleViewerCog import RoleViewerCog
 from role_system.self_service.SelfServiceCog import SelfServiceCog
 from role_system.timed_role.TimedRolesCog import TimedRolesCog
