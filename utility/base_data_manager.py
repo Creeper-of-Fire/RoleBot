@@ -3,9 +3,9 @@ import json
 import logging
 import os
 import threading
-from typing import TypeVar, Generic, Type, Union, Dict, List, Optional, Self, Any
+from typing import TypeVar, Generic, Type, Union, Dict, List, Optional, Self, Any, Callable
 
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter
 
 # T 可以是 BaseModel，也可以是普通的 dict 或 list
 T = TypeVar("T", bound=Union[BaseModel, Dict, List])
@@ -233,3 +233,150 @@ class AsyncJsonDataManager(Generic[T]):
             temp_file = f"{self.file_path}.tmp"
             if os.path.exists(temp_file):
                 os.remove(temp_file)
+
+
+T_Guild = TypeVar("T_Guild", bound=BaseModel)
+
+class AsyncGuildDataManager(AsyncJsonDataManager, Generic[T_Guild]):
+    """
+    终极抽象：抛弃外层 Root 模型，直接使用 TypeAdapter 管理 Dict[str, T_Guild]。
+    """
+    GUILD_MODEL: Type[T_Guild]
+
+    def __init__(self, *args, **kwargs):
+        # 核心魔法：使用 TypeAdapter 直接接管字典类型的校验
+        self._adapter = TypeAdapter(Dict[str, self.GUILD_MODEL])
+        # 初始化基类，基类内部会调用我们重写的 load_data
+        super().__init__(*args, **kwargs)
+
+    def _migrate_raw_data(self, raw_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """钩子方法：子类可以在此拦截并处理旧格式 JSON 向新格式的迁移"""
+        return raw_dict
+
+    def load_data(self):
+        """重写加载逻辑，适配 TypeAdapter"""
+        if not os.path.exists(self.file_path):
+            self.data: Dict[str, T_Guild] = {}
+            return
+
+        try:
+            with open(self.file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+                if not content:
+                    self.data = {}
+                else:
+                    raw_dict = json.loads(content)
+                    if not isinstance(raw_dict, dict): # 增加判断，防止文件损坏导致不是字典
+                        raw_dict = {}
+                    # 1. 触发迁移钩子
+                    raw_dict = self._migrate_raw_data(raw_dict)
+                    # 2. 使用 TypeAdapter 验证并转换为模型对象
+                    self.data = self._adapter.validate_python(raw_dict)
+        except Exception as e:
+            print(f"加载文件 {self.file_path} 时出错: {e}。使用默认空数据。")
+            self.data = {}
+
+    def _serialize_data(self) -> str:
+        """重写序列化逻辑，使用 TypeAdapter"""
+        # 如果 self.data 为空，返回 "{}" 的字符串，避免 TypeAdapter 报错
+        if not self.data:
+            return "{}"
+        # dump_json 返回的是 bytes，需要 decode
+        return self._adapter.dump_json(self.data, indent=4).decode('utf-8')
+
+    # ==================== 服务器快捷操作接口 ====================
+    def get_guild(self, guild_id: int) -> Optional[T_Guild]:
+        return self.data.get(str(guild_id))
+
+    def set_guild_data(self, guild_id: int, data: T_Guild):
+        """设置（或覆盖）整个服务器的数据对象"""
+        self.data[str(guild_id)] = data
+
+    def ensure_guild(self, guild_id: int) -> T_Guild:
+        g_str = str(guild_id)
+        if g_str not in self.data:
+            self.data[g_str] = self.GUILD_MODEL()
+        return self.data[g_str]
+
+    def remove_guild_if(self, guild_id: int, condition: Callable[[T_Guild], bool]) -> bool:
+        g_str = str(guild_id)
+        if g_str in self.data and condition(self.data[g_str]):
+            del self.data[g_str]
+            return True
+        return False
+
+T_User = TypeVar("T_User", bound=BaseModel)
+
+class AsyncUserGuildDataManager(AsyncJsonDataManager, Generic[T_User]):
+    """
+    终极抽象：专为「服务器 -> 成员」二级结构设计。
+    数据结构为 Dict[str, Dict[str, T_User]]
+    """
+    USER_MODEL: Type[T_User]
+
+    def __init__(self, *args, **kwargs):
+        # 魔法：直接适配双层嵌套字典
+        self._adapter = TypeAdapter(Dict[str, Dict[str, self.USER_MODEL]])
+        super().__init__(*args, **kwargs)
+
+    def _migrate_raw_data(self, raw_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """迁移钩子：如果以前是 Dict[str, Dict[str, Dict[str, Any]]] 这种带壳结构，可以在此剥开"""
+        return raw_dict
+
+    def load_data(self):
+        """加载双层字典"""
+        if not os.path.exists(self.file_path):
+            self.data: Dict[str, Dict[str, T_User]] = {}
+            return
+        try:
+            with open(self.file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+                if not content:
+                    self.data = {}
+                else:
+                    raw_dict = json.loads(content)
+                    if not isinstance(raw_dict, dict): # 增加判断，防止文件损坏导致不是字典
+                        raw_dict = {}
+                    raw_dict = self._migrate_raw_data(raw_dict)
+                    self.data = self._adapter.validate_python(raw_dict)
+        except Exception as e:
+            print(f"加载 {self.file_path} 失败: {e}")
+            self.data = {}
+
+    def _serialize_data(self) -> str:
+        # 如果 self.data 为空，返回 "{}" 的字符串，避免 TypeAdapter 报错
+        if not self.data:
+            return "{}"
+        return self._adapter.dump_json(self.data, indent=4).decode('utf-8')
+
+    # ==================== 成员快捷操作接口 ====================
+    def get_user_data(self, guild_id: int, user_id: int) -> Optional[T_User]:
+        """获取成员数据"""
+        return self.data.get(str(guild_id), {}).get(str(user_id))
+
+    def set_user_data(self, guild_id: int, user_id: int, data: T_User):
+        """设置（或覆盖）成员数据"""
+        g_str, u_str = str(guild_id), str(user_id)
+        if g_str not in self.data:
+            self.data[g_str] = {}
+        self.data[g_str][u_str] = data
+        return self.data[g_str][u_str]
+
+    def ensure_user_data(self, guild_id: int, user_id: int) -> T_User:
+        """获取成员数据，不存在则创建"""
+        g_str, u_str = str(guild_id), str(user_id)
+        if g_str not in self.data:
+            self.data[g_str] = {}
+        if u_str not in self.data[g_str]:
+            self.data[g_str][u_str] = self.USER_MODEL()
+        return self.data[g_str][u_str]
+
+    def remove_user_data(self, guild_id: int, user_id: int):
+        """删除成员数据并自动清理空服务器节点"""
+        g_str, u_str = str(guild_id), str(user_id)
+        if g_str in self.data and u_str in self.data[g_str]:
+            del self.data[g_str][u_str]
+            if not self.data[g_str]:
+                del self.data[g_str]
+            return True
+        return False
