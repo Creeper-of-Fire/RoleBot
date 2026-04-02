@@ -220,18 +220,18 @@ class RoleApplicationCog(commands.Cog, name="RoleApplication"):
         # 此部分无改动
         await interaction.response.defer()
         guild = interaction.guild
-        creator_role_name = guild.get_role(CREATOR_ROLE_ID).name if guild.get_role(CREATOR_ROLE_ID) else f"ID:{CREATOR_ROLE_ID}"
-        contrib_role_name = guild.get_role(CONTRIBUTOR_ROLE_ID).name if guild.get_role(CONTRIBUTOR_ROLE_ID) else f"ID:{CONTRIBUTOR_ROLE_ID}"
-        builder_role_name = guild.get_role(BUILDER_ROLE_ID).name if guild.get_role(BUILDER_ROLE_ID) else f"ID:{BUILDER_ROLE_ID}"
+        creator_role_mention = guild.get_role(CREATOR_ROLE_ID).mention if guild.get_role(CREATOR_ROLE_ID) else f"ID:{CREATOR_ROLE_ID}"
+        contrib_role_mention = guild.get_role(CONTRIBUTOR_ROLE_ID).mention if guild.get_role(CONTRIBUTOR_ROLE_ID) else f"ID:{CONTRIBUTOR_ROLE_ID}"
+        builder_role_mention = guild.get_role(BUILDER_ROLE_ID).mention if guild.get_role(BUILDER_ROLE_ID) else f"ID:{BUILDER_ROLE_ID}"
         embed = discord.Embed(
             title="🏗️ 社区建设者身份组申请",
             description=(
-                f"如果你拥有 **{creator_role_name}** 或 **{contrib_role_name}** 身份组，"
-                f"你可以在此领取专属的 **{builder_role_name}** 身份组。\n\n"
-                f"**{builder_role_name}**可以在提案区发起提案，并参与讨论，深度参与建设社区。\n"
-                f"并且每次有新的提案进入讨论时，系统会自动 **@{builder_role_name}**。\n"
+                f"如果你拥有 **{creator_role_mention}** 或 **{contrib_role_mention}** 身份组，"
+                f"你可以在此领取专属的 **{builder_role_mention}** 身份组。\n\n"
+                f"**{builder_role_mention}**可以在提案区发起提案，并参与讨论，深度参与建设社区。\n"
+                f"并且每次有新的提案进入讨论时，系统会自动 **提醒{builder_role_mention}**。\n"
                 f"以便该身份组的所有成员都可以第一时间参与新提案的讨论。\n"
-                f"如果你已经拥有 **{builder_role_name}** 的身份组并希望移除，也可以点击下方按钮移除。"
+                f"如果你已经拥有 **{builder_role_mention}** 的身份组并希望移除，也可以点击下方按钮移除。"
             ),
             color=discord.Color.gold()
         )
