@@ -25,7 +25,6 @@
 # --- 脚本配置 ---
 $ErrorActionPreference = "Stop" # 遇到任何错误就停止脚本
 $dockerContainerName = "rolebot"
-$remoteProjectBaseDir = "/root" # 远程服务器上项目存放的父目录
 $remoteProjectName = "RoleBot"  # 远程服务器上项目目录的名称
 
 # --- 1. 加载配置 ---
@@ -53,6 +52,8 @@ catch
 $sshHost = $config["SSH_HOST"]
 $sshUser = $config["SSH_USER"]
 $sshKeyPath = $config["SSH_PRIVATE_KEY_PATH"]
+
+$remoteProjectBaseDir = if ($sshUser -eq "root") { "/root" } else { "/home/$sshUser" } # 远程服务器上项目存放的父目录
 
 # 远程项目完整路径
 $remoteProjectDir = "$remoteProjectBaseDir/$remoteProjectName"

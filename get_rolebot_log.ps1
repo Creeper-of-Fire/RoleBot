@@ -41,7 +41,6 @@ catch {
 $sshHost = $config["SSH_HOST"]
 $sshUser = $config["SSH_USER"]
 $sshKeyPath = $config["SSH_PRIVATE_KEY_PATH"]
-$remoteProjectDir = "/root/RoleBot" # 机器人代码在服务器上的存放位置
 # Docker 容器名称，从 docker-compose.yml 中获取
 $dockerContainerName = "rolebot"
 
