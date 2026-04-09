@@ -4,11 +4,13 @@ from __future__ import annotations
 import asyncio
 import collections
 import io
+import re
 import time
-import typing
 from datetime import datetime, timedelta, timezone
+from typing import Optional, TYPE_CHECKING, Dict, Union
 
 import discord
+import emoji
 from discord import app_commands, Guild
 from discord.ext import commands
 
@@ -19,7 +21,7 @@ from activity_tracker.views import ActivityRoleView, ReportEmbeds, UserReportDet
 from utility.permison import is_super_admin
 from utility.views import ConfirmationView
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
     from main import RoleBot
 
 
@@ -38,12 +40,12 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         # 用于防止并发回填任务的内存锁
         self._backfill_locks: set[int] = set(config.GUILD_IDS)
         # 用于节流更新最后同步时间戳
-        self._last_timestamp_update: typing.Dict[int, float] = {}
+        self._last_timestamp_update: Dict[int, float] = {}
         self.TIMESTAMP_UPDATE_INTERVAL = 60
 
-        self._processors: typing.Dict[int, ActivityProcessor] = {}
+        self._processors: Dict[int, ActivityProcessor] = {}
 
-    def _get_processor(self, guild: discord.Guild) -> typing.Optional[ActivityProcessor]:
+    def _get_processor(self, guild: discord.Guild) -> Optional[ActivityProcessor]:
         """
         【新增】获取或创建并缓存一个服务器的 ActivityProcessor 实例。
         这是所有需要 Processor 的地方的统一入口。
@@ -82,6 +84,55 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         self.logger.info("Bot is ready. Creating startup incremental sync task...")
         self.bot.loop.create_task(self._incremental_sync_on_startup())
 
+    @staticmethod
+    def is_not_valid_message(message: discord.Message) -> tuple[bool, Optional[str]]:
+        """
+        判断消息是否为有效消息（非刷屏消息）。
+        有效消息包括：有意义的文字内容、或图文混合内容。
+        无效消息（刷屏）包括：纯表情包（Unicode/自定义）、纯图片/文件、纯标点符号等。
+
+        :param message: 消息
+        :return: (是否应该过滤, 过滤原因)
+        """
+        content = message.content
+        embeds = message.embeds
+        has_attachments = bool(message.attachments)
+
+        # 去除首尾空白
+        text = content.strip()
+
+        # 检查是否有图片相关的嵌入内容
+        has_image_embed = False
+        if embeds:
+            for embed in embeds:
+                if embed.type in ('image', 'gifv') or (embed.image or embed.thumbnail or embed.video):
+                    has_image_embed = True
+                    break
+
+        # 情况1: 纯图片/文件（没有文字内容）
+        if not text and (has_attachments or has_image_embed):
+            return True, "纯图片/文件"
+
+        # 情况2: 只有文字内容
+        if text and not has_attachments:
+            # 移除 Discord 自定义表情 (格式: <:name:id> 或 <a:animated_name:id>)
+            # 静态表情: <:emoji_name:123456789>
+            # 动态表情: <a:emoji_name:123456789>
+            text_without_discord_emoji = re.sub(r'<a?:\w+:\d+>', '', text)
+            # 移除所有emoji，看是否还有剩余字符
+            text_without_unicode_emoji = emoji.replace_emoji(text_without_discord_emoji, '')
+            # # 也移除常见的装饰性字符（如零宽连接符、变体选择器等）
+            # text_without_emoji = re.sub(r'[\uFE00-\uFE0F\u200D\uE0000-\uE007F]', '', text_without_unicode_emoji)
+            text_without_emoji = text_without_unicode_emoji.strip()
+
+            # 如果移除emoji后没有剩余字符，说明是纯表情
+            if not text_without_emoji:
+                return True, "纯表情包"
+
+        # 情况3: 既有文字又有图片/表情
+        # 这种情况保留，不算刷屏
+        return False, None
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         """
@@ -93,6 +144,10 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
 
         guild_cfg = self.config.get("guild_configs", {}).get(message.guild.id)
         if not guild_cfg:
+            return
+
+        should_filter, _ = self.is_not_valid_message(message)
+        if should_filter:
             return
 
         # 1. 实例化处理器 (轻量级操作)
@@ -219,7 +274,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
 
                 report_channel = None
                 if report_channel_id := guild_cfg.get("report_channel_id"):
-                    report_channel = guild.get_channel(report_channel_id) or guild.fetch_channel(report_channel_id)
+                    report_channel = guild.get_channel(report_channel_id) or await guild.fetch_channel(report_channel_id)
 
                 if last_sync_ts is None:
                     await self._update_sync_timestamp(guild.id, now_utc.timestamp(), force=True)
@@ -258,9 +313,9 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         await self.data_manager.set_last_sync_timestamp(guild_id, timestamp)
 
     async def _backfill_guild_history(self, guild: discord.Guild,
-                                      target_channel: typing.Optional[discord.abc.Messageable],
+                                      target_channel: Optional[discord.abc.Messageable],
                                       start_datetime: datetime, end_datetime: datetime,
-                                      single_channel: typing.Optional[typing.Union[discord.TextChannel, discord.Thread, discord.ForumChannel]] = None):
+                                      single_channel: Optional[Union[discord.TextChannel, discord.Thread, discord.ForumChannel]] = None):
         """【核心执行器】负责回填历史消息，是所有同步任务的唯一入口。"""
         try:
             self._backfill_locks.add(guild.id)
@@ -298,7 +353,12 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
                         self.logger.debug(f"频道 {channel_id} 不是文本频道或帖子，跳过。")
                         continue
                     async for message in channel.history(limit=None, after=start_datetime, before=end_datetime):
-                        if message.author.bot: continue
+                        if message.author.bot:
+                            continue
+                        should_filter, _ = self.is_not_valid_message(message)
+                        if should_filter:
+                            continue
+
                         total_messages_added += 1
                         messages_in_pipe += 1
                         await self.data_manager.add_message_to_pipeline(
@@ -374,7 +434,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         )
         embed.add_field(
             name="认证标准",
-            value=f"过去 **{guild_cfg.get('days_window', 'N/A')}** 天内，发送消息达到 **{guild_cfg.get('message_threshold', 'N/A')}** 条。",
+            value=f"过去 **{guild_cfg.get('days_window', 'N/A')}** 天内，发送非纯表情/纯图片的有效消息达到 **{guild_cfg.get('message_threshold', 'N/A')}** 条。",
             inline=False
         )
         embed.set_footer(text="所有操作仅您自己可见。")
@@ -440,7 +500,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
                 await interaction.edit_original_response(content="❌ 操作已取消。", view=None)
 
     @staticmethod
-    def _parse_flexible_date(date_str: str) -> typing.Optional[datetime]:
+    def _parse_flexible_date(date_str: str) -> Optional[datetime]:
         """尝试以多种格式解析日期字符串，返回 UTC datetime 对象。"""
         now = datetime.now(BEIJING_TZ)
         formats = ["%Y-%m-%d", "%m-%d", "%d"]
@@ -466,10 +526,10 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
     @app_commands.checks.has_permissions(manage_roles=True)
     async def backfill_history(
             self, interaction: discord.Interaction,
-            start_date: typing.Optional[str] = None,
-            end_date: typing.Optional[str] = None,
-            hours_ago: typing.Optional[int] = None,
-            channel: typing.Optional[typing.Union[discord.TextChannel, discord.Thread, discord.ForumChannel, discord.CategoryChannel]] = None
+            start_date: Optional[str] = None,
+            end_date: Optional[str] = None,
+            hours_ago: Optional[int] = None,
+            channel: Optional[Union[discord.TextChannel, discord.Thread, discord.ForumChannel, discord.CategoryChannel]] = None
     ):
         if interaction.guild_id in self._backfill_locks:
             await interaction.response.send_message("❌ 此服务器上已经有一个回填任务正在运行。", ephemeral=True)
@@ -581,7 +641,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
     async def get_activity_stats(
             self, interaction: discord.Interaction, scope: str, metric: str,
             days_window: int = 7,
-            target_channel: typing.Optional[typing.Union[discord.TextChannel, discord.Thread, discord.ForumChannel, discord.CategoryChannel]] = None
+            target_channel: Optional[Union[discord.TextChannel, discord.Thread, discord.ForumChannel, discord.CategoryChannel]] = None
     ):
         await interaction.response.defer(ephemeral=True, thinking=True)
         guild = interaction.guild
@@ -664,8 +724,8 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         )
         await view.start(interaction, ephemeral=True)
 
-    async def get_redis_stats(self) -> typing.Optional[dict]:
-        """【新增】公共接口，用于从其 DataManager 获取 Redis 统计信息。"""
+    async def get_redis_stats(self) -> Optional[dict]:
+        """公共接口，用于从其 DataManager 获取 Redis 统计信息。"""
         return await self.data_manager.get_redis_info()
 
     def get_processor_cache_stats(self, guild: Guild) -> tuple[int, int]:
