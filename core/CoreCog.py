@@ -5,6 +5,7 @@ import io
 import os
 import platform
 import zipfile
+from functools import partial
 
 import config
 from core.embed_link.embed_manager import EmbedLinkManager
@@ -63,6 +64,9 @@ class CoreCog(commands.Cog, name="Core"):
         self.role_name_cache: Dict[int, str] = {}
         self.feature_cogs: List[FeatureCog] = []
 
+        # 用于防止并发备份
+        self._is_backing_up = False
+
     async def cog_load(self) -> None:
         """当 Cog 被加载时，启动后台任务。"""
         self.logger.info("CoreCog 已加载，正在启动后台任务...")
@@ -119,6 +123,70 @@ class CoreCog(commands.Cog, name="Core"):
             await manager.refresh_from_config()
         self.bot.logger.info(f"已完成对 {len(managers)} 个管理器的刷新。")
 
+    def _blocking_create_backup_zip(self, data_dir: str) -> tuple[Optional[io.BytesIO], Optional[str], str]:
+        """
+        [同步/阻塞] 在后台线程中创建备份 ZIP 文件。
+        返回 (file_bytesio, error_message, status_message)
+        """
+        self.logger.info("开始在后台线程中创建数据备份 ZIP 文件...")
+
+        if not os.path.isdir(data_dir):
+            return None, None, f"ℹ️ `{data_dir}` 目录不存在，无需备份。"
+
+        # 检查目录是否为空
+        if not os.listdir(data_dir):
+            return None, None, f"ℹ️ `{data_dir}` 目录为空，无需备份。"
+
+        memory_file = io.BytesIO()
+        file_count = 0
+
+        try:
+            with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
+                for root, dirs, files in os.walk(data_dir):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        arcname = os.path.relpath(file_path, data_dir)
+                        zf.write(file_path, arcname)
+                        file_count += 1
+
+            memory_file.seek(0)
+            self.logger.info(f"后台 ZIP 文件创建完毕，共打包 {file_count} 个文件。")
+            return memory_file, None, f"成功打包 {file_count} 个文件。"
+
+        except Exception as e:
+            self.logger.error(f"创建数据备份 ZIP 时发生错误: {e}", exc_info=True)
+            return None, str(e), f"❌ 创建备份失败: `{e}`"
+
+    async def _create_backup_zip_async(self) -> tuple[Optional[discord.File], str]:
+        """
+        [异步] 在后台线程中创建备份 ZIP 文件，返回 discord.File 对象和状态消息。
+        """
+        if self._is_backing_up:
+            return None, "⚠️ 备份任务已在后台运行中，请稍后再试。"
+
+        self._is_backing_up = True
+
+        try:
+            data_dir = "data"
+            loop = self.bot.loop
+            func = partial(self._blocking_create_backup_zip, data_dir)
+            memory_file, error, status_msg = await loop.run_in_executor(None, func)
+
+            if error:
+                return None, f"❌ 备份失败: {error}"
+
+            if memory_file is None:
+                return None, status_msg
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"{self.bot.user.name}的数据备份_{timestamp}.zip"
+            backup_file = discord.File(memory_file, filename=filename)
+
+            return backup_file, status_msg
+
+        finally:
+            self._is_backing_up = False
+
     @tasks.loop(hours=12)
     async def _backup_data_task(self):
         """每12小时自动备份 data 目录。"""
@@ -134,7 +202,7 @@ class CoreCog(commands.Cog, name="Core"):
             return
 
         try:
-            backup_file, message = await self._create_backup_zip()
+            backup_file, status_msg = await self._create_backup_zip_async()
 
             if backup_file:
                 await channel.send(
@@ -145,8 +213,8 @@ class CoreCog(commands.Cog, name="Core"):
                 self.logger.info(f"自动数据备份成功，文件已发送至频道 #{channel.name}。")
             else:
                 # message 将包含原因，例如 "目录为空"
-                await channel.send(f"ℹ️ **自动数据备份状态**\n{message}")
-                self.logger.info(f"自动数据备份跳过: {message}")
+                await channel.send(f"ℹ️ **自动数据备份状态**\n{status_msg}")
+                self.logger.info(f"自动数据备份跳过: {status_msg}")
         except discord.errors.Forbidden:
             self.logger.error(f"机器人没有权限在频道 #{channel.name} ({channel.id}) 发送消息或上传文件。")
         except Exception as e:
@@ -321,37 +389,6 @@ class CoreCog(commands.Cog, name="Core"):
 
         await interaction.followup.send(embed=embed)
 
-    async def _create_backup_zip(self) -> tuple[Optional[discord.File], str]:
-        """
-        打包 data 目录并返回一个 discord.File 对象和一条消息。
-        如果目录为空或不存在，返回 (None, "无需备份的原因")。
-        如果打包失败，返回 (None, "错误信息")。
-        """
-        data_dir = "data"
-
-        if not os.path.isdir(data_dir) or not os.listdir(data_dir):
-            return None, f"ℹ️ `{data_dir}` 目录不存在或为空，无需备份。"
-
-        memory_file = io.BytesIO()
-        try:
-            with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
-                for root, dirs, files in os.walk(data_dir):
-                    for file in files:
-                        file_path = os.path.join(root, file)
-                        arcname = os.path.relpath(file_path, data_dir)
-                        zf.write(file_path, arcname)
-        except Exception as e:
-            self.logger.error(f"创建数据备份 ZIP 时发生错误: {e}", exc_info=True)
-            return None, f"❌ 创建备份失败: `{e}`"
-
-        memory_file.seek(0)
-
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{self.bot.user.name}的数据备份_{timestamp}.zip"
-        backup_file = discord.File(memory_file, filename=filename)
-
-        return backup_file, filename
-
     @core_group.command(name="获取数据备份", description="打包并发送 data 目录下的所有数据文件。")
     @app_commands.checks.has_permissions(manage_roles=True)
     async def backup_data(self, interaction: discord.Interaction):
@@ -366,7 +403,7 @@ class CoreCog(commands.Cog, name="Core"):
             f"服务器: {interaction.guild.name} ({interaction.guild.id})"
         )
 
-        backup_file, message = await self._create_backup_zip()
+        backup_file, status_msg = await self._create_backup_zip_async()
 
         if backup_file:
             await interaction.followup.send(
@@ -376,7 +413,7 @@ class CoreCog(commands.Cog, name="Core"):
             )
         else:
             # message 包含原因 (例如，目录为空、出错等)
-            await interaction.followup.send(content=message, ephemeral=True)
+            await interaction.followup.send(content=status_msg, ephemeral=True)
 
     def register_feature_cog(self, cog: FeatureCog):
         """允许其他功能模块向核心Cog注册自己。"""
