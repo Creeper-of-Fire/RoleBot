@@ -194,10 +194,11 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             if is_eligible and not has_role:
                 await member.add_roles(target_role, reason="通过面板申领活跃角色")
                 action_text = f"\n🎉 **已为您授予 `{target_role.name}` 角色！**"
-            elif not is_eligible and has_role:
-                await member.remove_roles(target_role, reason="通过面板确认不活跃并移除")
-                action_text = f"\nℹ️ 您不满足条件，已移除 `{target_role.name}` 角色。"
-            elif is_eligible and has_role:
+            # elif not is_eligible and has_role:
+            #     await member.remove_roles(target_role, reason="通过面板确认不活跃并移除")
+            #     action_text = f"\nℹ️ 您不满足条件，已移除 `{target_role.name}` 角色。"
+            # elif is_eligible and has_role:
+            elif has_role:
                 action_text = "\n👍 您已拥有该角色，无需操作。"
             else:
                 action_text = "\n💪 请继续努力！"
