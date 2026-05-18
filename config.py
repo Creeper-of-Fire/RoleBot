@@ -138,7 +138,8 @@ ACTIVITY_TRACKER_CONFIG = {
             "report_channel_id": 1313410500876566578,  # 替换为 Bot 应该输出回填报告的频道ID
             "target_role_id": 1383835973384802396,  # 社区助力者角色ID
             "message_threshold": 180,  # 消息数量阈值
-            "days_window": 7,  # 时间窗口（天）
+            "claim_days_window": 7,  # 领取条件检查的时间窗口（天）
+            "report_days_window": 30,  # 个人报告展示的时间窗口（天）
             "ignored_channels": [  # 忽略这些频道的消息
                 1134565363506483352,  # 欢迎频道
                 1379264757189705748, 1381148770351452170, 1235867354060034068, 1235987938353877053,  # 四个档案馆
@@ -151,7 +152,7 @@ ACTIVITY_TRACKER_CONFIG = {
                 1383826169182556280,  # 老区归档
                 1290305190448336916,  # 创作者议会归档
             ],
-            "data_retention_days": 30  # Redis中数据保留90天
+            "data_retention_days": 30  # Redis中数据保留天数
         },
         # 你可以为其他服务器添加配置
     },

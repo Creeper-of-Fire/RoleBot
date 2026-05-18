@@ -133,31 +133,40 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         # 这种情况保留，不算刷屏
         return False, None
 
+    async def _should_track_message(self, message: discord.Message, processor: 'ActivityProcessor') -> bool:
+        """统一的消息过滤入口。on_message 和回填共用此方法。"""
+        # BOT消息或非公会消息
+        if message.author.bot or not message.guild:
+            return False
+        # 垃圾消息过滤（纯表情/纯图片）
+        if self.is_not_valid_message(message)[0]:
+            return False
+        # 频道过滤
+        if not await processor.is_channel_included(message.channel.id, message.channel):
+            return False
+        # BOT对话过滤（回复BOT 或 @提及BOT）
+        if message.reference:
+            ref_msg = message.reference.cached_message
+            if ref_msg and ref_msg.author.bot:
+                return False
+        if any(m.bot for m in message.mentions):
+            return False
+        return True
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """
-        【重构】实时记录用户发送的每一条消息。
-        现在调用 ActivityProcessor 的中央过滤方法来决定是否记录。
-        """
-        if message.author.bot or not message.guild:
+        """实时记录用户发送的每一条消息。"""
+        if not message.guild:
             return
 
         guild_cfg = self.config.get("guild_configs", {}).get(message.guild.id)
         if not guild_cfg:
             return
 
-        should_filter, _ = self.is_not_valid_message(message)
-        if should_filter:
-            return
-
-        # 1. 实例化处理器 (轻量级操作)
         processor = self._get_processor(message.guild)
-
-        # 2. 使用中央过滤逻辑，并传入 message.channel 对象来预热缓存，避免API调用
-        if not await processor.is_channel_included(message.channel.id, message.channel):
+        if not await self._should_track_message(message, processor):
             return
 
-        # 3. 如果通过过滤，则记录数据
         retention_days = guild_cfg.get("data_retention_days", 90)
         message_ts = message.created_at.timestamp()
 
@@ -175,7 +184,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         guild_cfg = self.config.get("guild_configs", {}).get(guild.id, {})
 
         # 简化配置检查
-        if not all(k in guild_cfg for k in ["target_role_id", "message_threshold", "days_window"]):
+        if not all(k in guild_cfg for k in ["target_role_id", "message_threshold", "claim_days_window"]):
             await interaction.followup.send("❌ 服务器配置不完整，请联系管理员。", ephemeral=True)
             return
 
@@ -185,7 +194,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             return
 
         processor = self._get_processor(guild)
-        total_messages, _ = await processor.get_user_activity_summary(member.id, guild_cfg["days_window"])
+        total_messages, _ = await processor.get_user_activity_summary(member.id, guild_cfg["claim_days_window"])
 
         is_eligible = total_messages >= guild_cfg["message_threshold"]
         has_role = target_role in member.roles
@@ -206,7 +215,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             action_text = "\n⚠️ 我没有权限为您操作角色，请联系管理员。"
 
         embed = ReportEmbeds.create_check_activity_embed(
-            member, guild_cfg["days_window"], total_messages, guild_cfg["message_threshold"], action_text
+            member, guild_cfg["claim_days_window"], total_messages, guild_cfg["message_threshold"], action_text
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -214,7 +223,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         """处理来自 ActivityRoleView 的“查看报告”按钮点击。"""
         guild, member = interaction.guild, interaction.user
         guild_cfg = self.config.get("guild_configs", {}).get(guild.id, {})
-        if not (days_window := guild_cfg.get("days_window")):
+        if not (days_window := guild_cfg.get("report_days_window")):
             await interaction.followup.send("❌ 服务器配置不完整。", ephemeral=True)
             return
 
@@ -354,10 +363,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
                         self.logger.debug(f"频道 {channel_id} 不是文本频道或帖子，跳过。")
                         continue
                     async for message in channel.history(limit=None, after=start_datetime, before=end_datetime):
-                        if message.author.bot:
-                            continue
-                        should_filter, _ = self.is_not_valid_message(message)
-                        if should_filter:
+                        if not await self._should_track_message(message, processor):
                             continue
 
                         total_messages_added += 1
@@ -435,7 +441,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         )
         embed.add_field(
             name="认证标准",
-            value=f"过去 **{guild_cfg.get('days_window', 'N/A')}** 天内，发送非纯表情/纯图片的有效消息达到 **{guild_cfg.get('message_threshold', 'N/A')}** 条。",
+            value=f"过去 **{guild_cfg.get('claim_days_window', 'N/A')}** 天内，发送非纯表情/纯图片的有效消息达到 **{guild_cfg.get('message_threshold', 'N/A')}** 条。",
             inline=False
         )
         embed.set_footer(text="所有操作仅您自己可见。")
