@@ -84,6 +84,12 @@ class DataManager:
         except exceptions.RedisError as e:
             self.logger.error(f"DataManager: 记录消息到 Redis 失败 (Key: {activity_key}): {e}", exc_info=True)
 
+    async def remove_message(self, guild_id: int, channel_id: int, user_id: int, message_id: int):
+        activity_key = CHANNEL_ACTIVITY_KEY_TEMPLATE.format(
+            guild_id=guild_id, channel_id=channel_id, user_id=user_id
+        )
+        await self.redis.zrem(activity_key, str(message_id))
+
     async def get_user_activity_summary(self, guild_id: int, user_id: int, days_window: int) -> list[tuple[int, int]]:
         """
         【已重构】获取用户在指定天数窗口内的分频道消息数。

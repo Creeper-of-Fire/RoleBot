@@ -176,6 +176,17 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         )
         await self._throttled_update_sync_timestamp(message.guild.id, message_ts)
 
+    @commands.Cog.listener()
+    async def on_message_delete(self, message: discord.Message):
+        """消息删除时从 Redis 中移除对应记录。仅处理缓存内的消息，不覆盖 raw 事件。"""
+        if not message.guild or message.author.bot:
+            return
+        if not self.config.get("guild_configs", {}).get(message.guild.id):
+            return
+        await self.data_manager.remove_message(
+            message.guild.id, message.channel.id, message.author.id, message.id
+        )
+
     # --- 视图回调处理方法 (公共接口) ---
 
     async def handle_check_activity(self, interaction: discord.Interaction):
