@@ -16,6 +16,7 @@ from discord.ext import commands
 
 import config
 from activity_tracker.data_manager import DataManager, BEIJING_TZ
+from activity_tracker.blacklist_data_manager import BlacklistDataManager
 from activity_tracker.logic import ActivityProcessor
 from activity_tracker.views import ActivityRoleView, ReportEmbeds, UserReportDetailView
 from utility.permison import is_super_admin
@@ -37,6 +38,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         self.data_manager = DataManager(
             host=config.REDIS_HOST, port=config.REDIS_PORT, db=config.REDIS_DB, logger=bot.logger
         )
+        self.blacklist_manager:BlacklistDataManager = BlacklistDataManager.get_instance(logger=bot.logger)
         # 用于防止并发回填任务的内存锁
         self._backfill_locks: set[int] = set(config.GUILD_IDS)
         # 用于节流更新最后同步时间戳
@@ -190,11 +192,10 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
     # --- 视图回调处理方法 (公共接口) ---
 
     async def handle_check_activity(self, interaction: discord.Interaction):
-        """处理来自 ActivityRoleView 的“检查活跃度”按钮点击。"""
+        """处理来自 ActivityRoleView 的"检查活跃度"按钮点击。"""
         guild, member = interaction.guild, interaction.user
         guild_cfg = self.config.get("guild_configs", {}).get(guild.id, {})
 
-        # 简化配置检查
         if not all(k in guild_cfg for k in ["target_role_id", "message_threshold", "claim_days_window"]):
             await interaction.followup.send("❌ 服务器配置不完整，请联系管理员。", ephemeral=True)
             return
@@ -205,19 +206,19 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             return
 
         processor = self._get_processor(guild)
-        total_messages, _ = await processor.get_user_activity_summary(member.id, guild_cfg["claim_days_window"])
+        daily_cap = guild_cfg.get("daily_message_cap", 999)
+        total, counted = await processor.get_user_claim_data(member.id, guild_cfg["claim_days_window"], daily_cap)
+        is_blacklisted, blacklisted_until = self.blacklist_manager.is_blacklisted(guild.id, member.id)
 
-        is_eligible = total_messages >= guild_cfg["message_threshold"]
+        is_eligible = counted >= guild_cfg["message_threshold"] and not is_blacklisted
         has_role = target_role in member.roles
         action_text = ""
         try:
-            if is_eligible and not has_role:
+            if is_blacklisted:
+                action_text = "\n🚫 您目前处于刷屏黑名单中，无法领取活跃度身份组。"
+            elif is_eligible and not has_role:
                 await member.add_roles(target_role, reason="通过面板申领活跃角色")
                 action_text = f"\n🎉 **已为您授予 `{target_role.name}` 角色！**"
-            # elif not is_eligible and has_role:
-            #     await member.remove_roles(target_role, reason="通过面板确认不活跃并移除")
-            #     action_text = f"\nℹ️ 您不满足条件，已移除 `{target_role.name}` 角色。"
-            # elif is_eligible and has_role:
             elif has_role:
                 action_text = "\n👍 您已拥有该角色，无需操作。"
             else:
@@ -226,12 +227,13 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             action_text = "\n⚠️ 我没有权限为您操作角色，请联系管理员。"
 
         embed = ReportEmbeds.create_check_activity_embed(
-            member, guild_cfg["claim_days_window"], total_messages, guild_cfg["message_threshold"], action_text
+            member, guild_cfg["claim_days_window"], total, counted, daily_cap,
+            guild_cfg["message_threshold"], action_text, blacklisted_until=blacklisted_until if is_blacklisted else None
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     async def handle_view_report(self, interaction: discord.Interaction):
-        """处理来自 ActivityRoleView 的“查看报告”按钮点击。"""
+        """处理来自 ActivityRoleView 的"查看报告"按钮点击。"""
         guild, member = interaction.guild, interaction.user
         guild_cfg = self.config.get("guild_configs", {}).get(guild.id, {})
         if not (days_window := guild_cfg.get("report_days_window")):
@@ -242,7 +244,15 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         report_data = await processor.generate_user_report_data(member.id, days_window)
         sorted_display_data = await processor.process_and_sort_for_display(report_data.channel_activity)
 
-        embed_template = ReportEmbeds.create_user_report_embed_template(member, days_window, report_data)
+        is_blacklisted, blacklisted_until = self.blacklist_manager.is_blacklisted(guild.id, member.id)
+        daily_cap = guild_cfg.get("daily_message_cap", 999)
+        threshold = guild_cfg.get("message_threshold", 0)
+
+        embed_template = ReportEmbeds.create_user_report_embed_template(
+            member, days_window, report_data,
+            daily_cap=daily_cap, threshold=threshold,
+            blacklisted_until=blacklisted_until if is_blacklisted else None
+        )
 
         pagination_view = UserReportDetailView(
             embed_template=embed_template,
@@ -253,7 +263,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         await pagination_view.start(interaction, ephemeral=True)
 
     async def handle_remove_role(self, interaction: discord.Interaction):
-        """处理来自 ActivityRoleView 的“移除角色”按钮点击。"""
+        """处理来自 ActivityRoleView 的"移除角色"按钮点击。"""
         guild, member = interaction.guild, interaction.user
         guild_cfg = self.config.get("guild_configs", {}).get(guild.id, {})
         if not (target_role_id := guild_cfg.get("target_role_id")) or not (target_role := guild.get_role(target_role_id)):
@@ -450,13 +460,97 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             description=f"点击按钮来检查、申领或移除您的 {target_role.mention} 活跃身份组。",
             color=target_role.color or discord.Color.blurple()
         )
+        claim_days = guild_cfg.get('claim_days_window', 'N/A')
+        threshold = guild_cfg.get('message_threshold', 'N/A')
+        daily_cap = guild_cfg.get('daily_message_cap', 'N/A')
         embed.add_field(
             name="认证标准",
-            value=f"过去 **{guild_cfg.get('claim_days_window', 'N/A')}** 天内，发送非纯表情/纯图片的有效消息达到 **{guild_cfg.get('message_threshold', 'N/A')}** 条。",
+            value=(f"过去 **{claim_days}** 天内，发送非纯表情/纯图片的有效消息达到 **{threshold}** 条"
+                   f"（每日最多计入 **{daily_cap}** 条，即至少需要 **{int(threshold // daily_cap)}** 天活跃）。\n"
+                   f"与 BOT 的对话（回复或@提及BOT）不计入。"),
             inline=False
         )
         embed.set_footer(text="所有操作仅您自己可见。")
         await interaction.followup.send(embed=embed, view=ActivityRoleView(self))
+
+    # --- 刷屏黑名单命令 ---
+
+    @activity_group.command(name="刷屏黑名单-添加", description="【管理员】将用户加入刷屏黑名单（30天），自动移除活跃角色。")
+    @app_commands.checks.has_permissions(manage_roles=True)
+    @app_commands.describe(user="要加入黑名单的用户")
+    async def blacklist_add(self, interaction: discord.Interaction, user: discord.Member):
+        await interaction.response.defer()
+        guild = interaction.guild
+
+        self.blacklist_manager.add_to_blacklist(guild.id, user.id)
+
+        removed_role_text = ""
+        guild_cfg = self.config.get("guild_configs", {}).get(guild.id, {})
+        target_role_id = guild_cfg.get("target_role_id")
+        if target_role_id:
+            target_role = guild.get_role(target_role_id)
+            if target_role and target_role in user.roles:
+                try:
+                    await user.remove_roles(target_role, reason="被加入刷屏黑名单")
+                    removed_role_text = f"\n已移除其 `{target_role.name}` 角色。"
+                except discord.Forbidden:
+                    removed_role_text = "\n⚠️ 无权限移除其活跃角色。"
+
+        expiry_dt = datetime.now(BEIJING_TZ) + timedelta(days=30)
+        embed = discord.Embed(
+            title="🚫 刷屏黑名单 — 已添加",
+            description=f"已将 {user.mention} 加入刷屏黑名单。{removed_role_text}",
+            color=discord.Color.red()
+        )
+        embed.add_field(name="到期时间", value=expiry_dt.strftime("%Y-%m-%d %H:%M (UTC+8)"), inline=False)
+        await interaction.followup.send(embed=embed)
+
+    @activity_group.command(name="刷屏黑名单-移除", description="【管理员】将用户从刷屏黑名单中移除。")
+    @app_commands.checks.has_permissions(manage_roles=True)
+    @app_commands.describe(user="要移除黑名单的用户")
+    async def blacklist_remove(self, interaction: discord.Interaction, user: discord.Member):
+        await interaction.response.defer()
+        removed = self.blacklist_manager.remove_from_blacklist(interaction.guild.id, user.id)
+
+        if removed:
+            embed = discord.Embed(
+                title="✅ 刷屏黑名单 — 已移除",
+                description=f"已将 {user.mention} 从刷屏黑名单中移除。",
+                color=discord.Color.green()
+            )
+        else:
+            embed = discord.Embed(
+                title="ℹ️ 刷屏黑名单",
+                description=f"{user.mention} 不在黑名单中。",
+                color=discord.Color.orange()
+            )
+        await interaction.followup.send(embed=embed)
+
+    @activity_group.command(name="刷屏黑名单-查看", description="【管理员】查看当前服务器的刷屏黑名单列表。")
+    @app_commands.checks.has_permissions(manage_roles=True)
+    async def blacklist_list(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        entries = self.blacklist_manager.get_all_blacklisted(interaction.guild.id)
+
+        if not entries:
+            embed = discord.Embed(
+                title="📋 刷屏黑名单",
+                description="当前没有黑名单用户。",
+                color=discord.Color.blue()
+            )
+        else:
+            lines = []
+            for user_id, expiry in entries:
+                member = interaction.guild.get_member(user_id)
+                name = member.mention if member else f"`{user_id}`"
+                expiry_dt = datetime.fromtimestamp(expiry, tz=BEIJING_TZ)
+                lines.append(f"{name} — 到期：{expiry_dt:%Y-%m-%d %H:%M}")
+            embed = discord.Embed(
+                title=f"📋 刷屏黑名单 ({len(entries)} 人)",
+                description="\n".join(lines),
+                color=discord.Color.red()
+            )
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @activity_group.command(name="管理或删除活动数据", description="【管理员】管理本服务器的活动数据。")
     @is_super_admin()

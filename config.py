@@ -137,8 +137,9 @@ ACTIVITY_TRACKER_CONFIG = {
         1134557553011998840: {  # 你的服务器ID
             "report_channel_id": 1313410500876566578,  # 替换为 Bot 应该输出回填报告的频道ID
             "target_role_id": 1383835973384802396,  # 社区助力者角色ID
-            "message_threshold": 180,  # 消息数量阈值
-            "claim_days_window": 7,  # 领取条件检查的时间窗口（天）
+            "message_threshold": 210,  # 消息数量阈值
+            "claim_days_window": 30,  # 领取条件检查的时间窗口（天）
+            "daily_message_cap": 30,  # 每日最多计入的消息条数
             "report_days_window": 30,  # 个人报告展示的时间窗口（天）
             "ignored_channels": [  # 忽略这些频道的消息
                 1134565363506483352,  # 欢迎频道

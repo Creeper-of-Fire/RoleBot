@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import typing
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import discord
 from discord import ui
@@ -26,9 +26,23 @@ HEATMAP_THRESHOLDS = sorted(HEATMAP_EMOJIS.keys())
 
 class ReportEmbeds:
     """
-    【新增】一个专门用于创建报告 Embed 的辅助类。
+    专门用于创建报告 Embed 的辅助类。
     将显示逻辑 (渲染) 从 Cog 中完全分离。
     """
+
+    @staticmethod
+    def add_activity_stats_fields(embed: discord.Embed, total: int, counted: int,
+                                   daily_cap: int, threshold: int,
+                                   blacklisted_until: float = None):
+        """统一的统计数据字段，供领取检查和个人报告共用。"""
+        embed.add_field(name="总消息数", value=f"`{total}` 条", inline=True)
+        embed.add_field(name="计入消息数", value=f"`{counted}` 条（每日上限 {daily_cap} 条）", inline=True)
+        embed.add_field(name="要求消息数", value=f"`{threshold}` 条", inline=True)
+        if blacklisted_until:
+            expiry_dt = datetime.fromtimestamp(blacklisted_until, tz=BEIJING_TZ)
+            embed.add_field(name="资格状态", value=f"🚫 已被列入刷屏黑名单（到期：{expiry_dt:%Y-%m-%d %H:%M}）", inline=False)
+        else:
+            embed.add_field(name="资格状态", value="**✅ 符合**" if counted >= threshold else "**❌ 不符合**", inline=True)
 
     @staticmethod
     def _render_heatmap_text(heatmap_data: dict[str, int], days_window: int) -> str:
@@ -63,32 +77,46 @@ class ReportEmbeds:
         return "\n" + "".join(heatmap_output) + "\n\n" + legend
 
     @classmethod
-    def create_user_report_embed_template(cls, member: discord.Member, days_window: int, report_data: UserReportData) -> discord.Embed:
+    def create_user_report_embed_template(cls, member: discord.Member, days_window: int,
+                                          report_data: UserReportData, *, daily_cap: int,
+                                          threshold: int, blacklisted_until: float = None) -> discord.Embed:
         """创建用户个人详细报告的 Embed 模板。"""
+        color = discord.Color.red() if blacklisted_until else discord.Color.blue()
         embed = discord.Embed(
             title=f"📊 {member.display_name} 的活跃度报告",
             description=f"这是您在过去 **{days_window}** 天内的活跃概览。",
-            color=discord.Color.blue(),
+            color=color,
         )
         embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
-        embed.add_field(name="总消息数", value=f"`{report_data.total_messages}` 条", inline=False)
+
+        counted = sum(min(count, daily_cap) for count in report_data.heatmap_data.values())
+        cls.add_activity_stats_fields(embed, report_data.total_messages, counted,
+                                       daily_cap, threshold, blacklisted_until)
+
         heatmap_text = cls._render_heatmap_text(report_data.heatmap_data, days_window)
         embed.add_field(name="近况热力图 (消息数/天)", value=heatmap_text, inline=False)
         embed.set_footer(text=f"数据统计时间: {datetime.now(BEIJING_TZ):%Y-%m-%d %H:%M:%S} (UTC+8)")
         return embed
 
     @staticmethod
-    def create_check_activity_embed(member: discord.Member, days_window: int, total_messages: int, threshold: int, action_text: str) -> discord.Embed:
+    def create_check_activity_embed(member: discord.Member, days_window: int,
+                                     total: int, counted: int, daily_cap: int,
+                                     threshold: int, action_text: str,
+                                     blacklisted_until: float = None) -> discord.Embed:
         """创建活跃度检查结果的 Embed。"""
-        is_eligible = total_messages >= threshold
+        if blacklisted_until:
+            color = discord.Color.red()
+        elif counted >= threshold:
+            color = discord.Color.green()
+        else:
+            color = discord.Color.orange()
+
         embed = discord.Embed(
             title="活跃度检查结果",
             description=f"你好，{member.mention}！\n这是你在过去 **{days_window}** 天内的活跃度报告：",
-            color=discord.Color.green() if is_eligible else discord.Color.orange()
+            color=color
         )
-        embed.add_field(name="统计消息数", value=f"`{total_messages}` 条", inline=True)
-        embed.add_field(name="要求消息数", value=f"`{threshold}` 条", inline=True)
-        embed.add_field(name="资格状态", value=f"**{'✅ 符合' if is_eligible else '❌ 不符合'}**", inline=True)
+        ReportEmbeds.add_activity_stats_fields(embed, total, counted, daily_cap, threshold, blacklisted_until)
         embed.description += action_text
         return embed
 

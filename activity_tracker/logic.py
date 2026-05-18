@@ -78,7 +78,7 @@ class ActivityProcessor:
         【新增核心方法】获取频道的DTO。
         优先从带TTL的缓存中读取。如果未命中或已过期，则通过API获取。
         此方法是所有频道信息需求的唯一入口。
-        可以传入一个已有的 channel_obj 来“预热”或更新缓存，避免API调用。
+        可以传入一个已有的 channel_obj 来"预热"或更新缓存，避免API调用。
 
         :param channel_id: 目标频道的ID。
         :param channel_obj: (可选) 一个已有的discord频道对象，用于填充缓存。
@@ -248,6 +248,13 @@ class ActivityProcessor:
             channel_activity=channel_activity,
             heatmap_data=dict(heatmap_counts)
         )
+
+    async def get_user_claim_data(self, user_id: int, days_window: int, daily_cap: int) -> tuple[int, int]:
+        """获取用户的总消息数和每日上限后的计入消息数。"""
+        report_data = await self.generate_user_report_data(user_id, days_window)
+        total = report_data.total_messages
+        counted = sum(min(count, daily_cap) for count in report_data.heatmap_data.values())
+        return total, counted
 
     async def process_and_sort_for_display(self, activity_data: list[tuple[int, int]]) -> list[SortedDisplayItem]:
         """【重构】核心排序和层级化逻辑，现在完全基于DTO。"""
