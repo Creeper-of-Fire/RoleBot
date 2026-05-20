@@ -132,30 +132,47 @@ REDIS_DB = int(os.getenv('REDIS_DB', 0))
 # --- 新增活动追踪模块配置 ---
 # 你可以把这个字典放在 config.py 或 config_data.py
 ACTIVITY_TRACKER_CONFIG = {
+    # 共通活跃度组：组内服务器的消息在领取检查时合并计算
+    "shared_activity_groups": {
+        "leinao": [1134557553011998840, 1380075940285124724],
+    },
     "guild_configs": {
         # ---类脑---
-        1134557553011998840: {  # 你的服务器ID
-            "report_channel_id": 1313410500876566578,  # 替换为 Bot 应该输出回填报告的频道ID
+        1134557553011998840: {
+            "shared_activity_group": "leinao",
+            "report_channel": {"guild_id": 1134557553011998840, "channel_id": 1313410500876566578},
             "target_role_id": 1383835973384802396,  # 社区助力者角色ID
-            "message_threshold": 210,  # 消息数量阈值
-            "claim_days_window": 30,  # 领取条件检查的时间窗口（天）
-            "daily_message_cap": 30,  # 每日最多计入的消息条数
-            "report_days_window": 30,  # 个人报告展示的时间窗口（天）
-            "ignored_channels": [  # 忽略这些频道的消息
+            "message_threshold": 210,
+            "claim_days_window": 30,
+            "daily_message_cap": 30,
+            "report_days_window": 30,
+            "ignored_channels": [
                 1134565363506483352,  # 欢迎频道
                 1379264757189705748, 1381148770351452170, 1235867354060034068, 1235987938353877053,  # 四个档案馆
                 1380109002515546122,  # 化粪池
-                # ... 其他频道ID ...
             ],
-            "ignored_categories": [  # 忽略这些【频道类别】
+            "ignored_categories": [
                 1388149585767305367,  # 工作区
                 1387275888068137060,  # ticket区
                 1383826169182556280,  # 老区归档
                 1290305190448336916,  # 创作者议会归档
             ],
-            "data_retention_days": 30  # Redis中数据保留天数
+            "data_retention_days": 30,
         },
-        # 你可以为其他服务器添加配置
+        # ---类脑卡区---
+        1380075940285124724: {
+            "shared_activity_group": "leinao",
+            "report_channel": {"guild_id": 1134557553011998840, "channel_id": 1313410500876566578},
+            "message_threshold": 210,
+            "claim_days_window": 30,
+            "daily_message_cap": 30,
+            "report_days_window": 30,
+            "ignored_channels": [
+                1380075941686149205,  # Welcome
+            ],
+            "ignored_categories": [],
+            "data_retention_days": 30,
+        },
     },
     # "startup_backfill": {
     #     "enabled": False,  # 设置为 True 以启用启动时自动回填

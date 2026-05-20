@@ -17,7 +17,7 @@ from discord.ext import commands
 import config
 from activity_tracker.data_manager import DataManager, BEIJING_TZ
 from activity_tracker.blacklist_data_manager import BlacklistDataManager
-from activity_tracker.logic import ActivityProcessor
+from activity_tracker.logic import ActivityProcessor, UserReportData
 from activity_tracker.views import ActivityRoleView, ReportEmbeds, UserReportDetailView
 from utility.permison import is_super_admin
 from utility.views import ConfirmationView
@@ -58,6 +58,49 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
                 return None
             self._processors[guild.id] = ActivityProcessor(self.bot, guild, self.data_manager, guild_cfg)
         return self._processors[guild.id]
+
+    def _get_shared_guild_ids(self, guild_id: int) -> list[int]:
+        """获取与指定服务器共享活跃度的所有服务器ID（包含自身）。"""
+        guild_cfg = self.config.get("guild_configs", {}).get(guild_id, {})
+        group_name = guild_cfg.get("shared_activity_group")
+        if not group_name:
+            return [guild_id]
+        return self.config.get("shared_activity_groups", {}).get(group_name, [guild_id])
+
+    async def _get_merged_report_data(self, guild_id: int, user_id: int, days_window: int) -> UserReportData:
+        """聚合共通组内所有服务器的报告数据。"""
+        merged_channel_activity: dict[int, int] = collections.defaultdict(int)
+        merged_heatmap: dict[str, int] = collections.defaultdict(int)
+        total = 0
+        for gid in self._get_shared_guild_ids(guild_id):
+            g = self.bot.get_guild(gid)
+            if not g:
+                continue
+            proc = self._get_processor(g)
+            if not proc:
+                continue
+            report = await proc.generate_user_report_data(user_id, days_window)
+            total += report.total_messages
+            for date, count in report.heatmap_data.items():
+                merged_heatmap[date] += count
+            for channel_id, count in report.channel_activity:
+                merged_channel_activity[channel_id] += count
+        return UserReportData(
+            total_messages=total,
+            channel_activity=list(merged_channel_activity.items()),
+            heatmap_data=dict(merged_heatmap),
+        )
+
+    async def _resolve_report_channel(self, guild_cfg: dict) -> Optional[discord.abc.Messageable]:
+        """根据配置解析回填通知频道（支持跨服务器）。"""
+        rc = guild_cfg.get("report_channel")
+        if not rc:
+            return None
+        try:
+            g = self.bot.get_guild(rc["guild_id"]) or await self.bot.fetch_guild(rc["guild_id"])
+            return g.get_channel(rc["channel_id"]) or await g.fetch_channel(rc["channel_id"])
+        except (discord.NotFound, discord.Forbidden, KeyError):
+            return None
 
     @commands.Cog.listener()
     async def on_guild_remove(self, guild: discord.Guild):
@@ -205,9 +248,11 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             await interaction.followup.send("❌ 配置中的目标角色未找到，请联系管理员。", ephemeral=True)
             return
 
-        processor = self._get_processor(guild)
+        # 聚合共通组内所有服务器的数据
         daily_cap = guild_cfg.get("daily_message_cap", 999)
-        total, counted = await processor.get_user_claim_data(member.id, guild_cfg["claim_days_window"], daily_cap)
+        report_data = await self._get_merged_report_data(guild.id, member.id, guild_cfg["claim_days_window"])
+        total = report_data.total_messages
+        counted = sum(min(c, daily_cap) for c in report_data.heatmap_data.values())
         is_blacklisted, blacklisted_until = self.blacklist_manager.is_blacklisted(guild.id, member.id)
 
         is_eligible = counted >= guild_cfg["message_threshold"] and not is_blacklisted
@@ -240,8 +285,10 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             await interaction.followup.send("❌ 服务器配置不完整。", ephemeral=True)
             return
 
+        # 聚合共通组内所有服务器的报告数据
+        report_data = await self._get_merged_report_data(guild.id, member.id, days_window)
+
         processor = self._get_processor(guild)
-        report_data = await processor.generate_user_report_data(member.id, days_window)
         sorted_display_data = await processor.process_and_sort_for_display(report_data.channel_activity)
 
         is_blacklisted, blacklisted_until = self.blacklist_manager.is_blacklisted(guild.id, member.id)
@@ -303,9 +350,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
                 last_sync_ts = await self.data_manager.get_last_sync_timestamp(guild.id)
                 now_utc = datetime.now(timezone.utc)
 
-                report_channel = None
-                if report_channel_id := guild_cfg.get("report_channel_id"):
-                    report_channel = guild.get_channel(report_channel_id) or await guild.fetch_channel(report_channel_id)
+                report_channel = await self._resolve_report_channel(guild_cfg)
 
                 if last_sync_ts is None:
                     await self._update_sync_timestamp(guild.id, now_utc.timestamp(), force=True)
@@ -633,7 +678,8 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         start_date="开始日期 (格式: YYYY-MM-DD, MM-DD, 或 DD, 时区: UTC+8)。",
         end_date="结束日期 (同上, 默认为今天)。",
         hours_ago="从现在回溯的小时数 (与日期选项互斥)。",
-        channel="【可选】只扫描此特定频道/类别。"
+        channel="【可选】只扫描此特定频道/类别。",
+        entire_group="【可选】同时回填整个共通活跃度组内的所有服务器。"
     )
     @app_commands.checks.has_permissions(manage_roles=True)
     async def backfill_history(
@@ -641,13 +687,14 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             start_date: Optional[str] = None,
             end_date: Optional[str] = None,
             hours_ago: Optional[int] = None,
-            channel: Optional[Union[discord.TextChannel, discord.Thread, discord.ForumChannel, discord.CategoryChannel]] = None
+            channel: Optional[Union[discord.TextChannel, discord.Thread, discord.ForumChannel, discord.CategoryChannel]] = None,
+            entire_group: bool = False
     ):
-        if interaction.guild_id in self._backfill_locks:
-            await interaction.response.send_message("❌ 此服务器上已经有一个回填任务正在运行。", ephemeral=True)
-            return
-
         guild = interaction.guild
+
+        if any(gid in self._backfill_locks for gid in self._get_shared_guild_ids(guild.id)):
+            await interaction.response.send_message("❌ 此服务器或共通组内已有回填任务正在运行。", ephemeral=True)
+            return
 
         now_utc = datetime.now(timezone.utc)
         start_dt, end_dt = None, now_utc
@@ -675,26 +722,36 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
                 await interaction.response.send_message("❌ 开始日期必须在结束日期之前。", ephemeral=True)
                 return
 
+        guild_ids = self._get_shared_guild_ids(guild.id) if entire_group else [guild.id]
+
         start_disp = start_dt.astimezone(BEIJING_TZ).strftime('%Y-%m-%d %H:%M:%S')
         end_disp = end_dt.astimezone(BEIJING_TZ).strftime('%Y-%m-%d %H:%M:%S')
-        target_disp = f"频道/类别 {channel.mention}" if channel else f"服务器 **{interaction.guild.name}**"
+        if entire_group and len(guild_ids) > 1:
+            target_disp = f"共通组（{len(guild_ids)} 个服务器）"
+        else:
+            target_disp = f"频道/类别 {channel.mention}" if channel else f"服务器 **{interaction.guild.name}**"
 
         await interaction.response.send_message(
             f"✅ **历史消息回填任务已启动！**\n我将开始拉取从 `{start_disp}` 到 `{end_disp}` (UTC+8) 在 {target_disp} 的消息。",
             ephemeral=False
         )
 
-        if guild.id in self._backfill_locks:
-            self.logger.warning(f"服务器 '{guild.name}' 尝试启动回填任务，但任务已被锁定。")
-            if interaction.channel:
-                await interaction.channel.send("⚠️ **任务中止**：服务器上已有另一个回填任务正在运行。")
-            return
+        for gid in guild_ids:
+            g = self.bot.get_guild(gid)
+            if not g:
+                continue
+            if gid in self._backfill_locks:
+                continue
 
-        self.bot.loop.create_task(self._backfill_guild_history(
-            guild=interaction.guild, target_channel=interaction.channel,
-            start_datetime=start_dt, end_datetime=end_dt,
-            single_channel=channel
-        ))
+            g_cfg = self.config.get("guild_configs", {}).get(gid, {})
+            report_channel = await self._resolve_report_channel(g_cfg) or interaction.channel
+
+            self.bot.loop.create_task(self._backfill_guild_history(
+                guild=g, target_channel=report_channel,
+                start_datetime=start_dt, end_datetime=end_dt,
+                single_channel=channel if gid == guild.id else None
+            ))
+            await asyncio.sleep(1)
 
     @staticmethod
     def _create_progress_embed(guild, start_time, total, scanned, current_name, added, is_single):
