@@ -6,12 +6,12 @@ from __future__ import annotations
 
 import datetime
 import typing
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional
 
 import discord
 from discord import ui
 
-from role_system.model_fan_roles.model_config import MODEL_ROLES_CONFIG
+from role_system.model_fan_roles.model_config import MODEL_ROLES_CONFIG, ModelRoleConfig
 from role_system.model_fan_roles.view import ModelRolesView
 from utility.auth import is_role_dangerous
 from utility.feature_cog import FeatureCog, PanelEntry
@@ -31,7 +31,7 @@ class ModelFanRolesCog(FeatureCog, name="ModelFanRoles"):
         super().__init__(bot)
         # 缓存：{ guild_id: [ {role_id, name, emoji}, ... ] }
         # 只存储经过验证存在的、非危险的身份组配置
-        self.safe_model_config_cache: Dict[int, List[Dict[str, Any]]] = {}
+        self.safe_model_config_cache: Dict[int, List[ModelRoleConfig]] = {}
 
         # 统计数据缓存: { guild_id: { role_id: member_count } }
         self.stats_cache: Dict[int, Dict[int, int]] = {}
@@ -66,7 +66,7 @@ class ModelFanRolesCog(FeatureCog, name="ModelFanRoles"):
             safe_models_list = []
 
             for model_data in models_list:
-                role_id = model_data["role_id"]
+                role_id = model_data.role_id
                 role = guild.get_role(role_id)
 
                 if role:
@@ -88,7 +88,7 @@ class ModelFanRolesCog(FeatureCog, name="ModelFanRoles"):
         self.safe_model_config_cache = new_cache
         self.logger.info(f"ModelFanRolesCog: 缓存更新完毕，共加载 {len(new_cache)} 个服务器的配置。")
 
-    async def get_ranked_model_data(self, guild: discord.Guild) -> tuple[List[Dict[str, Any]], datetime.datetime]:
+    async def get_ranked_model_data(self, guild: discord.Guild) -> tuple[List[ModelRoleConfig], datetime.datetime]:
         """
         获取经过排序（按人数降序）的模型数据列表。
         如果缓存过期，会重新计算人数。
@@ -109,7 +109,7 @@ class ModelFanRolesCog(FeatureCog, name="ModelFanRoles"):
             self.logger.info(f"刷新服务器 {guild.name} 的模型身份组统计数据...")
             new_stats = {}
             for config in base_configs:
-                role_id = config["role_id"]
+                role_id = config.role_id
                 role = guild.get_role(role_id)
                 # 如果 role 没了，计数为 -1，沉底
                 count = len(role.members) if role else -1
@@ -124,7 +124,7 @@ class ModelFanRolesCog(FeatureCog, name="ModelFanRoles"):
         # 根据统计数据排序：人数多的排前面 (强者羞辱弱者 logic)
         sorted_configs = sorted(
             base_configs,
-            key=lambda x: stats.get(x["role_id"], 0),
+            key=lambda x: stats.get(x.role_id, 0),
             reverse=True
         )
 

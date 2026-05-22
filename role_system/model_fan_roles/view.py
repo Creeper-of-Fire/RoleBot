@@ -72,12 +72,12 @@ class ModelRolesView(PaginatedView):
 
         for idx, item in enumerate(page_items):
             rank = start_rank + idx
-            role_id = item["role_id"]
+            role_id = item.role_id
             count = stats.get(role_id, 0)
-            name = item["name"]
+            name = item.display_name
 
             # 高亮用户当前拥有的
-            marker = "✅" if role_id in member_role_ids else f"`#{rank}`"
+            marker = "✅" if item.role_id in member_role_ids else f"`#{rank}`"
             description_lines.append(f"{marker} **{name}**: {count} 人")
 
         if not page_items:
@@ -95,9 +95,9 @@ class ModelRolesView(PaginatedView):
 
         # 生成按钮
         for i, model_data in enumerate(page_items):
-            role_id = model_data["role_id"]
-            role_name = model_data["name"]
-            emoji = model_data.get("emoji")
+            role_id = model_data.role_id
+            role_name = model_data.display_name
+            emoji = model_data.emoji
 
             role = self.guild.get_role(role_id)
             if not role:
@@ -150,7 +150,7 @@ class ModelRoleButton(ui.Button):
         # --- 互斥逻辑 ---
         # 1. 获取本服务器所有已配置的模型身份组ID
         guild_config = self.cog.safe_model_config_cache.get(member.guild.id, [])
-        all_model_ids = {item["role_id"] for item in guild_config}
+        all_model_ids = {item.role_id for item in guild_config}
 
         # 2. 找出用户当前持有的模型身份组
         user_role_ids = {r.id for r in member.roles}
