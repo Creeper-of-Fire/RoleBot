@@ -743,25 +743,32 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         self, interaction: discord.Interaction, current: str
     ) -> list[app_commands.Choice[str]]:
         """从黑名单中过滤当前仍在服务器内的成员，供「刷屏黑名单-移除」自动补全。"""
-        entries = self.blacklist_manager.get_all_blacklisted(interaction.guild.id)
-        current_lower = current.lower()
-        choices: list[app_commands.Choice[str]] = []
-        for user_id, expiry in entries:
-            member = interaction.guild.get_member(user_id)
-            if member is None:
-                continue
-            name = member.display_name
-            uid_str = str(member.id)
-            if current_lower and current_lower not in name.lower() and current_lower not in uid_str:
-                continue
-            days_left = max(0.0, (expiry - time.time()) / 86400)
-            choices.append(app_commands.Choice(
-                name=f"{name}（剩余 {days_left:.1f} 天）",
-                value=uid_str,
-            ))
-            if len(choices) >= 25:
-                break
-        return choices
+        try:
+            guild = interaction.guild
+            if guild is None:
+                return []
+            entries = self.blacklist_manager.get_all_blacklisted(guild.id)
+            current_lower = (current or "").lower()
+            choices: list[app_commands.Choice[str]] = []
+            for user_id, expiry in entries:
+                member = guild.get_member(user_id)
+                if member is None:
+                    continue
+                name = member.display_name
+                uid_str = str(member.id)
+                if current_lower and current_lower not in name.lower() and current_lower not in uid_str:
+                    continue
+                days_left = max(0.0, (expiry - time.time()) / 86400)
+                choices.append(app_commands.Choice(
+                    name=f"{name}（剩余 {days_left:.1f} 天）",
+                    value=uid_str,
+                ))
+                if len(choices) >= 25:
+                    break
+            return choices
+        except Exception as e:
+            self.logger.error(f"blacklist_user_autocomplete 失败: {e}", exc_info=True)
+            return []
 
     @activity_group.command(name="刷屏黑名单-移除", description="【管理员】将用户从刷屏黑名单中移除。")
     @app_commands.checks.has_permissions(manage_roles=True)
