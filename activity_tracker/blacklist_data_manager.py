@@ -9,6 +9,7 @@ BEIJING_TZ = timezone(timedelta(hours=8))
 class BlacklistEntry(BaseModel):
     expiry: float   # 过期时间戳 (Unix)
     added_at: float  # 添加时间戳
+    reason: str = ""  # 处罚原因（业务层兜底为"刷屏"）
 
 
 class BlacklistDataManager(AsyncUserGuildDataManager[BlacklistEntry]):
@@ -26,9 +27,9 @@ class BlacklistDataManager(AsyncUserGuildDataManager[BlacklistEntry]):
             return False, 0.0
         return True, entry.expiry
 
-    def add_to_blacklist(self, guild_id: int, user_id: int, duration_days: int = 30):
+    def add_to_blacklist(self, guild_id: int, user_id: int, duration_days: int = 30, reason: str = ""):
         now = time.time()
-        entry = BlacklistEntry(expiry=now + duration_days * 86400, added_at=now)
+        entry = BlacklistEntry(expiry=now + duration_days * 86400, added_at=now, reason=reason)
         self.set_user_data(guild_id, user_id, entry)
         self.save_data()
 

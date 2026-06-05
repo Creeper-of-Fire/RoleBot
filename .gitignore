@@ -6,3 +6,4 @@ __pycache__/
 deploy.env
 rolebot_image.tar
 data/*.db
+/.claude/settings.local.json

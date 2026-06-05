@@ -136,6 +136,10 @@ ACTIVITY_TRACKER_CONFIG = {
     "shared_activity_groups": {
         "leinao": [1134557553011998840, 1380075940285124724],
     },
+    # 刷屏黑名单配置
+    "blacklist": {
+        "announce_channel_id": 1300767123261624381,  # 处罚公示区
+    },
     "guild_configs": {
         # ---类脑---
         1134557553011998840: {
