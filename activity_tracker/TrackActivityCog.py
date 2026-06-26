@@ -318,6 +318,11 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         # BOT消息或非公会消息
         if message.author.bot or not message.guild:
             return False
+        # 黑名单期间的发言不计入活跃度（实时记录与历史回填均生效）
+        if self.blacklist_manager.is_in_blacklist_period(
+            message.guild.id, message.author.id, message.created_at.timestamp()
+        ):
+            return False
         # 垃圾消息过滤（纯表情/纯图片）
         if self.is_not_valid_message(message)[0]:
             return False
@@ -743,32 +748,25 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         self, interaction: discord.Interaction, current: str
     ) -> list[app_commands.Choice[str]]:
         """从黑名单中过滤当前仍在服务器内的成员，供「刷屏黑名单-移除」自动补全。"""
-        try:
-            guild = interaction.guild
-            if guild is None:
-                return []
-            entries = self.blacklist_manager.get_all_blacklisted(guild.id)
-            current_lower = (current or "").lower()
-            choices: list[app_commands.Choice[str]] = []
-            for user_id, expiry in entries:
-                member = guild.get_member(user_id)
-                if member is None:
-                    continue
-                name = member.display_name
-                uid_str = str(member.id)
-                if current_lower and current_lower not in name.lower() and current_lower not in uid_str:
-                    continue
-                days_left = max(0.0, (expiry - time.time()) / 86400)
-                choices.append(app_commands.Choice(
-                    name=f"{name}（剩余 {days_left:.1f} 天）",
-                    value=uid_str,
-                ))
-                if len(choices) >= 25:
-                    break
-            return choices
-        except Exception as e:
-            self.logger.error(f"blacklist_user_autocomplete 失败: {e}", exc_info=True)
-            return []
+        entries = self.blacklist_manager.get_all_blacklisted(interaction.guild.id)
+        current_lower = current.lower()
+        choices: list[app_commands.Choice[str]] = []
+        for user_id, expiry in entries:
+            member = interaction.guild.get_member(user_id)
+            if member is None:
+                continue
+            name = member.display_name
+            uid_str = str(member.id)
+            if current_lower and current_lower not in name.lower() and current_lower not in uid_str:
+                continue
+            days_left = max(0.0, (expiry - time.time()) / 86400)
+            choices.append(app_commands.Choice(
+                name=f"{name}（剩余 {days_left:.1f} 天）",
+                value=uid_str,
+            ))
+            if len(choices) >= 25:
+                break
+        return choices
 
     @activity_group.command(name="刷屏黑名单-移除", description="【管理员】将用户从刷屏黑名单中移除。")
     @app_commands.checks.has_permissions(manage_roles=True)

@@ -27,6 +27,17 @@ class BlacklistDataManager(AsyncUserGuildDataManager[BlacklistEntry]):
             return False, 0.0
         return True, entry.expiry
 
+    def is_in_blacklist_period(self, guild_id: int, user_id: int, timestamp: float) -> bool:
+        """判断给定时间戳是否处于该用户记录在案的黑名单期内 [added_at, expiry]。
+
+        用于「黑名单期间的发言不计入活跃度」：实时记录与历史回填共用此判断，
+        保证两端一致。本方法为纯读操作，不触发过期清理，避免污染调用方流程。
+        """
+        entry = self.get_user_data(guild_id, user_id)
+        if not entry:
+            return False
+        return entry.added_at <= timestamp <= entry.expiry
+
     def add_to_blacklist(self, guild_id: int, user_id: int, duration_days: int = 30, reason: str = ""):
         now = time.time()
         entry = BlacklistEntry(expiry=now + duration_days * 86400, added_at=now, reason=reason)
