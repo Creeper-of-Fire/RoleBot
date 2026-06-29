@@ -21,6 +21,7 @@ from activity_tracker.blacklist_data_manager import BlacklistDataManager
 from activity_tracker.logic import ActivityProcessor, UserReportData
 from activity_tracker.views import ActivityRoleView, ReportEmbeds, UserReportDetailView
 from utility.helpers import parse_message_link, fetch_message_from_link
+from utility.paginated_view import PaginatedView
 from utility.permison import is_super_admin, is_admin
 from utility.views import ConfirmationView
 
@@ -45,6 +46,33 @@ class BlacklistPunishmentResult:
     dm_failed: bool = False
     announced: bool = False
     announce_failed: bool = False
+
+
+class BlacklistListView(PaginatedView):
+    """刷屏黑名单分页列表视图，避免单条 embed 超过 Discord 4096 字符上限。"""
+
+    ITEMS_PER_PAGE = 20
+
+    def __init__(self, entries: list[tuple[int, float]], guild: discord.Guild):
+        # provider 返回闭包捕获的 entries，翻页时不会重新查询/落盘
+        super().__init__(all_items_provider=lambda: entries, items_per_page=self.ITEMS_PER_PAGE)
+        self.entries = entries
+        self.guild = guild
+
+    async def _rebuild_view(self):
+        self.clear_items()
+        lines = []
+        for user_id, expiry in self.get_page_items():
+            member = self.guild.get_member(user_id)
+            name = member.mention if member else f"`{user_id}`"
+            expiry_dt = datetime.fromtimestamp(expiry, tz=BEIJING_TZ)
+            lines.append(f"{name} — 到期：{expiry_dt:%Y-%m-%d %H:%M}")
+        self.embed = discord.Embed(
+            title=f"📋 刷屏黑名单 ({len(self.entries)} 人)",
+            description="\n".join(lines) if lines else "（本页为空）",
+            color=discord.Color.red(),
+        )
+        self._add_pagination_buttons(row=0)
 
 
 class TrackActivityCog(commands.Cog, name="TrackActivity"):
@@ -864,19 +892,11 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
                 description="当前没有黑名单用户。",
                 color=discord.Color.blue()
             )
-        else:
-            lines = []
-            for user_id, expiry in entries:
-                member = interaction.guild.get_member(user_id)
-                name = member.mention if member else f"`{user_id}`"
-                expiry_dt = datetime.fromtimestamp(expiry, tz=BEIJING_TZ)
-                lines.append(f"{name} — 到期：{expiry_dt:%Y-%m-%d %H:%M}")
-            embed = discord.Embed(
-                title=f"📋 刷屏黑名单 ({len(entries)} 人)",
-                description="\n".join(lines),
-                color=discord.Color.red()
-            )
-        await interaction.followup.send(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        view = BlacklistListView(entries, interaction.guild)
+        await view.start(interaction, ephemeral=True)
 
     @staticmethod
     def _parse_blacklist_embed_lines(text: str) -> list[tuple[int, float]]:
