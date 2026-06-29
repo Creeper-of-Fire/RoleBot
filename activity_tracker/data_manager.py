@@ -45,7 +45,9 @@ class DataManager:
     def __init__(self, host: str, port: int, db: int, logger: logging.Logger):
         if not hasattr(self, '_initialized'):
             self.logger = logger
-            self.redis = redis.Redis(host=host, port=port, db=db, decode_responses=True)
+            # redis-py 8.x 将 asyncio 连接池默认 max_connections 从「无限」砍到 100，
+            # backfill 高并发时会耗尽并触发 MaxConnectionsError（368 次风暴），故显式放大。
+            self.redis = redis.Redis(host=host, port=port, db=db, decode_responses=True, max_connections=500)
             self._initialized = True
 
     async def check_connection(self):

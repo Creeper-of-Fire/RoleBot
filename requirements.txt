@@ -10,7 +10,7 @@ aiofiles
 
 pytz
 python-dotenv
-redis[asyncio]
+redis[asyncio]>=8.0,<9  # 锁 8.x；max_connections 已在 DataManager 显式设置，仍锁版本防未来 breaking
 alembic
 SQLAlchemy
 pydantic>=2.0
