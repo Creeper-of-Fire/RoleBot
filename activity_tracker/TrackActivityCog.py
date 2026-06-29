@@ -575,13 +575,13 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
                 if last_sync_ts is None:
                     await self._update_sync_timestamp(guild.id, now_utc.timestamp(), force=True)
                     if report_channel:
-                        await report_channel.send(f"👋 **首次启动**：已设置当前时间为初始同步点。如需历史数据，请使用 `/用户活跃度 手动拉取历史消息` 指令。")
+                        await self._safe_report_send(report_channel, "👋 **首次启动**：已设置当前时间为初始同步点。如需历史数据，请使用 `/用户活跃度 手动拉取历史消息` 指令。")
                     continue
 
                 start_datetime = datetime.fromtimestamp(last_sync_ts, tz=timezone.utc)
                 if report_channel:
                     start_disp = start_datetime.astimezone(BEIJING_TZ).strftime('%Y-%m-%d %H:%M:%S')
-                    await report_channel.send(f"🤖 **自动增量同步启动**：开始补全自 `{start_disp}` (UTC+8) 以来的离线消息。")
+                    await self._safe_report_send(report_channel, f"🤖 **自动增量同步启动**：开始补全自 `{start_disp}` (UTC+8) 以来的离线消息。")
 
                 # 派发后台回填任务
                 self.bot.loop.create_task(self._backfill_guild_history(
@@ -593,6 +593,15 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
                 await asyncio.sleep(1)  # 避免同时启动多个任务造成拥堵
             except Exception as e:
                 self.logger.critical(f"为服务器 {guild.id} 执行启动时同步任务时发生错误: {e}", exc_info=True)
+
+    async def _safe_report_send(self, channel: Optional[discord.abc.Messageable], content: str):
+        """向报告频道发送通知。失败仅记录警告，绝不阻断调用方主流程（如 backfill 派发）。"""
+        if channel is None:
+            return
+        try:
+            await channel.send(content)
+        except (discord.HTTPException, discord.ClientException) as e:
+            self.logger.warning(f"向报告频道发送通知失败（已忽略，不影响后续任务）: {e}")
 
     async def _throttled_update_sync_timestamp(self, guild_id: int, timestamp: float):
         """节流地更新最后同步时间戳。"""
