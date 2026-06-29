@@ -314,7 +314,8 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         try:
             g = self.bot.get_guild(rc["guild_id"]) or await self.bot.fetch_guild(rc["guild_id"])
             return g.get_channel(rc["channel_id"]) or await g.fetch_channel(rc["channel_id"])
-        except (discord.NotFound, discord.Forbidden, KeyError):
+        except (discord.NotFound, discord.Forbidden, KeyError, OSError):
+            # OSError 涵盖网络层错误（BrokenPipe / aiohttp ClientOSError），fetch 抖动时降级为 None，不阻断 backfill。
             return None
 
     @commands.Cog.listener()
@@ -600,7 +601,9 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             return
         try:
             await channel.send(content)
-        except (discord.HTTPException, discord.ClientException) as e:
+        except (discord.HTTPException, discord.ClientException, OSError) as e:
+            # OSError 涵盖 BrokenPipeError / ConnectionError / aiohttp ClientOSError 等网络层错误，
+            # 它们并非 discord.HTTPException 的子类，必须单独捕获，否则会穿透并阻断 backfill 派发。
             self.logger.warning(f"向报告频道发送通知失败（已忽略，不影响后续任务）: {e}")
 
     async def _throttled_update_sync_timestamp(self, guild_id: int, timestamp: float):
