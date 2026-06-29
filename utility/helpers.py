@@ -1,6 +1,7 @@
 # src/role_manager/utility/utility.py
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 import discord
@@ -54,3 +55,41 @@ def format_duration_hms(total_seconds: int) -> str:
     if minutes > 0: parts.append(f"{minutes} 分钟")
     if seconds > 0 or not parts: parts.append(f"{seconds} 秒")
     return " ".join(parts)
+
+
+# Discord 消息链接：https://discord.com/channels/{guild_id|@me}/{channel_id}/{message_id}
+MESSAGE_LINK_PATTERN = re.compile(
+    r"https?://(?:ptb\.|canary\.)?discord(?:app)?\.com/channels/(?:@me|\d+)/(\d+)/(\d+)"
+)
+
+
+def parse_message_link(link: str) -> Optional[tuple[int, int]]:
+    """从 Discord 消息链接解析出 (channel_id, message_id)。无法解析返回 None。
+
+    支持标准 / ptb / canary 域名，以及私聊场景下的 @me。
+    """
+    match = MESSAGE_LINK_PATTERN.search(link)
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+async def fetch_message_from_link(bot: discord.Client, link: str) -> Optional[discord.Message]:
+    """根据消息链接拉取消息对象。
+
+    链接非法、频道/消息不存在、无权限或频道不可读时返回 None，不抛异常。
+    """
+    parsed = parse_message_link(link)
+    if not parsed:
+        return None
+    channel_id, message_id = parsed
+    try:
+        channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        return None
+    if not isinstance(channel, discord.abc.Messageable):
+        return None
+    try:
+        return await channel.fetch_message(message_id)
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        return None

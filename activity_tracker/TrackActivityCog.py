@@ -20,11 +20,20 @@ from activity_tracker.data_manager import DataManager, BEIJING_TZ
 from activity_tracker.blacklist_data_manager import BlacklistDataManager
 from activity_tracker.logic import ActivityProcessor, UserReportData
 from activity_tracker.views import ActivityRoleView, ReportEmbeds, UserReportDetailView
+from utility.helpers import parse_message_link, fetch_message_from_link
 from utility.permison import is_super_admin, is_admin
 from utility.views import ConfirmationView
 
 if TYPE_CHECKING:
     from main import RoleBot
+
+
+# 解析「📋 刷屏黑名单」embed 的单行，兼容两种用户标识：
+#   <@123> — 到期：2025-08-15 12:34      (成员仍在服务器，mention 形式)
+#   `123` — 到期：2025-08-15 12:34        (成员已离开，反引号包裹纯 ID)
+_BLACKLIST_LINE_RE = re.compile(
+    r"(?:<@!?(\d+)>|`(\d+)`).*?到期[：:]\s*(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})"
+)
 
 
 @dataclass
@@ -120,7 +129,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         if guild is None:
             return result
 
-        self.blacklist_manager.add_to_blacklist(guild.id, user.id, reason=reason)
+        await self._blacklist_add_shared(guild.id, user.id, reason=reason)
 
         guild_cfg = self.config.get("guild_configs", {}).get(guild.id, {})
         target_role_id = guild_cfg.get("target_role_id")
@@ -201,6 +210,49 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         if not group_name:
             return [guild_id]
         return self.config.get("shared_activity_groups", {}).get(group_name, [guild_id])
+
+    # --- 黑名单共通组感知封装（共通组内一服拉黑 = 全域生效）---
+
+    async def _blacklist_add_shared(self, guild_id: int, user_id: int, **kwargs):
+        """向共通组内所有服务器写入黑名单，使全域生效。"""
+        for gid in self._get_shared_guild_ids(guild_id):
+            await self.blacklist_manager.add_to_blacklist(gid, user_id, **kwargs)
+
+    async def _blacklist_remove_shared(self, guild_id: int, user_id: int) -> bool:
+        """从共通组内所有服务器移除黑名单。任一服存在记录并移除即返回 True。"""
+        removed_any = False
+        for gid in self._get_shared_guild_ids(guild_id):
+            if await self.blacklist_manager.remove_from_blacklist(gid, user_id):
+                removed_any = True
+        return removed_any
+
+    async def _is_blacklisted_shared(self, guild_id: int, user_id: int) -> tuple[bool, float]:
+        """共通组内任一服命中即视为黑名单。返回 (是否, 最晚到期时间戳)。"""
+        hit = False
+        max_expiry = 0.0
+        for gid in self._get_shared_guild_ids(guild_id):
+            is_bl, expiry = await self.blacklist_manager.is_blacklisted(gid, user_id)
+            if is_bl:
+                hit = True
+                if expiry > max_expiry:
+                    max_expiry = expiry
+        return hit, max_expiry
+
+    def _is_in_blacklist_period_shared(self, guild_id: int, user_id: int, timestamp: float) -> bool:
+        """共通组内任一服的黑名单期覆盖该时间戳即视为黑名单期（纯读，不清理）。"""
+        for gid in self._get_shared_guild_ids(guild_id):
+            if self.blacklist_manager.is_in_blacklist_period(gid, user_id, timestamp):
+                return True
+        return False
+
+    async def _get_all_blacklisted_shared(self, guild_id: int) -> list[tuple[int, float]]:
+        """聚合共通组内所有服务器的黑名单，按用户去重并取最晚到期。"""
+        merged: dict[int, float] = {}
+        for gid in self._get_shared_guild_ids(guild_id):
+            for user_id, expiry in await self.blacklist_manager.get_all_blacklisted(gid):
+                if expiry > merged.get(user_id, 0.0):
+                    merged[user_id] = expiry
+        return list(merged.items())
 
     async def _get_merged_report_data(self, guild_id: int, user_id: int, days_window: int) -> UserReportData:
         """聚合共通组内所有服务器的报告数据。"""
@@ -319,7 +371,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         if message.author.bot or not message.guild:
             return False
         # 黑名单期间的发言不计入活跃度（实时记录与历史回填均生效）
-        if self.blacklist_manager.is_in_blacklist_period(
+        if self._is_in_blacklist_period_shared(
             message.guild.id, message.author.id, message.created_at.timestamp()
         ):
             return False
@@ -393,7 +445,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         report_data = await self._get_merged_report_data(guild.id, member.id, guild_cfg["claim_days_window"])
         total = report_data.total_messages
         counted = sum(min(c, daily_cap) for c in report_data.heatmap_data.values())
-        is_blacklisted, blacklisted_until = self.blacklist_manager.is_blacklisted(guild.id, member.id)
+        is_blacklisted, blacklisted_until = await self._is_blacklisted_shared(guild.id, member.id)
 
         is_eligible = counted >= guild_cfg["message_threshold"] and not is_blacklisted
         has_role = target_role in member.roles
@@ -431,7 +483,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         processor = self._get_processor(guild)
         sorted_display_data = await processor.process_and_sort_for_display(report_data.channel_activity)
 
-        is_blacklisted, blacklisted_until = self.blacklist_manager.is_blacklisted(guild.id, member.id)
+        is_blacklisted, blacklisted_until = await self._is_blacklisted_shared(guild.id, member.id)
         daily_cap = guild_cfg.get("daily_message_cap", 999)
         threshold = guild_cfg.get("message_threshold", 0)
 
@@ -748,7 +800,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         self, interaction: discord.Interaction, current: str
     ) -> list[app_commands.Choice[str]]:
         """从黑名单中过滤当前仍在服务器内的成员，供「刷屏黑名单-移除」自动补全。"""
-        entries = self.blacklist_manager.get_all_blacklisted(interaction.guild.id)
+        entries = await self._get_all_blacklisted_shared(interaction.guild.id)
         current_lower = current.lower()
         choices: list[app_commands.Choice[str]] = []
         for user_id, expiry in entries:
@@ -784,7 +836,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             await interaction.followup.send("❌ 该用户已不在服务器中，无法显示身份组信息。", ephemeral=True)
             return
 
-        removed = self.blacklist_manager.remove_from_blacklist(interaction.guild.id, user_id)
+        removed = await self._blacklist_remove_shared(interaction.guild.id, user_id)
 
         if removed:
             embed = discord.Embed(
@@ -804,7 +856,7 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
     @app_commands.checks.has_permissions(manage_roles=True)
     async def blacklist_list(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        entries = self.blacklist_manager.get_all_blacklisted(interaction.guild.id)
+        entries = await self._get_all_blacklisted_shared(interaction.guild.id)
 
         if not entries:
             embed = discord.Embed(
@@ -824,6 +876,84 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
                 description="\n".join(lines),
                 color=discord.Color.red()
             )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @staticmethod
+    def _parse_blacklist_embed_lines(text: str) -> list[tuple[int, float]]:
+        """从「📋 刷屏黑名单」embed 文本中解析出 [(user_id, expiry_timestamp), ...]。
+
+        支持的行格式（与 blacklist_list 输出一致）：
+            <@123> — 到期：2025-08-15 12:34
+            `123` — 到期：2025-08-15 12:34
+        到期时间按 UTC+8 解析为 Unix 时间戳。
+        """
+        results: list[tuple[int, float]] = []
+        for line in text.splitlines():
+            match = _BLACKLIST_LINE_RE.search(line)
+            if not match:
+                continue
+            user_id = int(match.group(1) or match.group(2))
+            dt = datetime.strptime(f"{match.group(3)} {match.group(4)}", "%Y-%m-%d %H:%M")
+            expiry_ts = dt.replace(tzinfo=BEIJING_TZ).timestamp()
+            results.append((user_id, expiry_ts))
+        return results
+
+    @activity_group.command(name="刷屏黑名单-批量补录", description="【管理员】从消息链接的「📋 刷屏黑名单」批量恢复黑名单，保留原始到期时间。")
+    @app_commands.checks.has_permissions(manage_roles=True)
+    @app_commands.describe(message_links="一条或多条消息链接（空格或换行分隔）。")
+    async def blacklist_bulk_restore(self, interaction: discord.Interaction, message_links: str):
+        """从历史「📋 刷屏黑名单」embed 批量补录黑名单。
+
+        解析消息中 embed/文本里的每一条记录，按其原始到期时间重新写入黑名单
+        （而非重新计算 30 天）。已过期的条目自动跳过。
+        """
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        links = [tok for tok in message_links.split() if parse_message_link(tok)]
+        if not links:
+            await interaction.followup.send("❌ 未识别到任何有效的消息链接。", ephemeral=True)
+            return
+
+        now = time.time()
+        restored_user_ids: list[int] = []
+        skipped_expired = 0
+        failed_links = 0
+
+        for link in links:
+            msg = await fetch_message_from_link(self.bot, link)
+            if msg is None:
+                failed_links += 1
+                continue
+            # embed 的 description 优先，其次纯文本内容
+            texts = [emb.description for emb in msg.embeds if emb.description]
+            if msg.content:
+                texts.append(msg.content)
+            for text in texts:
+                for user_id, expiry_ts in self._parse_blacklist_embed_lines(text):
+                    if expiry_ts <= now:
+                        skipped_expired += 1
+                        continue
+                    # 假设原始惩罚为 30 天，据此回溯 added_at，保证回填消息时
+                    # is_in_blacklist_period 能正确过滤整个惩罚期。
+                    added_at = expiry_ts - 30 * 86400
+                    await self._blacklist_add_shared(
+                        interaction.guild.id, user_id,
+                        reason="批量补录（来源：消息链接）",
+                        expiry_timestamp=expiry_ts,
+                        added_at_timestamp=added_at,
+                    )
+                    restored_user_ids.append(user_id)
+
+        unique_count = len(set(restored_user_ids))
+        embed = discord.Embed(
+            title="📥 刷屏黑名单 — 批量补录完成",
+            color=discord.Color.green(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(name="恢复（保留原到期）", value=f"{unique_count} 人", inline=True)
+        embed.add_field(name="跳过（已过期）", value=f"{skipped_expired} 条", inline=True)
+        embed.add_field(name="链接拉取失败", value=f"{failed_links} 条", inline=True)
+        embed.set_footer(text=f"共处理 {len(links)} 条链接")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @activity_group.command(name="管理或删除活动数据", description="【管理员】管理本服务器的活动数据。")

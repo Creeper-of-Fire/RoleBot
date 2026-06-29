@@ -1,0 +1,8 @@
+[tool.pyright]
+# 拦截"调用 async 函数却忘记 await"这类静默失败。
+# 起因：BlacklistDataManager 曾在同步方法里裸调 async 的 save_data() 未 await，
+# 导致黑名单数据从不落盘、重启即丢失。开启此项后，编辑器与 CI 会直接报 error。
+reportUnusedCoroutine = "error"
+pythonVersion = "3.13"
+venvPath = "."
+venv = ".venv"
