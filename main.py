@@ -13,7 +13,6 @@ from activity_tracker.TrackActivityCog import TrackActivityCog
 from core.CoreCog import CoreCog
 from core.embed_link.embed_manager import EmbedLinkManager
 from core.role_backup_cog import BackupCog
-from utility.app_command_permissions import sync_permissions_for_guild
 from role_system.fashion.FashionCog import FashionCog
 from honor_system.module.anniversary_module import HonorAnniversaryModuleCog
 from honor_system.module.claimable_honor_module import ClaimableHonorModuleCog
@@ -115,9 +114,6 @@ class RoleBot(commands.Bot):
 
                     self.logger.info(f"已将 {len(synced)} 个新命令重新同步到服务器 {guild_id}")
 
-                    # 4. sync 完成后立即注入身份组/用户覆盖
-                    await sync_permissions_for_guild(self, guild_id, synced)
-
                 except discord.HTTPException as e:
                     self.logger.error(f"强制刷新服务器 {guild_id} 时失败: {e}")
                 except Exception as ex:
@@ -133,8 +129,6 @@ class RoleBot(commands.Bot):
                 try:
                     synced = await self.tree.sync(guild=guild)
                     self.logger.info(f"已同步 {len(synced)} 个命令到服务器 {guild_id}")
-                    # sync 完成后立即注入身份组/用户覆盖
-                    await sync_permissions_for_guild(self, guild_id, synced)
                 except discord.HTTPException as e:
                     self.logger.error(f"同步命令到服务器 {guild_id} 失败: {e}")
 

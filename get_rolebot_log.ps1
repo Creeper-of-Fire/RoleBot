@@ -16,6 +16,13 @@
     3. 如果首次运行此脚本，可能需要调整PowerShell的执行策略。
 #>
 
+# --- 参数 ---
+# 不传 -Lines 时：实时跟踪（docker logs -f）
+# 传 -Lines N 时：只拉最近 N 行后退出（docker logs --tail N）
+param(
+    [int]$Lines = 0
+)
+
 # --- 脚本配置 ---
 $ErrorActionPreference = "Stop" # 遇到任何错误就停止脚本
 
@@ -79,18 +86,28 @@ catch {
 
 
 # 执行SSH命令获取日志
-Write-Host "🔧 正在连接到服务器 ($sshHost) 并获取 Docker 容器 '$dockerContainerName' 的日志..." -ForegroundColor Cyan
-try {
-    # 使用 docker logs -f 命令实时查看 Docker 容器日志
-    ssh "$sshUser@$sshHost" -i "$sshKeyPath" "docker logs -f $dockerContainerName"
-} catch {
-    Write-Host "❌ 错误: 获取 Docker 日志失败。请检查以下事项：" -ForegroundColor Red
-    Write-Host "- 用户名 '$sshUser' 是否正确？" -ForegroundColor Red
-    Write-Host "- 服务器IP '$sshHost' 是否可达？" -ForegroundColor Red
-    Write-Host "- 私钥文件 '$sshKeyPath' 是否对应服务器上的公钥？" -ForegroundColor Red
-    Write-Host "- ECS实例的安全组（入方向22端口）是否允许你的IP连接？" -ForegroundColor Red
-    Write-Host "- 远程服务器上 Docker 是否正在运行，并且容器 '$dockerContainerName' 是否存在且正在运行？" -ForegroundColor Red
-    Write-Host "原始错误信息: $($_.Exception.Message)" -ForegroundColor Red
+if ($Lines -gt 0) {
+    Write-Host "🔧 正在连接到服务器 ($sshHost) 并拉取 Docker 容器 '$dockerContainerName' 最近 $Lines 行日志..." -ForegroundColor Cyan
+    try {
+        ssh "$sshUser@$sshHost" -i "$sshKeyPath" "docker logs --tail $Lines $dockerContainerName"
+    } catch {
+        Write-Host "❌ 错误: 获取 Docker 日志失败。" -ForegroundColor Red
+        Write-Host "原始错误信息: $($_.Exception.Message)" -ForegroundColor Red
+    }
+} else {
+    Write-Host "🔧 正在连接到服务器 ($sshHost) 并实时跟踪 Docker 容器 '$dockerContainerName' 的日志 (Ctrl+C 退出)..." -ForegroundColor Cyan
+    try {
+        # 使用 docker logs -f 命令实时查看 Docker 容器日志
+        ssh "$sshUser@$sshHost" -i "$sshKeyPath" "docker logs -f $dockerContainerName"
+    } catch {
+        Write-Host "❌ 错误: 获取 Docker 日志失败。请检查以下事项：" -ForegroundColor Red
+        Write-Host "- 用户名 '$sshUser' 是否正确？" -ForegroundColor Red
+        Write-Host "- 服务器IP '$sshHost' 是否可达？" -ForegroundColor Red
+        Write-Host "- 私钥文件 '$sshKeyPath' 是否对应服务器上的公钥？" -ForegroundColor Red
+        Write-Host "- ECS实例的安全组（入方向22端口）是否允许你的IP连接？" -ForegroundColor Red
+        Write-Host "- 远程服务器上 Docker 是否正在运行，并且容器 '$dockerContainerName' 是否存在且正在运行？" -ForegroundColor Red
+        Write-Host "原始错误信息: $($_.Exception.Message)" -ForegroundColor Red
+    }
 }
 
 Write-Host "`n日志获取尝试结束。" -ForegroundColor Cyan

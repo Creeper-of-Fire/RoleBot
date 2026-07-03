@@ -22,16 +22,16 @@
 #
 # ==============================================================================
 
-# --- 脚本配置 ---
-$ErrorActionPreference = "Stop" # 遇到任何错误就停止脚本
-$dockerContainerName = "rolebot"
-$remoteProjectName = "RoleBot"  # 远程服务器上项目目录的名称
-
 # --- 参数 ---
 # -Follow 开关：是否部署完自动跟踪 Docker 容器日志（默认不开，避免阻塞）
 param(
     [switch]$Follow = $false
 )
+
+# --- 脚本配置 ---
+$ErrorActionPreference = "Stop" # 遇到任何错误就停止脚本
+$dockerContainerName = "rolebot"
+$remoteProjectName = "RoleBot"  # 远程服务器上项目目录的名称
 
 # --- 1. 加载配置 ---
 Write-Host "⚙️ 正在加载部署配置..." -ForegroundColor Yellow
