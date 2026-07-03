@@ -22,7 +22,7 @@ from activity_tracker.logic import ActivityProcessor, UserReportData
 from activity_tracker.views import ActivityRoleView, ReportEmbeds, UserReportDetailView
 from utility.helpers import parse_message_link, fetch_message_from_link
 from utility.paginated_view import PaginatedView
-from utility.permison import is_super_admin, is_admin
+from utility.permison import is_super_admin, is_admin, requires_capability, Capability
 from utility.views import ConfirmationView
 
 if TYPE_CHECKING:
@@ -101,7 +101,8 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             name="添加到刷屏黑名单",
             callback=self._blacklist_add_context_impl,
         )
-        is_admin()(self.ctx_menu)
+        # 双作用装饰器：bot 层拦截 + Discord API 层身份组覆盖
+        requires_capability(Capability.MANAGE_BLACKLIST)(self.ctx_menu)
         self.bot.tree.add_command(self.ctx_menu)
 
     def _build_blacklist_embed(
@@ -719,7 +720,9 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
     activity_group = app_commands.Group(
         name=f"{config.COMMAND_GROUP_NAME}丨活跃", description="用户活动追踪相关指令",
         guild_ids=[gid for gid in config.GUILD_IDS],
-        default_permissions=discord.Permissions(manage_roles=True),
+        # 设为 None 让 Discord 端按 identity-based overrides 决定可见性
+        # （配合 requires_capability 写入的 role/user overrides）
+        default_permissions=None,
     )
 
     @activity_group.command(name="发送面板", description="发送一个活跃度角色申领面板。")
@@ -752,8 +755,8 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
 
     # --- 刷屏黑名单命令 ---
 
+    @requires_capability(Capability.MANAGE_BLACKLIST)
     @activity_group.command(name="刷屏黑名单-添加", description="【管理员】将用户加入刷屏黑名单（30天），自动移除活跃角色。")
-    @app_commands.checks.has_permissions(manage_roles=True)
     @app_commands.describe(user="要加入黑名单的用户", reason='处罚原因（可选，默认为"刷屏"）')
     async def blacklist_add(self, interaction: discord.Interaction, user: discord.Member, reason: Optional[str] = None):
         await interaction.response.defer()
@@ -860,8 +863,8 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
                 break
         return choices
 
+    @requires_capability(Capability.MANAGE_BLACKLIST)
     @activity_group.command(name="刷屏黑名单-移除", description="【管理员】将用户从刷屏黑名单中移除。")
-    @app_commands.checks.has_permissions(manage_roles=True)
     @app_commands.autocomplete(user=blacklist_user_autocomplete)
     @app_commands.describe(user="要移除黑名单的用户（从黑名单下拉列表中选择）")
     async def blacklist_remove(self, interaction: discord.Interaction, user: str):
@@ -892,8 +895,8 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             )
         await interaction.followup.send(embed=embed)
 
+    @requires_capability(Capability.MANAGE_BLACKLIST)
     @activity_group.command(name="刷屏黑名单-查看", description="【管理员】查看当前服务器的刷屏黑名单列表。")
-    @app_commands.checks.has_permissions(manage_roles=True)
     async def blacklist_list(self, interaction: discord.Interaction):
         await interaction.response.defer()
         entries = await self._get_all_blacklisted_shared(interaction.guild.id)
@@ -930,8 +933,8 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             results.append((user_id, expiry_ts))
         return results
 
+    @requires_capability(Capability.MANAGE_BLACKLIST)
     @activity_group.command(name="刷屏黑名单-批量补录", description="【管理员】从消息链接的「📋 刷屏黑名单」批量恢复黑名单，保留原始到期时间。")
-    @app_commands.checks.has_permissions(manage_roles=True)
     @app_commands.describe(message_links="一条或多条消息链接（空格或换行分隔）。")
     async def blacklist_bulk_restore(self, interaction: discord.Interaction, message_links: str):
         """从历史「📋 刷屏黑名单」embed 批量补录黑名单。

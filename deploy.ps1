@@ -27,6 +27,12 @@ $ErrorActionPreference = "Stop" # 遇到任何错误就停止脚本
 $dockerContainerName = "rolebot"
 $remoteProjectName = "RoleBot"  # 远程服务器上项目目录的名称
 
+# --- 参数 ---
+# -Follow 开关：是否部署完自动跟踪 Docker 容器日志（默认不开，避免阻塞）
+param(
+    [switch]$Follow = $false
+)
+
 # --- 1. 加载配置 ---
 Write-Host "⚙️ 正在加载部署配置..." -ForegroundColor Yellow
 
@@ -219,9 +225,13 @@ try
 
     Write-Host "🎉 部署成功完成！RoleBot 已在服务器上更新并启动。" -ForegroundColor Green
 
-    # 实时查看 Docker 容器日志
-    Write-Host "📋 正在实时查看 Docker 容器日志 (按 Ctrl+C 退出)..." -ForegroundColor Magenta
-    ssh -i $sshKeyPath "$( $sshUser )@$( $sshHost )" "docker logs -f $dockerContainerName"
+    # 仅在显式指定 -Follow 时才实时跟踪日志
+    if ($Follow) {
+        Write-Host "📋 正在实时跟踪 Docker 容器日志 (按 Ctrl+C 退出)..." -ForegroundColor Magenta
+        ssh -i $sshKeyPath "$( $sshUser )@$( $sshHost )" "docker logs -f $dockerContainerName"
+    } else {
+        Write-Host "ℹ️ 部署已完成。如需查看日志，请运行 .\fetch_log.ps1（或 .\fetch_log.ps1 -Follow）" -ForegroundColor DarkCyan
+    }
 }
 catch
 {

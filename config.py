@@ -1,5 +1,6 @@
 import os
 import typing
+from enum import StrEnum
 
 from dotenv import load_dotenv
 
@@ -219,6 +220,63 @@ ADMIN_ROLE_IDS: typing.Set[int] = {
 ADMIN_USER_IDS: typing.Set[int] = {
     942388408800669707,  # 我
     # 如果某个管理员没有特定角色，也可以在这里单独添加他们的用户 ID
+}
+
+# ===================================================================
+# 能力标签（Capability）—— 把「用哪个身份组」从代码里抽出来
+# ===================================================================
+# 用法：
+#   @requires_capability(Capability.MANAGE_BLACKLIST)
+#   @xxx_group.command(...)
+#   async def my_cmd(...): ...
+#
+# 装饰器会同时做两件事：
+#   1. bot 层用身份组检查拦截命令执行
+#   2. 启动时由 sync_all_command_permissions 把身份组/用户覆盖写入 Discord API
+#
+# ────────────────────────────────────────────────────────────────────
+# 身份组层级（数字越大权限越高，仅作为文档参考）：
+#   风纪委员 (DISCIPLINARY)              10
+#   赛事委员会 (EVENT_ADMIN)             20
+#   管理组   (SERVER_ADMIN)              50
+#   ───────────────────────────────────
+#   维护者   (MAINTAINER_USER_IDS)      100  ← 走用户通道，不在身份组层级里
+# ────────────────────────────────────────────────────────────────────
+
+# 身份组 ID 别名（方便阅读，避免散落的 magic number）
+ROLE_IDS: typing.Dict[str, int] = {
+    "DISCIPLINARY": 1522155542695514252,  # 风纪委员
+    "EVENT_ADMIN":  1396831061643755520,  # 赛事委员会
+    "SERVER_ADMIN": 1337450755791261766,  # 管理组
+}
+
+class Capability(StrEnum):
+    """身份组的能力标签——把'用哪个身份组'从代码里抽出来"""
+    MANAGE_BLACKLIST = "manage_blacklist"   # 刷屏黑名单增删查 + 右键菜单
+    ADMIN_TOOLS = "admin_tools"             # 赛事委员一级的运维（当前未挂命令）
+    SYSTEM_ADMIN = "system_admin"           # 超级管理员专属（当前未挂命令）
+
+# 把 capability 映射到**身份组** ID 集合（用户不在这张表里）
+# 同一 capability 可以被多个身份组拥有——任一即可
+CAPABILITIES: typing.Dict[Capability, typing.Set[int]] = {
+    Capability.MANAGE_BLACKLIST: {
+        ROLE_IDS["DISCIPLINARY"],
+        ROLE_IDS["EVENT_ADMIN"],
+        ROLE_IDS["SERVER_ADMIN"],
+    },
+    Capability.ADMIN_TOOLS: {
+        ROLE_IDS["EVENT_ADMIN"],
+        ROLE_IDS["SERVER_ADMIN"],
+    },
+    Capability.SYSTEM_ADMIN: {
+        ROLE_IDS["SERVER_ADMIN"],
+    },
+}
+
+# 维护者：拥有所有 capability 的能力，但通过 USER 通道（不是身份组）
+# 这些用户也必须过 Discord API 这关（sync 时会写入 allow_users override）
+MAINTAINER_USER_IDS: typing.Set[int] = {
+    942388408800669707,  # 我
 }
 
 # ===================================================================
