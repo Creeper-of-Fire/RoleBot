@@ -76,79 +76,108 @@ async def set_command_permissions(
 # 高层：扫描所有 requires_capability 标记的命令，写入 overrides
 # ---------------------------------------------------------------------------
 
-def _iter_commands_with_capability(bot: "RoleBot"):
-    """遍历 ``bot.tree`` 中挂着 ``_required_capability`` 的所有 Command / ContextMenu。"""
-    # walk_commands() 覆盖 Group 下的所有子命令（不含 ContextMenu）
+def _build_capability_index(bot: "RoleBot") -> dict[str, config.Capability]:
+    """建立 ``qualified_name → capability`` 的索引，方便用 synced 结果反查。
+
+    qualified_name 形如 ``李曦曦丨活跃 刷屏黑名单-添加``。
+    """
+    index: dict[str, config.Capability] = {}
+    seen: set[int] = set()
+
+    # 全局
     for cmd in bot.tree.walk_commands():
+        if id(cmd) in seen:
+            continue
+        seen.add(id(cmd))
         cap = getattr(cmd, "_required_capability", None)
         if cap is not None:
-            yield cmd, cap
+            index[cmd.qualified_name] = cap
 
-    # ContextMenu 存在 tree._context_menus 里（discord.py 内部 dict）
+    # 每个 guild（copy_global_to 复制到这里的）
+    for guild_id in config.GUILD_IDS:
+        for cmd in bot.tree.walk_commands(guild=discord.Object(id=guild_id)):
+            if id(cmd) in seen:
+                continue
+            seen.add(id(cmd))
+            cap = getattr(cmd, "_required_capability", None)
+            if cap is not None:
+                index[cmd.qualified_name] = cap
+
+    # ContextMenu
     ctx_menus = getattr(bot.tree, "_context_menus", {}) or {}
     for cmd in ctx_menus.values():
+        if id(cmd) in seen:
+            continue
+        seen.add(id(cmd))
         cap = getattr(cmd, "_required_capability", None)
         if cap is not None:
-            yield cmd, cap
+            index[cmd.qualified_name] = cap
+
+    return index
 
 
-async def _sync_one_guild(bot: "RoleBot", guild_id: int) -> None:
-    """对单个 guild 写入所有 requires_capability 命令的 overrides。
+async def sync_permissions_for_guild(
+    bot: "RoleBot",
+    guild_id: int,
+    synced_commands: list,
+) -> None:
+    """对单个 guild，把 requires_capability 命令的 overrides 写入 Discord 端。
 
-    注意：这里**不依赖** ``bot.get_guild(guild_id)``，因为 sync_all_command_permissions
-    既可能在 setup_hook（bot 未 ready）阶段跑，也可能在 on_ready 阶段跑。
-    guild 对象只用于日志美化——非必需。
+    Args:
+        synced_commands: ``await bot.tree.sync(guild=guild)`` 返回的 AppCommand 列表。
+            包含 Discord 端实际分配的命令 ID（tree 内的原 Command 对象没有 id）。
     """
     maintainer_ids = list(config.MAINTAINER_USER_IDS)
+    cap_index = _build_capability_index(bot)
 
-    # 按 capability 聚合，避免每个命令都单独 PUT
-    by_capability: dict[config.Capability, list[app_commands.Command]] = {}
-    for cmd, cap in _iter_commands_with_capability(bot):
-        by_capability.setdefault(cap, []).append(cmd)
-
-    if not by_capability:
+    if not cap_index:
         logger.info(f"[guild {guild_id}] 没有 requires_capability 标记的命令，跳过")
         return
 
-    for cap, cmds in by_capability.items():
-        role_ids = config.CAPABILITIES.get(cap, set())
-        if not role_ids and not maintainer_ids:
-            logger.warning(
-                f"Capability {cap!s} 既没配置身份组，也没维护者，跳过"
-            )
+    # 把 synced_commands 按 (type, name) 索引，方便反查
+    # AppCommand 没有 type 字段，但从 _context_menus / walk_commands 能区分
+    # 简化：直接遍历 synced_commands，按 name 查 cap_index
+    written = 0
+    skipped = 0
+    for app_cmd in synced_commands:
+        cap = cap_index.get(app_cmd.name)
+        if cap is None:
             continue
 
-        for cmd in cmds:
-            cmd_id = getattr(cmd, "id", None)
-            if cmd_id is None:
-                logger.warning(
-                    f"命令 {cmd.qualified_name} 没有 ID（可能未 sync），跳过"
-                )
-                continue
-            try:
-                await set_command_permissions(
-                    bot, guild_id, cmd_id,
-                    allow_roles=role_ids,
-                    allow_users=maintainer_ids,
-                )
-                logger.info(
-                    f"[guild {guild_id}] {cmd.qualified_name} → {cap!s} → "
-                    f"roles {sorted(role_ids)} users {sorted(maintainer_ids)}"
-                )
-            except discord.HTTPException as e:
-                logger.error(
-                    f"[guild {guild_id}] 写入 {cmd.qualified_name} permissions 失败: {e}"
-                )
+        role_ids = config.CAPABILITIES.get(cap, set())
+        if not role_ids and not maintainer_ids:
+            skipped += 1
+            continue
+
+        try:
+            await set_command_permissions(
+                bot, guild_id, app_cmd.id,
+                allow_roles=role_ids,
+                allow_users=maintainer_ids,
+            )
+            logger.info(
+                f"[guild {guild_id}] {app_cmd.name} (id={app_cmd.id}) → {cap!s} → "
+                f"roles {sorted(role_ids)} users {sorted(maintainer_ids)}"
+            )
+            written += 1
+        except discord.HTTPException as e:
+            logger.error(
+                f"[guild {guild_id}] 写入 {app_cmd.name} permissions 失败: {e}"
+            )
+
+    logger.info(f"[guild {guild_id}] 完成：写入 {written} 条 overrides，跳过 {skipped} 条")
 
 
 async def sync_all_command_permissions(bot: "RoleBot") -> None:
     """遍历所有配置的 guild，把 requires_capability 命令的 overrides 写入 Discord 端。
 
-    **必须在 ``bot.tree.sync()`` 拿到 command.id 之后调用**。
+    **必须在 ``bot.tree.sync()`` 拿到 AppCommand 列表之后调用**。
     """
     for guild_id in config.GUILD_IDS:
         try:
-            await _sync_one_guild(bot, guild_id)
+            # 重新 sync 一次拿到 AppCommand（含 id）
+            synced = await bot.tree.sync(guild=discord.Object(id=guild_id))
+            await sync_permissions_for_guild(bot, guild_id, synced)
         except Exception as e:
             logger.error(
                 f"sync_all_command_permissions 在 guild {guild_id} 失败: {e}",
