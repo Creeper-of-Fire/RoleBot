@@ -93,12 +93,12 @@ def _iter_commands_with_capability(bot: "RoleBot"):
 
 
 async def _sync_one_guild(bot: "RoleBot", guild_id: int) -> None:
-    """对单个 guild 写入所有 requires_capability 命令的 overrides。"""
-    guild = bot.get_guild(guild_id)
-    if guild is None:
-        logger.warning(f"_sync_one_guild: 找不到 guild {guild_id}，跳过")
-        return
+    """对单个 guild 写入所有 requires_capability 命令的 overrides。
 
+    注意：这里**不依赖** ``bot.get_guild(guild_id)``，因为 sync_all_command_permissions
+    既可能在 setup_hook（bot 未 ready）阶段跑，也可能在 on_ready 阶段跑。
+    guild 对象只用于日志美化——非必需。
+    """
     maintainer_ids = list(config.MAINTAINER_USER_IDS)
 
     # 按 capability 聚合，避免每个命令都单独 PUT
@@ -107,7 +107,7 @@ async def _sync_one_guild(bot: "RoleBot", guild_id: int) -> None:
         by_capability.setdefault(cap, []).append(cmd)
 
     if not by_capability:
-        logger.info(f"[{guild.name}] 没有 requires_capability 标记的命令，跳过")
+        logger.info(f"[guild {guild_id}] 没有 requires_capability 标记的命令，跳过")
         return
 
     for cap, cmds in by_capability.items():
@@ -132,12 +132,12 @@ async def _sync_one_guild(bot: "RoleBot", guild_id: int) -> None:
                     allow_users=maintainer_ids,
                 )
                 logger.info(
-                    f"[{guild.name}] {cmd.qualified_name} → {cap!s} → "
+                    f"[guild {guild_id}] {cmd.qualified_name} → {cap!s} → "
                     f"roles {sorted(role_ids)} users {sorted(maintainer_ids)}"
                 )
             except discord.HTTPException as e:
                 logger.error(
-                    f"[{guild.name}] 写入 {cmd.qualified_name} permissions 失败: {e}"
+                    f"[guild {guild_id}] 写入 {cmd.qualified_name} permissions 失败: {e}"
                 )
 
 
