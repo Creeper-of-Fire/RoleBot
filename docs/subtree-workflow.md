@@ -2,29 +2,37 @@
 
 本仓库通过 `git subtree` 让三个 bot 仓库各持有一份本地副本。**不要用 git submodule**（clone 体验差），**不要用 PyPI 包**（增加部署负担）。
 
+## 核心原则：commit 全部保留，**不要 `--squash`**
+
+`_shared` 仓库的每个 commit 都会作为**独立 commit**进入 bot 仓库 history。原 commit 的 subject、author、date 全部保留。
+
+**原因**：
+- 三个 bot 仓库的 `shared/` history 完整镜像 _shared，没有撕裂
+- 出问题时能精确追溯到 _shared 上的具体 commit
+- 不需要编造"sync"/"merge"型 commit message
+
+**绝对不要 `--squash`**：squash 会把 _shared 的多个 commit 合并成一个 squash，丢失所有原始 commit 信息。
+
 ## 仓库关系
 
 ```text
 _shared/  (本仓库，独立 repo，独立 history)
    │
-   ├── subtree pull ──→ bot-A/shared/   (bot-A 仓库 history 多一个 merge commit)
-   ├── subtree pull ──→ bot-B/shared/
-   └── subtree pull ──→ bot-C/shared/
+   ├── subtree add  ──→ bot-A/shared/   (bot-A 完整接收 _shared 历史)
+   ├── subtree pull ──→ bot-A/shared/   (新 commit 也完整接收)
+   ├── subtree push ──→ _shared/        (bot 仓库的 commit 反向流入)
+   ...
 ```
 
-任何方向都允许：
-
-- _shared 改 → push → bot 仓库 pull
-- bot 仓库的 shared/ 改 → push → _shared
-- 三种流向都合法
+任何方向都允许。
 
 ## 首次接入
 
-每个 bot 仓库只在第一次接 subtree 时跑一次 `add`，之后永远只需要 `pull` 或 `push`。
+每个 bot 仓库只在第一次接 subtree 时跑一次 `add`，之后只需要 `pull` 或 `push`。
 
 ### 1. 创建远端 _shared 仓库
 
-在 GitHub（或其他 Git 平台）创建一个独立仓库，例如：
+在 GitHub（或其他 Git 平台）创建一个独立仓库：
 
 ```text
 https://github.com/Creeper-of-Fire/discord-bot-shared.git
@@ -42,44 +50,49 @@ git push -u origin main
 
 ### 3. 在 bot 仓库接入
 
-每个 bot 仓库都要跑一次：
+每个 bot 仓库都要跑一次。注意**不带 `--squash`**：
 
 ```powershell
-cd D:\Dev\Workspace\discord-bots\role_bot
+cd <bot-repo>
 
-# 先把当前所有未保存改动 commit 或 stash
+# 先确保 working tree 干净
 git status  # 必须干净
 
-# 拉 _shared 的 main 分支到本地 shared/ 目录
-git subtree add --prefix shared https://github.com/Creeper-of-Fire/discord-bot-shared.git main --squash
+# 拉 _shared 的 main 分支，完整保留所有 commit
+git subtree add --prefix shared https://github.com/Creeper-of-Fire/discord-bot-shared.git main
 ```
 
-`--squash` 让 bot 仓库只多一个 merge commit，不会把 _shared 的所有 history 都灌进来。
-
 重复对 `news_bot` 和 `odysseia_ticket_bot` 跑一遍。
+
+完成后 bot 仓库 git log 会显示：
+
+```text
+Add 'shared/' from commit '<_shared-HEAD-hash>'     ← subtree 合入点
+<... _shared 上每个原始 commit 都进来了 ...>
+<bot 仓库原 HEAD>
+```
 
 ## 日常：_shared 改了
 
 ```powershell
-# 1. 在 _shared 改完并 commit
+# 1. 在 _shared 改完并 commit（高频，可能是多次 commit）
 cd D:\Dev\Workspace\discord-bots\_shared
-# 改 shared/ 下文件
-git add shared
+git add .
 git commit -m "fix PaginatedView edge case on empty items"
 git push
 
-# 2. 三个 bot 仓库各自 pull
+# 2. 三个 bot 仓库各自 pull（不需要 squash）
 cd ..\role_bot
-git subtree pull --prefix shared https://github.com/Creeper-of-Fire/discord-bot-shared.git main --squash
+git subtree pull --prefix shared https://github.com/Creeper-of-Fire/discord-bot-shared.git main
 
 cd ..\news_bot
-git subtree pull --prefix shared https://github.com/Creeper-of-Fire/discord-bot-shared.git main --squash
+git subtree pull --prefix shared https://github.com/Creeper-of-Fire/discord-bot-shared.git main
 
 cd ..\odysseia_ticket_bot
-git subtree pull --prefix shared https://github.com/Creeper-of-Fire/discord-bot-shared.git main --squash
+git subtree pull --prefix shared https://github.com/Creeper-of-Fire/discord-bot-shared.git main
 ```
 
-每个 bot 仓库自动产生一个 merge commit，**不需要写"sync"类 message**。
+每个 bot 仓库的 pull 都会把 `_shared` 上**从上次同步点到现在之间的所有 commit**作为独立 commits 拉进来。
 
 ## 日常：bot 仓库临时改了 shared/
 
@@ -90,7 +103,7 @@ git add shared
 git commit -m "暂时在 RoleBot 加个分页补丁"
 git push  # 推到 RoleBot 远端
 
-# 把这个改动同步到 _shared（可选）
+# 反向推回 _shared（可选，但保留双向流动能力）
 git subtree push --prefix shared https://github.com/Creeper-of-Fire/discord-bot-shared.git main
 ```
 
@@ -110,7 +123,7 @@ python main.py
 
 ## 常见误区
 
-### "要不要把所有 bot 仓库都设成 _shared 的 remote？"
+### "要不要给每个 bot 仓库都加一个 _shared 的 remote？"
 
 不要。subtree 不是 submodule，不需要持续持有远端指针。pull 时显式指定远端 URL 即可。
 
@@ -120,15 +133,17 @@ python main.py
 
 ### "pull 的时候冲突怎么办？"
 
-罕见（除非两边都改了同一个文件）。如果冲突：
+罕见（除非 bot 仓库本地也改了 `shared/` 下同一文件，且 _shared 也改了）。如果冲突：
 
 1. 解决冲突
 2. `git add`
 3. `git commit`（subtree 会自动接管剩下的 merge 步骤）
 
-### "能不能反过来，bot 仓库改完不 push 回 _shared？"
+### "subtree commit 看着很丑（'Add shared/ from commit X'）"
 
-可以。shared/ 在 bot 仓库就是普通文件，可以跟 _shared 不一致——只是下次 pull 会要求 merge。
+是的，但这就是 subtree 的正常工作方式。message 含 _shared 的 HEAD commit hash，作为"同步溯源点"。**不要用 `-m` 改它**，改了会丢掉这个关键信息。
+
+要查"这次拉了哪些 commit"，在 `_shared` 仓库跑 `git log <hash>..HEAD`（hash 就是 subtree merge commit message 里的那个）。
 
 ## 跟 fork 用户的兼容性
 
