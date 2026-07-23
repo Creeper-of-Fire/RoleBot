@@ -8,7 +8,7 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Optional, TYPE_CHECKING, Dict, Union
+from typing import Optional, TYPE_CHECKING, Dict, Union, Any
 
 import discord
 import emoji
@@ -17,7 +17,8 @@ from discord.ext import commands
 
 import config
 from activity_tracker.data_manager import DataManager, BEIJING_TZ
-from activity_tracker.blacklist_data_manager import BlacklistDataManager
+from activity_tracker.blacklist_data_manager import BlacklistDataManager, BlacklistEntry
+from activity_tracker.blacklist_settings_data_manager import BlacklistSettingsDataManager
 from activity_tracker.logic import ActivityProcessor, UserReportData
 from activity_tracker.views import ActivityRoleView, ReportEmbeds, UserReportDetailView
 from utility.helpers import parse_message_link, fetch_message_from_link
@@ -87,7 +88,10 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         self.data_manager = DataManager(
             host=config.REDIS_HOST, port=config.REDIS_PORT, db=config.REDIS_DB, logger=bot.logger
         )
-        self.blacklist_manager:BlacklistDataManager = BlacklistDataManager.get_instance(logger=bot.logger)
+        self.blacklist_manager: BlacklistDataManager = BlacklistDataManager.get_instance(logger=bot.logger)
+        self.blacklist_settings_manager: BlacklistSettingsDataManager = BlacklistSettingsDataManager.get_instance(
+            logger=bot.logger
+        )
         # 用于防止并发回填任务的内存锁
         self._backfill_locks: set[int] = set(config.GUILD_IDS)
         # 用于节流更新最后同步时间戳
@@ -174,12 +178,14 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
                     result.role_remove_failed = True
 
         expiry_dt = datetime.now(BEIJING_TZ) + timedelta(days=30)
+        advice_message = self.blacklist_settings_manager.get_advice_message(guild.id)
         try:
             await user.send(
                 f"您在服务器 **{guild.name}** 因刷屏行为被加入黑名单，\n"
                 f"30 天内无法通过面板领取活跃度身份组。\n"
                 f"原因：{reason}\n"
-                f"到期时间：{expiry_dt:%Y-%m-%d %H:%M} (UTC+8)"
+                f"到期时间：{expiry_dt:%Y-%m-%d %H:%M} (UTC+8)\n\n"
+                f"{advice_message}"
             )
             result.dm_sent = True
         except discord.Forbidden:
@@ -254,6 +260,54 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             if await self.blacklist_manager.remove_from_blacklist(gid, user_id):
                 removed_any = True
         return removed_any
+
+    async def _get_active_blacklist_entry_shared(
+        self, guild_id: int, user_id: int
+    ) -> Optional[BlacklistEntry]:
+        """获取共通组内到期最晚的有效处罚记录，用于重复处罚确认。"""
+        latest_entry: Optional[BlacklistEntry] = None
+        for gid in self._get_shared_guild_ids(guild_id):
+            entry = await self.blacklist_manager.get_active_entry(gid, user_id)
+            if entry and (latest_entry is None or entry.expiry > latest_entry.expiry):
+                latest_entry = entry
+        return latest_entry
+
+    async def _confirm_repeated_blacklist_punishment(
+        self, interaction: discord.Interaction, user: discord.abc.User
+    ) -> bool:
+        """已有有效处罚时要求操作人显式确认；首次处罚直接放行。"""
+        guild = interaction.guild
+        if guild is None:
+            return False
+        # pyright 已知的问题：若 interaction.user 实际为 Member，按窄类型 User 调 __init__ 会报警。
+        # 这里 interaction.user 必来自 slash command，已经过 Discord 的校验，按 Any 传入避免 noise。
+        author: Any = interaction.user
+        entry = await self._get_active_blacklist_entry_shared(guild.id, user.id)
+        if entry is None:
+            return True
+        added_at = datetime.fromtimestamp(entry.added_at, tz=BEIJING_TZ)
+        expiry = datetime.fromtimestamp(entry.expiry, tz=BEIJING_TZ)
+        reason = entry.reason or "刷屏"
+        view = ConfirmationView(author=author)
+        sent_message = await interaction.followup.send(
+            f"⚠️ {user.mention} **已在活跃度黑名单中**。\n"
+            f"此前处罚时间：`{added_at:%Y-%m-%d %H:%M}` (UTC+8)\n"
+            f"此前处罚原因：{reason}\n"
+            f"当前到期时间：`{expiry:%Y-%m-%d %H:%M}` (UTC+8)\n\n"
+            "确定要叠加/重复处罚，并将 30 天期限从现在重新计算吗？",
+            view=view,
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        # ConfirmationView.message 仅作为超时后编辑原始消息的钩子，由 setattr 写入
+        object.__setattr__(view, "message", sent_message)
+        await view.wait()
+        if view.value:
+            return True
+
+        status = "已取消重复处罚。" if view.value is False else "确认超时，未执行重复处罚。"
+        await interaction.followup.send(status, ephemeral=True)
+        return False
 
     async def _is_blacklisted_shared(self, guild_id: int, user_id: int) -> tuple[bool, float]:
         """共通组内任一服命中即视为黑名单。返回 (是否, 最晚到期时间戳)。"""
@@ -756,11 +810,44 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
     # --- 刷屏黑名单命令 ---
 
     @requires_capability(Capability.MANAGE_BLACKLIST)
+    @activity_group.command(name="刷屏黑名单-设置劝导", description="【管理员】查看或修改处罚私信中的劝导内容。")
+    @app_commands.describe(message="新的劝导内容；不填写则查看当前内容")
+    async def blacklist_set_advice(
+        self, interaction: discord.Interaction, message: Optional[str] = None
+    ):
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message("❌ 只能在服务器内使用。", ephemeral=True)
+            return
+        current_message = self.blacklist_settings_manager.get_advice_message(guild.id)
+        if message is None:
+            await interaction.response.send_message(
+                f"当前黑名单劝导内容：\n\n{current_message}", ephemeral=True
+            )
+            return
+
+        message = message.strip()
+        if not message:
+            await interaction.response.send_message("❌ 劝导内容不能为空。", ephemeral=True)
+            return
+        if len(message) > 1500:
+            await interaction.response.send_message("❌ 劝导内容不能超过 1500 个字符。", ephemeral=True)
+            return
+
+        await self.blacklist_settings_manager.set_advice_message(guild.id, message)
+        await interaction.response.send_message(
+            f"✅ 已更新黑名单处罚私信中的劝导内容：\n\n{message}", ephemeral=True
+        )
+
+    @requires_capability(Capability.MANAGE_BLACKLIST)
     @activity_group.command(name="刷屏黑名单-添加", description="【管理员】将用户加入刷屏黑名单（30天），自动移除活跃角色。")
     @app_commands.describe(user="要加入黑名单的用户", reason='处罚原因（可选，默认为"刷屏"）')
     async def blacklist_add(self, interaction: discord.Interaction, user: discord.Member, reason: Optional[str] = None):
         await interaction.response.defer()
         reason = (reason or "刷屏").strip()
+
+        if not await self._confirm_repeated_blacklist_punishment(interaction, user):
+            return
 
         result = await self._execute_blacklist_punishment(interaction, user, reason)
 
@@ -804,6 +891,9 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
         reason = f"刷屏（右键菜单来源：{message.channel.mention}）"
 
         target_left_guild = message.guild.get_member(author.id) is None
+        if not await self._confirm_repeated_blacklist_punishment(interaction, author):
+            return
+
         result = await self._execute_blacklist_punishment(interaction, author, reason)
 
         expiry_dt = datetime.now(BEIJING_TZ) + timedelta(days=30)

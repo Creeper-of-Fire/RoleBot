@@ -17,14 +17,21 @@ class BlacklistDataManager(AsyncUserGuildDataManager[BlacklistEntry]):
     DATA_FILENAME = "activity_blacklist"
     USER_MODEL = BlacklistEntry
 
-    async def is_blacklisted(self, guild_id: int, user_id: int) -> tuple[bool, float]:
-        """检查用户是否在黑名单中。返回 (是否黑名单, 过期时间戳)。"""
+    async def get_active_entry(self, guild_id: int, user_id: int) -> Optional[BlacklistEntry]:
+        """获取仍生效的黑名单记录；过期记录会被清理。"""
         entry = self.get_user_data(guild_id, user_id)
         if not entry:
-            return False, 0.0
+            return None
         if entry.expiry < time.time():
             self.remove_user_data(guild_id, user_id)
             await self.save_data()
+            return None
+        return entry
+
+    async def is_blacklisted(self, guild_id: int, user_id: int) -> tuple[bool, float]:
+        """检查用户是否在黑名单中。返回 (是否黑名单, 过期时间戳)。"""
+        entry = await self.get_active_entry(guild_id, user_id)
+        if not entry:
             return False, 0.0
         return True, entry.expiry
 
