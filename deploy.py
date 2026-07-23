@@ -25,58 +25,36 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
+from rich.console import Console
+
 
 ROOT_DIR = Path(__file__).resolve().parent
 DOCKER_CONTAINER_NAME = "rolebot"
 REMOTE_PROJECT_NAME = "RoleBot"
 
 
-# --- 输出辅助（彩色 + 不强制 Windows ANSI） ---------------------------
+# --- 输出辅助（rich.console 统一处理颜色与 Windows VT） ---------------
 
-def _supports_color() -> bool:
-    if os.environ.get("NO_COLOR"):
-        return False
-    if not sys.stdout.isatty():
-        return False
-    if os.name == "nt":
-        # Windows 10+ 默认支持 VT，但需要 ENABLE_VT_PROCESSING
-        try:
-            import ctypes
-
-            kernel32 = ctypes.windll.kernel32
-            handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
-            mode = ctypes.c_uint32()
-            if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
-                kernel32.SetConsoleMode(handle, mode.value | 0x0004)
-                return True
-        except Exception:
-            return False
-    return True
-
-
-_COLOR = _supports_color()
-
-
-def _style(text: str, code: str) -> str:
-    if not _COLOR:
-        return text
-    return f"\033[{code}m{text}\033[0m"
+# force_terminal=None 时 rich 自动探测：交互终端走彩色、重定向走 plain，
+# 与 deploy.ps1 的 "Write-Host -ForegroundColor" 行为一致。
+_CONSOLE = Console(highlight=False)
+_ERR_CONSOLE = Console(stderr=True, highlight=False)
 
 
 def info(text: str) -> None:
-    print(_style(text, "36"), flush=True)  # cyan
+    _CONSOLE.print(f"[cyan]{text}[/cyan]")
 
 
 def warn(text: str) -> None:
-    print(_style(text, "33"), flush=True)  # yellow
+    _CONSOLE.print(f"[yellow]{text}[/yellow]")
 
 
 def ok(text: str) -> None:
-    print(_style(text, "32"), flush=True)  # green
+    _CONSOLE.print(f"[green]{text}[/green]")
 
 
 def err(text: str) -> None:
-    print(_style(text, "31"), file=sys.stderr, flush=True)  # red
+    _ERR_CONSOLE.print(f"[red]{text}[/red]")
 
 
 def die(text: str, code: int = 1) -> None:
@@ -165,7 +143,7 @@ def package_project(root: Path) -> Path:
 
 def run(cmd: list[str], *, check: bool = True, **kwargs) -> subprocess.CompletedProcess:
     """统一的 subprocess 调用。check=True 时非零退出码抛出。"""
-    print(_style(f"   $ {' '.join(shlex.quote(c) for c in cmd)}", "90"), flush=True)
+    _CONSOLE.print(f"   [grey50]$ {' '.join(shlex.quote(c) for c in cmd)}[/grey50]")
     return subprocess.run(cmd, check=check, **kwargs)
 
 
