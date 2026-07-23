@@ -1,8 +1,14 @@
 # discord-bot-shared
 
-三个 Discord Bot 仓库共享的基础设施代码的 source of truth。
+> ⚠️ **本文件**位于 `_shared/` 仓库的根目录；通过 `git subtree --prefix shared` 被引入到当前 bot 仓库的 `shared/` 子目录中。它不是当前 bot 项目本身的文档——bot 项目说明请看仓库根目录的 `README`。
 
-不是 PyPI 包、不是 submodule、不是 monorepo —— 只是一个版本化的独立仓库，配合 `git subtree` 让三个 bot 仓库各持有一份本地副本。
+---
+
+三个 Discord Bot 仓库（NewsBot / OdysseiaTicketBot / RoleBot）共享的基础设施代码的 source of truth。
+
+不是 PyPI 包、不是 git submodule、不是 monorepo —— 只是一个版本化的独立仓库，配合 `git subtree` 让三个 bot 仓库各持有一份本地副本。
+
+如果你看到 `shared/` 目录出现在了某 bot 仓库下，说明这个 bot 已经接入了 subtree。`shared/` 里的所有文件都是普通的本地副本，可以独立编辑（push 不会被自动同步，要双向流动请显式 `git subtree push`）。
 
 ## 设计目标
 
