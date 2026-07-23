@@ -2,14 +2,14 @@
 from __future__ import annotations
 
 import typing
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 import discord
 from discord import ui
 
 from activity_tracker.data_manager import BEIJING_TZ
 from activity_tracker.logic import UserReportData, SortedDisplayItem
-from utility.paginated_view import PaginatedView
+from shared.ui.paginated_view import PaginatedView
 
 if typing.TYPE_CHECKING:
     from .TrackActivityCog import TrackActivityCog

@@ -8,8 +8,8 @@ from discord import ui, ButtonStyle, Embed, Color, SelectOption
 
 from role_system.role_jukebox.models import Track, Preset, TrackMode, PlayerAction, DashboardMode
 from role_system.role_jukebox.share_view import create_dashboard_embed, PreviewBtn
-from utility.paginated_view import PaginatedView
-from utility.views import ConfirmationView
+from shared.ui.paginated_view import PaginatedView
+from shared.ui.views import ConfirmationView
 
 if TYPE_CHECKING:
     from role_system.role_jukebox.RoleJukeboxCog import RoleJukeboxCog

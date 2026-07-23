@@ -13,7 +13,7 @@ if typing.TYPE_CHECKING:
     from role_system.fashion.FashionCog import FashionCog
 from utility.helpers import safe_defer
 from utility.role_service import update_member_roles
-from utility.paginated_view import PaginatedView
+from shared.ui.paginated_view import PaginatedView
 
 FASHION_ROLES_PER_PAGE = 25
 

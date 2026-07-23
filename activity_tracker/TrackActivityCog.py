@@ -22,9 +22,9 @@ from activity_tracker.blacklist_settings_data_manager import BlacklistSettingsDa
 from activity_tracker.logic import ActivityProcessor, UserReportData
 from activity_tracker.views import ActivityRoleView, ReportEmbeds, UserReportDetailView
 from utility.helpers import parse_message_link, fetch_message_from_link
-from utility.paginated_view import PaginatedView
-from utility.permison import is_super_admin, is_admin, requires_capability, Capability
-from utility.views import ConfirmationView
+from shared.ui.paginated_view import PaginatedView
+from utility.permison import is_super_admin, requires_capability, Capability
+from shared.ui.views import ConfirmationView
 
 if TYPE_CHECKING:
     from main import RoleBot

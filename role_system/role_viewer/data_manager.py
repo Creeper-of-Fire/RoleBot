@@ -4,7 +4,7 @@ from typing import Dict, List
 
 from pydantic import BaseModel, Field
 
-from utility.base_data_manager import AsyncJsonDataManager
+from shared.data.json_manager import AsyncJsonDataManager
 
 DATA_NAME = "role_viewer_separator_roles"
 

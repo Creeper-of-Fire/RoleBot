@@ -8,7 +8,7 @@ import typing
 import discord
 from discord import ui, Color
 
-from utility.paginated_view import PaginatedView
+from shared.ui.paginated_view import PaginatedView
 from utility.helpers import safe_defer
 from utility.auth import is_role_dangerous
 from utility.role_service import update_member_roles

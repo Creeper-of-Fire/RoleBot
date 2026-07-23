@@ -1,11 +1,7 @@
 # honor_system/json_data_manager.py
-import json
-import logging
-import os
-import threading
 from typing import Dict, Any, Optional, List
 
-from utility.base_data_manager import AsyncJsonDataManager
+from shared.data.json_manager import AsyncJsonDataManager
 
 DATA_NAME = "claimable_honor_panels"
 

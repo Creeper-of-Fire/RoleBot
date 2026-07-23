@@ -13,7 +13,7 @@ from role_system.role_viewer.data_manager import SeparatorDataManager
 from role_system.role_viewer.view import RoleOrderView
 from utility.feature_cog import FeatureCog, PanelEntry
 from utility.helpers import safe_defer, try_get_member
-from utility.views import ConfirmationView
+from shared.ui.views import ConfirmationView
 
 if typing.TYPE_CHECKING:
     from main import RoleBot

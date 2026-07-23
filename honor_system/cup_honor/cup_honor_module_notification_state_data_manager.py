@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 
-from pydantic import RootModel, Field, ConfigDict
+from pydantic import RootModel, Field
 
-from utility.base_data_manager import AsyncJsonDataManager
+from shared.data.json_manager import AsyncJsonDataManager
 
 DATA_NAME = "cup_honor_notified"
 

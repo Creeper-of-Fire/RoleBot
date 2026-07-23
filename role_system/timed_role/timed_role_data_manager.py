@@ -8,7 +8,7 @@ import discord
 
 import config
 from role_system.timed_role import timer
-from utility.base_data_manager import AsyncJsonDataManager
+from shared.data.json_manager import AsyncJsonDataManager
 from utility.role_service import batch_update_member_roles
 
 if TYPE_CHECKING:

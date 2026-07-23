@@ -15,7 +15,7 @@ from discord import app_commands, ui
 from discord.ext import commands, tasks
 
 import config_data
-from utility.views import ConfirmationView
+from shared.ui.views import ConfirmationView
 from .cup_honor_json_manager import CupHonorJsonManager
 from .cup_honor_models import CupHonorDefinition
 from honor_system.data_manager.honor_data_manager import HonorDataManager

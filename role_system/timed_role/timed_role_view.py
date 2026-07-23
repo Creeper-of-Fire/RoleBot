@@ -10,7 +10,7 @@ from role_system.timed_role import timer
 from role_system.timed_role.timer import get_daily_limit_seconds
 from utility.auth import is_role_dangerous
 from utility.helpers import safe_defer, format_duration_hms
-from utility.paginated_view import PaginatedView
+from shared.ui.paginated_view import PaginatedView
 from utility.role_service import update_member_roles
 
 if TYPE_CHECKING:

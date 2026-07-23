@@ -8,7 +8,7 @@ from discord import ui, Color
 import config
 from utility.auth import is_role_dangerous
 from utility.helpers import try_get_member, safe_defer
-from utility.paginated_view import PaginatedView
+from shared.ui.paginated_view import PaginatedView
 from utility.role_service import update_member_roles
 
 if TYPE_CHECKING:

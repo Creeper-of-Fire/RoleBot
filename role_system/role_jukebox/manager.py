@@ -9,7 +9,7 @@ from typing import List, Optional, Tuple
 import aiofiles
 
 from role_system.role_jukebox.models import JukeboxData, GuildData, Track, Preset, TrackMode, PlayerAction
-from utility.base_data_manager import AsyncJsonDataManager, DATA_DIR
+from shared.data.json_manager import AsyncJsonDataManager, DATA_DIR
 
 # 使用新文件名以避免旧数据冲突，实现“不需要兼容”
 DATA_NAME = "jukebox_data"

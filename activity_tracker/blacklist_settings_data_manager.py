@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 
-from utility.base_data_manager import AsyncGuildDataManager
+from shared.data.json_manager import AsyncGuildDataManager
 
 
 DEFAULT_ADVICE_MESSAGE = "请去聊天区随便聊聊，不要在资源区无故唤起或占用活跃线程。"

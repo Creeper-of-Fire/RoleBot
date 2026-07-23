@@ -1,8 +1,8 @@
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import timezone, timedelta
 from typing import Optional
 from pydantic import BaseModel
-from utility.base_data_manager import AsyncUserGuildDataManager
+from shared.data.json_manager import AsyncUserGuildDataManager
 
 BEIJING_TZ = timezone(timedelta(hours=8))
 

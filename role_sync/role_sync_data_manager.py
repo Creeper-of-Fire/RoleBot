@@ -2,7 +2,7 @@
 
 from typing import Dict, List
 
-from utility.base_data_manager import AsyncJsonDataManager
+from shared.data.json_manager import AsyncJsonDataManager
 
 DATA_NAME = "role_sync_log"
 

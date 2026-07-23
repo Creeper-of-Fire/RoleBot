@@ -17,7 +17,7 @@ from utility.auth import is_role_dangerous
 from utility.feature_cog import FeatureCog, PanelEntry
 from utility.helpers import create_progress_bar
 from utility.permison import is_super_admin
-from utility.views import ConfirmationView
+from shared.ui.views import ConfirmationView
 
 if typing.TYPE_CHECKING:
     from main import RoleBot

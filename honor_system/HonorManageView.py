@@ -9,7 +9,7 @@ from discord import Color, ui
 
 import config_data
 from honor_system.honor_def_models import HonorDefinition, UserHonor
-from utility.paginated_view import PaginatedView
+from shared.ui.paginated_view import PaginatedView
 
 if typing.TYPE_CHECKING:
     from honor_system.HonorCog import HonorCog

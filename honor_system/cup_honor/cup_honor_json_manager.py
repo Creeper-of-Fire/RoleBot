@@ -6,7 +6,7 @@ from typing import Dict, List, Optional
 
 from pydantic import RootModel, Field
 
-from utility.base_data_manager import AsyncJsonDataManager
+from shared.data.json_manager import AsyncJsonDataManager
 from .cup_honor_models import CupHonorDefinition
 
 DATA_NAME = "cup_honors"
