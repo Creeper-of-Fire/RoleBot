@@ -2,15 +2,18 @@
 from __future__ import annotations
 
 import asyncio
+import re
+from pathlib import Path
 from typing import cast, Optional, TYPE_CHECKING, Dict, List
 
 import discord
 from discord import ui, Color, app_commands
 
 import config
-import config_data
 from core.embed_link.embed_manager import EmbedLinkManager
 from honor_system.cup_honor.cup_honor_json_manager import CupHonorJsonManager
+from honor_system.config_models import HonorGuildConfig
+from shared.config.toml_manager import TomlConfigManager
 from utility.feature_cog import FeatureCog, PanelEntry
 from honor_system.module.common_models import BaseHonorDefinition
 from honor_system.getCogs import getHonorAnniversaryModuleCog, getRoleClaimHonorModuleCog
@@ -30,6 +33,13 @@ class HonorCog(FeatureCog, name="Honor"):
         super().__init__(bot)  # 调用父类 (FeatureCog) 的构造函数
         self.data_manager = HonorDataManager.getDataManager(logger=self.logger)
         self.cup_honor_manager = CupHonorJsonManager.get_instance(logger=self.logger)
+        # honor toml 配置（每个 guild 一份 data/honor_{guild_id}.toml）
+        self.honor_config = TomlConfigManager(
+            data_dir=Path("data"),
+            filename_pattern="honor_{guild_id}.toml",
+            model_class=HonorGuildConfig,
+            doc_path=Path("docs") / "荣誉系统使用手册.md",
+        )
         self.running_backfill_tasks: Dict[int, asyncio.Task] = {}
         # 安全缓存，用于存储此模块管理的所有身份组ID
         self.safe_honor_role_ids: set[int] = set()
@@ -117,17 +127,36 @@ class HonorCog(FeatureCog, name="Honor"):
             )
         ]
 
+    def _iter_configured_guild_ids(self) -> list[int]:
+        """返回所有已配置 toml 的 guild_id（按 data/honor_*.toml 遍历）。"""
+        data_dir = Path("data")
+        if not data_dir.exists():
+            return []
+        guild_ids: list[int] = []
+        for toml_path in data_dir.glob("honor_*.toml"):
+            m = re.match(r"honor_(\d+)\.toml", toml_path.name)
+            if m:
+                guild_ids.append(int(m.group(1)))
+        return guild_ids
+
     def get_all_config_honor_definitions(self) -> list[BaseHonorDefinition]:
         """
-        获取所有配置源（config.py, cup_honors.json）中的荣誉定义，
+        获取所有配置源（honor_{guild_id}.toml + cup_honors.json）中的荣誉定义，
         并以统一的 BaseHonorDefinition 模型对象列表返回。
         """
         all_definitions: list[BaseHonorDefinition] = []
 
-        # 1. 从 config_data.py 加载普通荣誉
-        for guild_id, guild_config in config_data.HONOR_CONFIG.items():
-            for honor_dict in guild_config.get("definitions", []):
-                all_definitions.append(BaseHonorDefinition.model_validate(honor_dict))
+        # 1. 从 honor_{guild_id}.toml 加载普通荣誉（按 data/ 目录下的 toml 文件遍历）
+        for guild_id in self._iter_configured_guild_ids():
+            try:
+                cfg = self.honor_config.load(guild_id)
+            except Exception as e:
+                self.logger.error(
+                    "加载 honor toml 失败 guild %s: %s", guild_id, e,
+                )
+                continue
+            for item in cfg.definitions:
+                all_definitions.append(BaseHonorDefinition.model_validate(item.model_dump()))
 
         # 2. 从 JSON文件 加载杯赛荣誉
         self.cup_honor_manager.load_data()  # 确保加载最新数据
@@ -135,7 +164,6 @@ class HonorCog(FeatureCog, name="Honor"):
         # CupHonorDefinition 已经是 BaseHonorDefinition 的子类，可以直接添加
         all_definitions.extend(all_cup_honors)
 
-        # 3. 合并所有合法的、不应被归档的荣誉UUID
         return all_definitions
 
     async def synchronize_all_honor_definitions(self):
@@ -147,34 +175,42 @@ class HonorCog(FeatureCog, name="Honor"):
 
         # 2. 遍历配置，处理创建和更新
         with self.data_manager.get_db() as db:
-            for guild_id, guild_config in config_data.HONOR_CONFIG.items():
+            for guild_id in self._iter_configured_guild_ids():
                 self.logger.info(f"同步服务器 {guild_id} 的荣誉...")
-                for config_def in guild_config.get("definitions", []):
+                try:
+                    cfg = self.honor_config.load(guild_id)
+                except Exception as e:
+                    self.logger.error(
+                        "加载 honor toml 失败 guild %s: %s", guild_id, e,
+                    )
+                    continue
+                for config_def in cfg.definitions:
+                    config_dict = config_def.model_dump()
                     # 查找当前配置项对应的数据库记录 (通过 UUID)
-                    db_def = db.query(HonorDefinition).filter_by(uuid=config_def['uuid']).one_or_none()
+                    db_def = db.query(HonorDefinition).filter_by(uuid=config_dict['uuid']).one_or_none()
 
                     if db_def:
                         # 记录存在，更新它
-                        db_def.name = config_def['name']
-                        db_def.description = config_def['description']
-                        db_def.role_id = config_def.get('role_id', None)
-                        db_def.icon_url = config_def.get('icon_url', None)
+                        db_def.name = config_dict['name']
+                        db_def.description = config_dict['description']
+                        db_def.role_id = config_dict.get('role_id', None)
+                        db_def.icon_url = config_dict.get('icon_url', None)
                         db_def.guild_id = guild_id
-                        db_def.hidden_until_earned = config_def.get('hidden_until_earned', True)  # 确保有默认值
+                        db_def.hidden_until_earned = config_dict.get('hidden_until_earned', True)  # 确保有默认值
                         db_def.is_archived = False  # 确保它处于激活状态
                     else:
                         # 记录不存在，创建它
                         new_def = HonorDefinition(
-                            uuid=config_def['uuid'],
+                            uuid=config_dict['uuid'],
                             guild_id=guild_id,
-                            name=config_def['name'],
-                            description=config_def['description'],
-                            role_id=config_def.get('role_id', None),
-                            icon_url=config_def.get('icon_url', None),
-                            hidden_until_earned=config_def.get('hidden_until_earned', True),  # 确保有默认值
+                            name=config_dict['name'],
+                            description=config_dict['description'],
+                            role_id=config_dict.get('role_id', None),
+                            icon_url=config_dict.get('icon_url', None),
+                            hidden_until_earned=config_dict.get('hidden_until_earned', True),  # 确保有默认值
                         )
                         db.add(new_def)
-                        self.logger.info(f"  -> 已创建新荣誉: {config_def['name']}")
+                        self.logger.info(f"  -> 已创建新荣誉: {config_dict['name']}")
 
             # 5. 归档操作：只归档那些既不在config也不在cup_honor.json中的荣誉
             db_uuids_to_check = db.query(HonorDefinition.uuid).filter(HonorDefinition.is_archived == False).all()

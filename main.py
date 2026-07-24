@@ -17,8 +17,8 @@ from role_system.fashion.FashionCog import FashionCog
 from honor_system.module.anniversary_module import HonorAnniversaryModuleCog
 from honor_system.module.claimable_honor_module import ClaimableHonorModuleCog
 from honor_system.HonorCog import HonorCog
+from honor_system.HonorConfigCog import HonorConfigCog
 from honor_system.cup_honor.cup_honor_module import CupHonorModuleCog
-from honor_system.module.post_module import HonorPostModuleCog
 from honor_system.module.role_sync_honor_module import RoleClaimHonorModuleCog
 from information.HeartbeatInformationCog import HeartbeatInformationCog
 from role_system.model_fan_roles.ModelFanRolesCog import ModelFanRolesCog
@@ -159,8 +159,8 @@ class CogManager:
             "role_viewer": RoleViewerCog,
             "honor_system": [
                 HonorCog,
+                HonorConfigCog,
                 HonorAnniversaryModuleCog,
-                HonorPostModuleCog,
                 ClaimableHonorModuleCog,
                 CupHonorModuleCog,
                 RoleClaimHonorModuleCog,

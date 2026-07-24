@@ -7,7 +7,6 @@ from typing import Literal, List, Optional
 import discord
 from discord import Color, ui
 
-import config_data
 from honor_system.honor_def_models import HonorDefinition, UserHonor
 from shared.ui.paginated_view import PaginatedView
 
@@ -328,12 +327,20 @@ class HonorManageView(PaginatedView):
         guild = self.guild
         member = self.member
         honor_shown_list: List[HonorShownData] = []
-        guild_config = config_data.HONOR_CONFIG.get(guild.id, {})
-        all_config_definitions_raw = guild_config.get("definitions", [])
-        config_uuid_order_map = {
-            definition['uuid']: index
-            for index, definition in enumerate(all_config_definitions_raw)
-        }
+        # 读 toml，按 definitions 在 toml 里的顺序给 uuid 建索引（用于排序展示）
+        raw = self.cog.honor_config.read_raw(guild.id)
+        if raw is not None:
+            try:
+                cfg = self.cog.honor_config._parse(raw, guild.id)
+                config_uuid_order_map = {
+                    d.uuid: index
+                    for index, d in enumerate(cfg.definitions)
+                }
+            except Exception as e:
+                self.cog.logger.error(f"加载 honor toml 失败 guild {guild.id}: {e}")
+                config_uuid_order_map = {}
+        else:
+            config_uuid_order_map = {}
         all_definitions_from_db = self.cog.data_manager.get_all_honor_definitions(guild.id)
         user_honor_instances = self.cog.data_manager.get_user_honors(member.id)
         member_role_ids = {role.id for role in member.roles}

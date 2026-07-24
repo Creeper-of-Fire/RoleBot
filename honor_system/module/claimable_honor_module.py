@@ -1,6 +1,7 @@
 # honor_system/claimable_honor_module.py
 from __future__ import annotations
 
+from pathlib import Path
 from typing import cast, Optional, List, TYPE_CHECKING
 
 import discord
@@ -8,11 +9,12 @@ from discord import app_commands, ui
 from discord.ext import commands
 
 import config
-import config_data
 from honor_system.HonorCog import HonorCog  # 导入主模块的Cog和View
 from honor_system.HonorManageView import HonorManageView
+from honor_system.config_models import HonorGuildConfig
 from honor_system.data_manager.honor_data_manager import HonorDataManager
 from honor_system.data_manager.json_data_manager import HonorPanelDataManager
+from shared.config.toml_manager import TomlConfigManager
 
 if TYPE_CHECKING:
     from main import RoleBot
@@ -63,8 +65,7 @@ class ClaimableHonorView(ui.View):
         honor_uuid = panel_info['honor_uuid']
 
         # 检查该荣誉是否仍在配置文件的可领取列表中
-        guild_config = config_data.HONOR_CONFIG.get(interaction.guild_id, {})
-        claimable_uuids = guild_config.get("claimable_honors", [])
+        claimable_uuids = self._get_claimable_uuids(interaction.guild_id)
         if honor_uuid not in claimable_uuids:
             await interaction.followup.send("❌ 此荣誉当前已无法通过此面板领取，可能活动已结束/管理员已移除。", ephemeral=True)
             return
@@ -152,6 +153,24 @@ class ClaimableHonorModuleCog(commands.Cog, name="ClaimableHonorModule"):
         self.logger = bot.logger
         self.data_manager = HonorDataManager.getDataManager(logger=self.logger)
         self.json_manager = HonorPanelDataManager.get_instance(logger=self.logger)
+        self.honor_config = TomlConfigManager(
+            data_dir=Path("data"),
+            filename_pattern="honor_{guild_id}.toml",
+            model_class=HonorGuildConfig,
+            doc_path=Path("docs") / "荣誉系统使用手册.md",
+        )
+
+    def _get_claimable_uuids(self, guild_id: int) -> list[str]:
+        """按 guild_id 取可领取的 honor uuid 列表；无 toml 返回 []。"""
+        raw = self.honor_config.read_raw(guild_id)
+        if raw is None:
+            return []
+        try:
+            cfg = self.honor_config._parse(raw, guild_id)
+        except Exception as e:
+            self.logger.error(f"加载 honor toml 失败 guild {guild_id}: {e}")
+            return []
+        return list(cfg.claimable.uuids)
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -175,8 +194,7 @@ class ClaimableHonorModuleCog(commands.Cog, name="ClaimableHonorModule"):
             current: str,
     ) -> List[app_commands.Choice[str]]:
         """为荣誉UUID参数提供自动补全选项。"""
-        guild_config = config_data.HONOR_CONFIG.get(interaction.guild_id, {})
-        claimable_uuids = guild_config.get("claimable_honors", [])
+        claimable_uuids = self._get_claimable_uuids(interaction.guild_id)
 
         if not claimable_uuids:
             return []

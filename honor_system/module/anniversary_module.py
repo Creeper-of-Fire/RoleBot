@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import typing
+from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -12,9 +13,10 @@ from discord import app_commands
 from discord.ext import commands
 
 import config
-import config_data
 from activity_tracker_db.activity_data_manager import ActivityDataManager
+from honor_system.config_models import HonorGuildConfig
 from honor_system.data_manager.honor_data_manager import HonorDataManager
+from shared.config.toml_manager import TomlConfigManager
 
 if typing.TYPE_CHECKING:
     from main import RoleBot
@@ -28,6 +30,12 @@ class HonorAnniversaryModuleCog(commands.Cog, name="HonorAnniversaryModule"):
         self.bot = bot
         self.honor_data_manager = HonorDataManager.getDataManager(logger=bot.logger)
         self.activity_data_manager = ActivityDataManager.getDataManager(logger=bot.logger)
+        self.honor_config = TomlConfigManager(
+            data_dir=Path("data"),
+            filename_pattern="honor_{guild_id}.toml",
+            model_class=HonorGuildConfig,
+            doc_path=Path("docs") / "荣誉系统使用手册.md",
+        )
 
     async def check_and_grant_anniversary_honor(self, member: discord.Member, guild: discord.Guild):
         """
@@ -50,11 +58,20 @@ class HonorAnniversaryModuleCog(commands.Cog, name="HonorAnniversaryModule"):
         }
         """
         # 1. 获取配置
-        guild_config = config_data.HONOR_CONFIG.get(guild.id, {})
-        anniversary_cfg = guild_config.get("anniversary_honor", {})
+        #    guild 没 toml → 静默 skip（之前 HONOR_CONFIG.get(guild.id, {}) 也是这个语义）
+        toml_raw = self.honor_config.read_raw(guild.id)
+        if toml_raw is None:
+            return
+        try:
+            guild_config = self.honor_config._parse(toml_raw, guild.id)
+        except Exception as e:
+            self.logger.error(f"加载 honor toml 失败 guild {guild.id}: {e}")
+            return
+        anniversary_cfg = guild_config.anniversary_honor
 
         # 检查功能是否启用以及是否配置了荣誉等级
-        if not anniversary_cfg.get("enabled") or not anniversary_cfg.get("tiers"):
+        # anniversary_cfg 是 pydantic 模型，用属性访问（不是 dict.get()）
+        if not anniversary_cfg.enabled or not anniversary_cfg.tiers:
             return
 
         # 2. 确定用于比较的加入时间 (此部分逻辑不变)
@@ -81,9 +98,9 @@ class HonorAnniversaryModuleCog(commands.Cog, name="HonorAnniversaryModule"):
         user_honor_uuids = {uh.honor_uuid for uh in user_honors}  # 使用集合以提高查找效率
 
         # 4. 遍历所有荣誉等级，检查并授予
-        for tier in anniversary_cfg["tiers"]:
-            honor_uuid = tier.get("honor_uuid")
-            cutoff_date_str = tier.get("cutoff_date")
+        for tier in anniversary_cfg.tiers:
+            honor_uuid = tier.honor_uuid
+            cutoff_date_str = tier.cutoff_date
 
             # 检查当前等级的配置是否完整
             if not honor_uuid or not cutoff_date_str:

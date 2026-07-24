@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime
 import re
 import typing
+from pathlib import Path
 from typing import List
 from typing import Optional
 from typing import Set
@@ -14,14 +15,15 @@ import discord
 from discord import app_commands, ui
 from discord.ext import commands, tasks
 
-import config_data
 from shared.ui.views import ConfirmationView
 from .cup_honor_json_manager import CupHonorJsonManager
 from .cup_honor_models import CupHonorDefinition
+from honor_system.config_models import HonorGuildConfig, CupHonorNotification
 from honor_system.data_manager.honor_data_manager import HonorDataManager
 from honor_system.honor_def_models import UserHonor, HonorDefinition
 from .cup_honor_module_notification_state_data_manager import NotificationStateManager
 from .cup_honor_module_view import CupHonorManageView
+from shared.config.toml_manager import TomlConfigManager
 
 if typing.TYPE_CHECKING:
     from main import RoleBot
@@ -180,11 +182,30 @@ class CupHonorModuleCog(commands.Cog, name="CupHonorModule"):
         self.cup_honor_manager = CupHonorJsonManager.get_instance(logger=self.logger)
         # 用于存储已发送过通知的荣誉UUID，防止重复提醒
         self.notification_manager = NotificationStateManager.get_instance(logger=self.logger)
+        # honor toml 元配置（每个 guild 一份 data/honor_{guild_id}.toml）—— cup_honor.notification
+        self.honor_config = TomlConfigManager(
+            data_dir=Path("data"),
+            filename_pattern="honor_{guild_id}.toml",
+            model_class=HonorGuildConfig,
+            doc_path=Path("docs") / "荣誉系统使用手册.md",
+        )
         self.expiration_check_loop.start()
 
     def cog_unload(self):
         """当Cog被卸载时，取消后台任务。"""
         self.expiration_check_loop.cancel()
+
+    def _iter_configured_guild_ids(self) -> list[int]:
+        """按 data/honor_*.toml 列出所有配置 toml 的 guild_id。"""
+        data_dir = Path("data")
+        if not data_dir.exists():
+            return []
+        guild_ids: list[int] = []
+        for toml_path in data_dir.glob("honor_*.toml"):
+            m = re.match(r"honor_(\d+)\.toml", toml_path.name)
+            if m:
+                guild_ids.append(int(m.group(1)))
+        return guild_ids
 
     # --- 后台任务：检查过期的杯赛头衔 ---
     async def _perform_expiration_check(self):
@@ -196,9 +217,17 @@ class CupHonorModuleCog(commands.Cog, name="CupHonorModule"):
         try:
             now_aware = datetime.datetime.now(ZoneInfo("Asia/Shanghai"))
 
-            for guild_id, guild_config in config_data.HONOR_CONFIG.items():
-                cup_cfg = guild_config.get("cup_honor", {})
-                if not cup_cfg.get("enabled"):
+            for guild_id in self._iter_configured_guild_ids():
+                raw = self.honor_config.read_raw(guild_id)
+                if raw is None:
+                    continue
+                try:
+                    cfg = self.honor_config._parse(raw, guild_id)
+                except Exception as e:
+                    self.logger.error(f"加载 honor toml 失败 guild {guild_id}: {e}")
+                    continue
+                cup_cfg = cfg.cup_honor
+                if not cup_cfg.enabled:
                     continue
 
                 guild = self.bot.get_guild(guild_id)
@@ -261,12 +290,16 @@ class CupHonorModuleCog(commands.Cog, name="CupHonorModule"):
                 db.commit()
                 self.logger.info(f"已在数据库中归档荣誉 {honor_uuid}。")
 
-    async def _check_guild_for_expired_titles(self, guild: discord.Guild, cup_cfg: dict, now: datetime.datetime):
-        """处理单个服务器的过期检查逻辑。"""
-        titles = self.cup_honor_manager.get_all_cup_honors()
-        notification_cfg = cup_cfg.get("notification", {})
+    async def _check_guild_for_expired_titles(self, guild: discord.Guild, cup_cfg, now: datetime.datetime):
+        """处理单个服务器的过期检查逻辑。
 
-        if not titles or not notification_cfg.get("channel_id") or not notification_cfg.get("admin_role_id"):
+        Args:
+            cup_cfg: honor_system.config_models.CupHonorConfig（pydantic 模型）
+        """
+        titles = self.cup_honor_manager.get_all_cup_honors()
+        notification_cfg = cup_cfg.notification
+
+        if not titles or not notification_cfg.channel_id or not notification_cfg.admin_role_id:
             self.logger.warning(f"服务器 {guild.name} 的杯赛头衔配置不完整，跳过。")
             return
 
@@ -282,15 +315,16 @@ class CupHonorModuleCog(commands.Cog, name="CupHonorModule"):
                 await self.notification_manager.add_notified(honor_uuid)
 
     async def _notify_admin_for_expired_honor(self, guild: discord.Guild, honor_uuid: str, exp_date: datetime.datetime,
-                                              notify_cfg: dict):
+                                              notify_cfg: CupHonorNotification):
         """为单个过期的荣誉构建并发送包含数据健康检查的智能通知。"""
         honor_def = self.honor_data_manager.get_honor_definition_by_uuid(honor_uuid)
         if not honor_def or not honor_def.role_id:
             self.logger.warning(f"荣誉 {honor_uuid} 定义无效或未关联身份组，无法发送到期通知。")
             return
 
-        notification_channel = guild.get_channel(notify_cfg["channel_id"])
-        admin_role = guild.get_role(notify_cfg["admin_role_id"])
+        # notify_cfg 是 pydantic CupHonorNotification，用属性访问（不是 dict[key]）
+        notification_channel = guild.get_channel(notify_cfg.channel_id)
+        admin_role = guild.get_role(notify_cfg.admin_role_id)
 
         if not notification_channel or not admin_role:
             self.logger.error(f"无法在服务器 {guild.name} 中找到通知频道或管理员身份组。")
