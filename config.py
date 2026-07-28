@@ -50,7 +50,7 @@ COGS = {
     "role_sync": {
         "enabled": True,
     },
-    "role_viewer":{
+    "role_viewer": {
         "enabled": True,
     },
     "role_application": {
@@ -215,6 +215,8 @@ SUPER_ADMIN_USER_IDS: typing.Set[int] = {
 # 注意：这里包含角色ID和特定的用户ID。
 ADMIN_ROLE_IDS: typing.Set[int] = {
     1396831061643755520,  # 赛事委员会
+    1337450755791261766,  # 管理组
+    1289224017789583453,  # Discord Admin 权限（最高管理员）
 }
 
 ADMIN_USER_IDS: typing.Set[int] = {
@@ -246,15 +248,17 @@ ADMIN_USER_IDS: typing.Set[int] = {
 # 身份组 ID 别名（方便阅读，避免散落的 magic number）
 ROLE_IDS: typing.Dict[str, int] = {
     "DISCIPLINARY": 1522155542695514252,  # 风纪委员
-    "EVENT_ADMIN":  1396831061643755520,  # 赛事委员会
+    "EVENT_ADMIN": 1396831061643755520,  # 赛事委员会
     "SERVER_ADMIN": 1337450755791261766,  # 管理组
 }
 
+
 class Capability(StrEnum):
     """身份组的能力标签——把'用哪个身份组'从代码里抽出来"""
-    MANAGE_BLACKLIST = "manage_blacklist"   # 刷屏黑名单增删查 + 右键菜单
-    ADMIN_TOOLS = "admin_tools"             # 赛事委员一级的运维（当前未挂命令）
-    SYSTEM_ADMIN = "system_admin"           # 超级管理员专属（当前未挂命令）
+    MANAGE_BLACKLIST = "manage_blacklist"  # 刷屏黑名单增删查 + 右键菜单
+    ADMIN_TOOLS = "admin_tools"  # 赛事委员一级的运维（当前未挂命令）
+    SYSTEM_ADMIN = "system_admin"  # 超级管理员专属（当前未挂命令）
+
 
 # 把 capability 映射到**身份组** ID 集合（用户不在这张表里）
 # 同一 capability 可以被多个身份组拥有——任一即可
