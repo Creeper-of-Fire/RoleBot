@@ -16,21 +16,19 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import TYPE_CHECKING, List, Optional
 
 import discord
 from discord import app_commands
 
 import config
-from honor_system.config_models import HonorGuildConfig
 from honor_system.getCogs import getHonorCog
+from honor_system.honor_config_manager import HonorConfigManager
 from shared.config.toml_command import (
     handle_toml_download,
     handle_toml_upload,
     handle_toml_view_hash,
 )
-from shared.config.toml_manager import TomlConfigManager
 from utility.feature_cog import FeatureCog, PanelEntry
 from utility.permison import is_admin
 
@@ -46,19 +44,13 @@ class HonorConfigCog(FeatureCog):
     继承 FeatureCog（按项目约定所有 honor_system 下的 cog 都通过 FeatureCog
     注册到 CoreCog）。本 cog 不管理身份组缓存，也不进主面板——
     两个 abstractmethod 实现为空操作（HonorCog 已经管了所有 honor role 缓存）。
+
+    注：本 cog 的 ``manager`` 是 HonorConfigManager 单例；cache 也由 manager 维护。
     """
 
     def __init__(self, bot: "RoleBot"):
         super().__init__(bot)
-        self.manager = TomlConfigManager(
-            data_dir=Path("data"),
-            filename_pattern="honor_{guild_id}.toml",
-            model_class=HonorGuildConfig,
-            doc_path=Path("docs") / "荣誉系统使用手册.md",
-        )
-        # 缓存：按 guild_id 缓存最近一次 load 的 HonorGuildConfig
-        # 上传时清空；HonorCog 同步数据库时也能拿到
-        self._configs: dict[int, HonorGuildConfig] = {}
+        self.manager = HonorConfigManager.get_instance()
         self.logger.info("荣誉配置 Cog 已加载")
 
     async def update_safe_roles_cache(self) -> None:
@@ -68,15 +60,6 @@ class HonorConfigCog(FeatureCog):
     def get_main_panel_entries(self) -> Optional[List[PanelEntry]]:
         """FeatureCog 抽象接口：本 cog 不进主面板。"""
         return None
-
-    def get_config(self, guild_id: int) -> HonorGuildConfig:
-        """按 guild_id 取 toml 配置（延迟加载 + 缓存）。"""
-        if guild_id not in self._configs:
-            self._configs[guild_id] = self.manager.load(guild_id)
-        return self._configs[guild_id]
-
-    def _invalidate_config(self, guild_id: int) -> None:
-        self._configs.pop(guild_id, None)
 
     def _trigger_honor_sync(self) -> None:
         """触发 HonorCog 把 toml 同步到 SQLite。
@@ -139,11 +122,11 @@ class HonorConfigCog(FeatureCog):
             label="honor",
             permission_check=None,
         )
-        # 上传成功后：失效 HonorConfigCog 自己的缓存 + 触发 HonorCog 热同步到 SQLite。
-        # toml 已经写到磁盘，synchronize 全量重读；无论上传成败 idem 是幂等的，
-        # 上传失败时（旧 toml 还在盘上）也能正常工作。
+        # 上传成功后触发 HonorCog 热同步到 SQLite。
+        # toml 已经写到磁盘（HonorConfigManager.validate_and_save 内已回填 cache），
+        # synchronize 全量重读；无论上传成败 idem 是幂等的，上传失败时
+        # （旧 toml 还在盘上）也能正常工作。
         if guild_id:
-            self._invalidate_config(guild_id)
             self._trigger_honor_sync()
 
     @honor_config_group.command(

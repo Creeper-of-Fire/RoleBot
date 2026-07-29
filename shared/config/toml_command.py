@@ -4,24 +4,21 @@
 
 用法：
 
-    from shared.config.toml_manager import TomlConfigManager
     from shared.config.toml_command import (
         handle_toml_download,
         handle_toml_upload,
         handle_toml_view_hash,
     )
+    from honor_system.honor_config_manager import HonorConfigManager
 
     class HonorConfigCog(commands.Cog):
         honor_group = app_commands.Group(name="honor", description="荣誉配置")
 
         def __init__(self, bot):
             self.bot = bot
-            self.manager = TomlConfigManager(
-                data_dir=Path("data"),
-                filename_pattern="honor_{guild_id}.toml",
-                model_class=HonorConfig,
-                doc_path=Path("docs/honor-doc.md"),  # 放 docs/，不放 data/
-            )
+            # HonorConfigManager 是 TomlConfigManager 的单例子类，封装 honor
+            # toml 的固定参数（data_dir / filename_pattern / doc_path）+ per-guild cache。
+            self.manager = HonorConfigManager.get_instance()
 
         @honor_group.command(
             name="下载配置",

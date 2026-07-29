@@ -71,7 +71,7 @@ class FashionManageView(PaginatedView):
         # --- 以下是原来 _rebuild_view 的逻辑 ---
         member_role_ids = {role.id for role in member.roles}
 
-        self.embed = self.cog.guide_embed
+        self.embed = self.cog.get_guide_embed(self.guild.id)
 
         if not self.all_items:
             self.embed.description = "此服务器未配置幻化系统，或所有幻化身份组均不安全。"
@@ -91,13 +91,7 @@ class FashionManageView(PaginatedView):
         # 从基类添加分页按钮
         self._add_pagination_buttons(row=1)
 
-        if self.cog.guide_url:
-            self.add_item(ui.Button(
-                label=f"跳转到 “{self.cog.guide_embed.title}”",
-                style=discord.ButtonStyle.link,
-                url=self.cog.guide_url,
-                row=2
-            ))
+        # 跳转按钮已删除：embed_guides.toml 是 source of truth，不再有 Discord 跳转 URL。
 
 
 class FashionRoleSelect(ui.Select):

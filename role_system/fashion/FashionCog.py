@@ -8,7 +8,7 @@ from discord import ui, Color
 from discord.ext import tasks
 
 import config_data
-from core.embed_link.embed_manager import EmbedLinkManager
+from core.embed_guides.embed_guides_manager import EmbedGuidesConfigManager
 from role_system.fashion.fashion_view import FashionManageView
 from utility.auth import is_role_dangerous
 from utility.feature_cog import FeatureCog, PanelEntry
@@ -18,11 +18,6 @@ if typing.TYPE_CHECKING:
     from main import RoleBot
     from core.CoreCog import CoreCog
 
-FASHION_GUIDE_POST = {
-    "guild_id": 1134557553011998840,      # 指引帖子所在的服务器ID
-    "channel_id": 1392165885778722826,    # 指引帖子所在的频道ID
-    "post_id": 1392166511472283689,       # 指引帖子的消息ID
-}
 
 class FashionCog(FeatureCog, name="Fashion"):
     """管理所有幻化身份组相关的功能。"""
@@ -40,26 +35,18 @@ class FashionCog(FeatureCog, name="Fashion"):
         self.safe_fashion_map_cache: Dict[int, Dict[int, List[int]]] = {}
         self.check_fashion_role_validity_task.start()
 
-        self.guide_manager = EmbedLinkManager.get_or_create(
-            key="fashion_guide",
-            bot=self.bot,
-            default_embed=discord.Embed(
-                title="👗 幻化身份入门指引",
-                description="管理员尚未配置入门指引，或指引正在加载中。",
-                color=Color.orange()
-            )
-        )
-
     def cog_unload(self):
         self.check_fashion_role_validity_task.cancel()
 
-    @property
-    def guide_embed(self) -> discord.Embed:
-        return self.guide_manager.embed
+    def get_guide_embed(self, guild_id: int) -> discord.Embed:
+        """按 guild_id 取幻化身份组入门指引 embed——走 embed_guides_{guild_id}.toml。
 
-    @property
-    def guide_url(self) -> Optional[str]:
-        return self.guide_manager.url
+        ``EmbedGuidesConfigManager.get(guild_id).fashion_guide`` 始终返回有效
+        ``EmbedGuideSection``（默认或配置），无 None 检查必要。
+        """
+        return EmbedGuidesConfigManager.get_instance().get(guild_id).fashion_guide.to_embed()
+
+    # 注：guide_url 已删除——toml 是 source of truth，不再有 Discord 跳转 URL。
 
     async def update_safe_roles_cache(self):
         """【接口方法】更新本模块的安全身份组缓存。"""

@@ -11,7 +11,7 @@ import config
 import config_data
 from activity_tracker.TrackActivityCog import TrackActivityCog
 from core.CoreCog import CoreCog
-from core.embed_link.embed_manager import EmbedLinkManager
+from core.embed_guides.embed_guides_command import EmbedGuidesConfigCog
 from core.role_backup_cog import BackupCog
 from role_system.fashion.FashionCog import FashionCog
 from honor_system.module.anniversary_module import HonorAnniversaryModuleCog
@@ -88,7 +88,8 @@ class RoleBot(commands.Bot):
 
     async def setup_hook(self):
         """在机器人登录前执行的异步设置。"""
-        await EmbedLinkManager.initialize_all_managers()
+        # EmbedLinkManager.initialize_all_managers() 已删除——指引文案改走
+        # embed_guides.toml（EmbedGuidesConfigManager），不需要启动时初始化。
         await cog_manager.load_all_enabled()
         self.logger.info("开始同步应用命令...")
 
@@ -145,7 +146,7 @@ class CogManager:
         self.config = config_module
         # 定义一个 cog 名称到其类定义的映射，方便动态加载
         self.cog_map: Dict[str, Type[commands.Cog] | List[Type[commands.Cog]]] = {
-            "core": CoreCog,
+            "core": [CoreCog, EmbedGuidesConfigCog],
             "backup": BackupCog,
             "self_service": SelfServiceCog,
             "fashion": FashionCog,

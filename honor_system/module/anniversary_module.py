@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import datetime
 import typing
-from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -14,9 +13,8 @@ from discord.ext import commands
 
 import config
 from activity_tracker_db.activity_data_manager import ActivityDataManager
-from honor_system.config_models import HonorGuildConfig
 from honor_system.data_manager.honor_data_manager import HonorDataManager
-from shared.config.toml_manager import TomlConfigManager
+from honor_system.honor_config_manager import HonorConfigManager
 
 if typing.TYPE_CHECKING:
     from main import RoleBot
@@ -30,12 +28,7 @@ class HonorAnniversaryModuleCog(commands.Cog, name="HonorAnniversaryModule"):
         self.bot = bot
         self.honor_data_manager = HonorDataManager.getDataManager(logger=bot.logger)
         self.activity_data_manager = ActivityDataManager.getDataManager(logger=bot.logger)
-        self.honor_config = TomlConfigManager(
-            data_dir=Path("data"),
-            filename_pattern="honor_{guild_id}.toml",
-            model_class=HonorGuildConfig,
-            doc_path=Path("docs") / "荣誉系统使用手册.md",
-        )
+        self.honor_config = HonorConfigManager.get_instance()
 
     async def check_and_grant_anniversary_honor(self, member: discord.Member, guild: discord.Guild):
         """
@@ -59,14 +52,13 @@ class HonorAnniversaryModuleCog(commands.Cog, name="HonorAnniversaryModule"):
         """
         # 1. 获取配置
         #    guild 没 toml → 静默 skip（之前 HONOR_CONFIG.get(guild.id, {}) 也是这个语义）
-        toml_raw = self.honor_config.read_raw(guild.id)
-        if toml_raw is None:
-            return
         try:
-            guild_config = self.honor_config._parse(toml_raw, guild.id)
+            guild_config = self.honor_config.get(guild.id)
         except Exception as e:
             self.logger.error(f"加载 honor toml 失败 guild {guild.id}: {e}")
             return
+        if guild_config is None:
+            return  # 该 guild 还没有 honor toml
         anniversary_cfg = guild_config.anniversary_honor
 
         # 检查功能是否启用以及是否配置了荣誉等级

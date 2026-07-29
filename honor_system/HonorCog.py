@@ -10,10 +10,9 @@ import discord
 from discord import ui, Color, app_commands
 
 import config
-from core.embed_link.embed_manager import EmbedLinkManager
+from core.embed_guides.embed_guides_manager import EmbedGuidesConfigManager
 from honor_system.cup_honor.cup_honor_json_manager import CupHonorJsonManager
-from honor_system.config_models import HonorGuildConfig
-from shared.config.toml_manager import TomlConfigManager
+from honor_system.honor_config_manager import HonorConfigManager
 from utility.feature_cog import FeatureCog, PanelEntry
 from honor_system.module.common_models import BaseHonorDefinition
 from honor_system.getCogs import getHonorAnniversaryModuleCog, getRoleClaimHonorModuleCog
@@ -33,28 +32,23 @@ class HonorCog(FeatureCog, name="Honor"):
         super().__init__(bot)  # 调用父类 (FeatureCog) 的构造函数
         self.data_manager = HonorDataManager.getDataManager(logger=self.logger)
         self.cup_honor_manager = CupHonorJsonManager.get_instance(logger=self.logger)
-        # honor toml 配置（每个 guild 一份 data/honor_{guild_id}.toml）
-        self.honor_config = TomlConfigManager(
-            data_dir=Path("data"),
-            filename_pattern="honor_{guild_id}.toml",
-            model_class=HonorGuildConfig,
-            doc_path=Path("docs") / "荣誉系统使用手册.md",
-        )
+        # honor toml 配置（每个 guild 一份 data/honor_{guild_id}.toml）—— 单例 + cache
+        self.honor_config = HonorConfigManager.get_instance()
         self.running_backfill_tasks: Dict[int, asyncio.Task] = {}
         # 安全缓存，用于存储此模块管理的所有身份组ID
         self.safe_honor_role_ids: set[int] = set()
 
         self.bot.loop.create_task(self.synchronize_all_honor_definitions())
 
-        self.guide_manager = EmbedLinkManager.get_or_create(
-            key="honor_celebrate_guide",
-            bot=self.bot,
-            default_embed=discord.Embed(
-                title="🎊 当前进行中的荣誉获取活动",
-                description="管理员尚未配置，或正在加载中。",
-                color=Color.orange()
-            )
-        )
+    def get_guide_embed(self, guild_id: int) -> discord.Embed:
+        """按 guild_id 取荣誉活动指引 embed——走 embed_guides_{guild_id}.toml。
+
+        ``EmbedGuidesConfigManager.get(guild_id).honor_celebrate_guide`` 始终返回
+        有效 ``EmbedGuideSection``（默认或配置），无 None 检查必要。
+        """
+        return EmbedGuidesConfigManager.get_instance().get(guild_id).honor_celebrate_guide.to_embed()
+
+    # 注：guide_url 已删除——toml 是 source of truth，不再有 Discord 跳转 URL。
 
     # --- FeatureCog 接口实现 ---
     async def update_safe_roles_cache(self):
@@ -149,11 +143,14 @@ class HonorCog(FeatureCog, name="Honor"):
         # 1. 从 honor_{guild_id}.toml 加载普通荣誉（按 data/ 目录下的 toml 文件遍历）
         for guild_id in self._iter_configured_guild_ids():
             try:
-                cfg = self.honor_config.load(guild_id)
+                cfg = self.honor_config.get(guild_id)
             except Exception as e:
                 self.logger.error(
                     "加载 honor toml 失败 guild %s: %s", guild_id, e,
                 )
+                continue
+            if cfg is None:
+                # _iter 已筛过 toml 存在的 guild，这里只是防御
                 continue
             for item in cfg.definitions:
                 all_definitions.append(BaseHonorDefinition.model_validate(item.model_dump()))
@@ -178,11 +175,14 @@ class HonorCog(FeatureCog, name="Honor"):
             for guild_id in self._iter_configured_guild_ids():
                 self.logger.info(f"同步服务器 {guild_id} 的荣誉...")
                 try:
-                    cfg = self.honor_config.load(guild_id)
+                    cfg = self.honor_config.get(guild_id)
                 except Exception as e:
                     self.logger.error(
                         "加载 honor toml 失败 guild %s: %s", guild_id, e,
                     )
+                    continue
+                if cfg is None:
+                    # _iter 已筛过 toml 存在的 guild，这里只是防御
                     continue
                 for config_def in cfg.definitions:
                     config_dict = config_def.model_dump()

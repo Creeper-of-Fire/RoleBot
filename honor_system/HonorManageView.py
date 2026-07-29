@@ -280,17 +280,11 @@ class HonorManageView(PaginatedView):
 
         current_page_honor_data = self.get_page_items()
         main_honor_embed = self.create_honor_embed(self.member, current_page_honor_data)
-        self.embed = [main_honor_embed, self.cog.guide_manager.embed]
+        self.embed = [main_honor_embed, self.cog.get_guide_embed(self.guild.id)]
 
         self._add_pagination_buttons(row=2)
 
-        if self.cog.guide_manager.url:
-            self.add_item(ui.Button(
-                label=f"跳转到 “{self.cog.guide_manager.embed.title}”",
-                style=discord.ButtonStyle.link,
-                url=self.cog.guide_manager.url,
-                row=1
-            ))
+        # 跳转按钮已删除：embed_guides.toml 是 source of truth，不再有 Discord 跳转 URL。
 
         # --- Select Menu 构建逻辑 ---
         options = []
@@ -328,19 +322,17 @@ class HonorManageView(PaginatedView):
         member = self.member
         honor_shown_list: List[HonorShownData] = []
         # 读 toml，按 definitions 在 toml 里的顺序给 uuid 建索引（用于排序展示）
-        raw = self.cog.honor_config.read_raw(guild.id)
-        if raw is not None:
-            try:
-                cfg = self.cog.honor_config._parse(raw, guild.id)
-                config_uuid_order_map = {
-                    d.uuid: index
-                    for index, d in enumerate(cfg.definitions)
-                }
-            except Exception as e:
-                self.cog.logger.error(f"加载 honor toml 失败 guild {guild.id}: {e}")
-                config_uuid_order_map = {}
-        else:
-            config_uuid_order_map = {}
+        config_uuid_order_map: dict[str, int] = {}
+        try:
+            cfg = self.cog.honor_config.get(guild.id)
+        except Exception as e:
+            self.cog.logger.error(f"加载 honor toml 失败 guild {guild.id}: {e}")
+            cfg = None
+        if cfg is not None:
+            config_uuid_order_map = {
+                d.uuid: index
+                for index, d in enumerate(cfg.definitions)
+            }
         all_definitions_from_db = self.cog.data_manager.get_all_honor_definitions(guild.id)
         user_honor_instances = self.cog.data_manager.get_user_honors(member.id)
         member_role_ids = {role.id for role in member.roles}

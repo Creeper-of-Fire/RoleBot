@@ -18,12 +18,12 @@ from discord.ext import commands, tasks
 from shared.ui.views import ConfirmationView
 from .cup_honor_json_manager import CupHonorJsonManager
 from .cup_honor_models import CupHonorDefinition
-from honor_system.config_models import HonorGuildConfig, CupHonorNotification
+from honor_system.config_models import CupHonorNotification
 from honor_system.data_manager.honor_data_manager import HonorDataManager
+from honor_system.honor_config_manager import HonorConfigManager
 from honor_system.honor_def_models import UserHonor, HonorDefinition
 from .cup_honor_module_notification_state_data_manager import NotificationStateManager
 from .cup_honor_module_view import CupHonorManageView
-from shared.config.toml_manager import TomlConfigManager
 
 if typing.TYPE_CHECKING:
     from main import RoleBot
@@ -183,12 +183,7 @@ class CupHonorModuleCog(commands.Cog, name="CupHonorModule"):
         # 用于存储已发送过通知的荣誉UUID，防止重复提醒
         self.notification_manager = NotificationStateManager.get_instance(logger=self.logger)
         # honor toml 元配置（每个 guild 一份 data/honor_{guild_id}.toml）—— cup_honor.notification
-        self.honor_config = TomlConfigManager(
-            data_dir=Path("data"),
-            filename_pattern="honor_{guild_id}.toml",
-            model_class=HonorGuildConfig,
-            doc_path=Path("docs") / "荣誉系统使用手册.md",
-        )
+        self.honor_config = HonorConfigManager.get_instance()
         self.expiration_check_loop.start()
 
     def cog_unload(self):
@@ -218,13 +213,13 @@ class CupHonorModuleCog(commands.Cog, name="CupHonorModule"):
             now_aware = datetime.datetime.now(ZoneInfo("Asia/Shanghai"))
 
             for guild_id in self._iter_configured_guild_ids():
-                raw = self.honor_config.read_raw(guild_id)
-                if raw is None:
-                    continue
                 try:
-                    cfg = self.honor_config._parse(raw, guild_id)
+                    cfg = self.honor_config.get(guild_id)
                 except Exception as e:
                     self.logger.error(f"加载 honor toml 失败 guild {guild_id}: {e}")
+                    continue
+                if cfg is None:
+                    # _iter 已筛过 toml 存在的 guild，这里只是防御
                     continue
                 cup_cfg = cfg.cup_honor
                 if not cup_cfg.enabled:

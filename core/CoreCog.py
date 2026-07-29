@@ -8,7 +8,6 @@ import zipfile
 from functools import partial
 
 import config
-from core.embed_link.embed_manager import EmbedLinkManager
 
 try:
     import distro
@@ -71,12 +70,10 @@ class CoreCog(commands.Cog, name="Core"):
         """当 Cog 被加载时，启动后台任务。"""
         self.logger.info("CoreCog 已加载，正在启动后台任务...")
         self._update_all_caches_task.start()
-        self.update_registered_embeds_task.start()
         self._backup_data_task.start()
 
     def cog_unload(self):
         self._update_all_caches_task.cancel()
-        self.update_registered_embeds_task.cancel()
         self._backup_data_task.cancel()
 
     @tasks.loop(hours=1)
@@ -109,19 +106,6 @@ class CoreCog(commands.Cog, name="Core"):
         # 这里我们暂时传入 CoreCog。
         self.bot.add_view(MainPanelView(self))  # MainPanelView 现在由 CoreCog 负责
         self.logger.info("核心模块已就绪，主控制面板持久化视图已注册。")
-
-    @tasks.loop(minutes=15)
-    async def update_registered_embeds_task(self):
-        """定时刷新所有已注册的EmbedLinkManager。"""
-        self.bot.logger.info("开始刷新所有已注册的Embed链接...")
-        managers = EmbedLinkManager.get_all_managers()
-        if not managers:
-            self.bot.logger.info("没有已注册的Embed链接管理器，跳过刷新。")
-            return
-
-        for manager in managers:
-            await manager.refresh_from_config()
-        self.bot.logger.info(f"已完成对 {len(managers)} 个管理器的刷新。")
 
     def _blocking_create_backup_zip(self, data_dir: str) -> tuple[Optional[io.BytesIO], Optional[str], str]:
         """
@@ -225,7 +209,6 @@ class CoreCog(commands.Cog, name="Core"):
                 pass  # 避免在无法发送错误消息时出现级联错误
 
     @_backup_data_task.before_loop
-    @update_registered_embeds_task.before_loop
     @_update_all_caches_task.before_loop
     async def before_cache_update_task(self):
         """在任务开始前，等待机器人就绪并执行一次初始缓存。"""
@@ -247,40 +230,6 @@ class CoreCog(commands.Cog, name="Core"):
         """发送一个公共的身份组管理入口面板。"""
         embed, view = create_main_panel_ui(self)
         await interaction.response.send_message(embed=embed, view=view)
-
-    async def link_module_autocomplete(self, interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
-        """为配置指令提供模块键的自动补全。"""
-        keys = EmbedLinkManager.get_registered_keys()
-        return [
-            app_commands.Choice(name=key, value=key)
-            for key in keys if current.lower() in key.lower()
-        ]
-
-    @core_group.command(name="配置embed链接", description="配置一个模块使用的Discord消息链接")
-    @app_commands.describe(module="要配置的模块名", url="指向Discord消息的URL (留空以清除)")
-    @app_commands.autocomplete(module=link_module_autocomplete)
-    @app_commands.checks.has_permissions(manage_roles=True)
-    async def config_embed_link(self, interaction: discord.Interaction, module: str, url: typing.Optional[str] = None):
-        """配置或清除一个模块的消息链接。"""
-        manager = EmbedLinkManager.get_manager(module)
-        if not manager:
-            await interaction.response.send_message(f"❌ 错误：找不到名为 `{module}` 的模块。可用模块: `{'`, `'.join(EmbedLinkManager.get_registered_keys())}`",
-                                                    ephemeral=True)
-            return
-
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        try:
-            if url:
-                await manager.set_from_url(url)
-                await interaction.edit_original_response(content=f"✅ 成功！模块 `{module}` 的链接已更新。新的Embed已加载。")
-            else:
-                await manager.clear_config()
-                await interaction.edit_original_response(content=f"🗑️ 成功！模块 `{module}` 的链接配置已被清除。它现在将显示默认内容。")
-        except ValueError as e:
-            await interaction.edit_original_response(content=f"❌ 错误: {e}")
-        except Exception as e:
-            self.bot.logger.error(f"配置模块 '{module}' 时发生未知错误: {e}")
-            await interaction.edit_original_response(content=f"❌ 发生未知错误，请检查日志。")
 
     @core_group.command(name="系统状态", description="显示机器人和服务器的实时系统信息。")
     @app_commands.checks.has_permissions(manage_roles=True)

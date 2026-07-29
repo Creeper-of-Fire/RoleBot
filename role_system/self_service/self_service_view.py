@@ -69,18 +69,12 @@ class SelfServiceManageView(PaginatedView):
         # 从基类添加分页按钮
         self._add_pagination_buttons(row=3)
 
-        self.embed = self.cog.guide_embed.copy()  # 使用 .copy() 避免修改缓存中的原始 embed
+        self.embed = self.cog.get_guide_embed(self.guild.id).copy()  # 使用 .copy() 避免修改缓存中的原始 embed
         if not self.all_items:
             self.embed.description = "此服务器没有可供您管理的自助身份组。"
         self.embed.set_footer(text=f"面板将在 {config.ROLE_MANAGER_CONFIG.get('private_panel_timeout_minutes', 3)} 分钟后失效。")
 
-        if self.cog.guide_url:
-            self.add_item(ui.Button(
-                label=f"跳转到 “{self.cog.guide_embed.title}”",
-                style=discord.ButtonStyle.link,
-                url=self.cog.guide_url,
-                row=4
-            ))
+        # 跳转按钮已删除：embed_guides.toml 是 source of truth，不再有 Discord 跳转 URL。
 
 
 class SelfServiceRoleButton(ui.Button):

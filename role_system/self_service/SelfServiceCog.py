@@ -4,10 +4,10 @@ import typing
 from typing import Dict, List, Optional
 
 import discord
-from discord import ui, Color
+from discord import ui
 
 import config
-from core.embed_link.embed_manager import EmbedLinkManager
+from core.embed_guides.embed_guides_manager import EmbedGuidesConfigManager
 from role_system.self_service.self_service_view import SelfServiceManageView
 from utility.auth import is_role_dangerous
 from utility.feature_cog import FeatureCog, PanelEntry
@@ -17,12 +17,6 @@ if typing.TYPE_CHECKING:
     from core.CoreCog import CoreCog
     from main import RoleBot
 
-SELF_SERVICE_GUIDE_POST = {
-    "guild_id": 1134557553011998840,  # 指引帖子所在的服务器ID
-    "channel_id": 1392167349951398008,  # 指引帖子所在的频道ID
-    "post_id": 1392167360261001226,  # 指引帖子的消息ID
-}
-
 
 class SelfServiceCog(FeatureCog, name="SelfService"):
     """管理所有自助身份组相关的功能。"""
@@ -30,23 +24,16 @@ class SelfServiceCog(FeatureCog, name="SelfService"):
     def __init__(self, bot: 'RoleBot'):
         super().__init__(bot)
         self.safe_self_service_role_ids_cache: Dict[int, List[int]] = {}
-        self.guide_manager = EmbedLinkManager.get_or_create(
-            key="self_service_guide",
-            bot=self.bot,
-            default_embed=discord.Embed(
-                title="🛠️ 自助身份组身份入门指引",
-                description="管理员尚未配置入门指引，或指引正在加载中。",
-                color=Color.orange()
-            )
-        )
 
-    @property
-    def guide_embed(self) -> discord.Embed:
-        return self.guide_manager.embed
+    def get_guide_embed(self, guild_id: int) -> discord.Embed:
+        """按 guild_id 取自助身份组指引 embed——走 embed_guides_{guild_id}.toml。
 
-    @property
-    def guide_url(self) -> Optional[str]:
-        return self.guide_manager.url
+        ``EmbedGuidesConfigManager.get(guild_id).self_service_guide`` 始终返回有效
+        ``EmbedGuideSection``（默认或配置），无 None 检查必要。
+        """
+        return EmbedGuidesConfigManager.get_instance().get(guild_id).self_service_guide.to_embed()
+
+    # 注：guide_url 已删除——toml 是 source of truth，不再有 Discord 跳转 URL。
 
     def get_main_panel_entries(self) -> Optional[List[PanelEntry]]:
         return [

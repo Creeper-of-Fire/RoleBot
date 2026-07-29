@@ -1,7 +1,6 @@
 # honor_system/claimable_honor_module.py
 from __future__ import annotations
 
-from pathlib import Path
 from typing import cast, Optional, List, TYPE_CHECKING
 
 import discord
@@ -11,10 +10,9 @@ from discord.ext import commands
 import config
 from honor_system.HonorCog import HonorCog  # 导入主模块的Cog和View
 from honor_system.HonorManageView import HonorManageView
-from honor_system.config_models import HonorGuildConfig
 from honor_system.data_manager.honor_data_manager import HonorDataManager
 from honor_system.data_manager.json_data_manager import HonorPanelDataManager
-from shared.config.toml_manager import TomlConfigManager
+from honor_system.honor_config_manager import HonorConfigManager
 
 if TYPE_CHECKING:
     from main import RoleBot
@@ -153,22 +151,16 @@ class ClaimableHonorModuleCog(commands.Cog, name="ClaimableHonorModule"):
         self.logger = bot.logger
         self.data_manager = HonorDataManager.getDataManager(logger=self.logger)
         self.json_manager = HonorPanelDataManager.get_instance(logger=self.logger)
-        self.honor_config = TomlConfigManager(
-            data_dir=Path("data"),
-            filename_pattern="honor_{guild_id}.toml",
-            model_class=HonorGuildConfig,
-            doc_path=Path("docs") / "荣誉系统使用手册.md",
-        )
+        self.honor_config = HonorConfigManager.get_instance()
 
     def _get_claimable_uuids(self, guild_id: int) -> list[str]:
         """按 guild_id 取可领取的 honor uuid 列表；无 toml 返回 []。"""
-        raw = self.honor_config.read_raw(guild_id)
-        if raw is None:
-            return []
         try:
-            cfg = self.honor_config._parse(raw, guild_id)
+            cfg = self.honor_config.get(guild_id)
         except Exception as e:
             self.logger.error(f"加载 honor toml 失败 guild {guild_id}: {e}")
+            return []
+        if cfg is None:
             return []
         return list(cfg.claimable.uuids)
 
