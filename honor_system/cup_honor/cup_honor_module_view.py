@@ -11,8 +11,8 @@ import discord
 from discord import ui
 from pydantic import ValidationError
 
-import config_data
 from honor_system.cup_honor.cup_honor_models import CupHonorDefinition, CupHonorDetails
+from honor_system.honor_config_manager import HonorConfigManager
 from honor_system.honor_def_models import HonorDefinition
 from shared.ui.paginated_view import PaginatedView
 from shared.ui.views import ConfirmationView
@@ -82,15 +82,20 @@ class CupHonorEditModal(ui.Modal):
         new_name = new_honor_def.name
 
         # 检查点: 与配置文件中的普通荣誉冲突
-        guild_config = config_data.HONOR_CONFIG.get(interaction.guild_id, {})
-        for config_honor in guild_config.get("definitions", []):
+        # honor_config 是 pydantic HonorGuildConfig 实例（来自 data/honor_{guild_id}.toml）；
+        # 全部字段用属性访问（不是 dict.get() / ['xxx']）。
+        # 该 guild 还没 toml → 跳过冲突检查（反正也没冲突）。
+        honor_config = HonorConfigManager.get_instance().get(interaction.guild_id)
+        if honor_config is None:
+            return
+        for config_honor in honor_config.definitions:
             # 如果是编辑操作，需要排除掉自身
-            if self.original_uuid and self.original_uuid == config_honor['uuid']:
+            if self.original_uuid and self.original_uuid == config_honor.uuid:
                 continue
-            if config_honor['uuid'] == new_uuid_str:
+            if config_honor.uuid == new_uuid_str:
                 await interaction.followup.send(
-                    f"❌ **操作被阻止！**\n此UUID (`{new_uuid_str[:8]}...`) 被核心荣誉 **“{config_honor['name']}”** 所保留。\n"
-                    "杯赛荣誉系统不能修改由机器人配置文件定义的荣誉。请在JSON中更换一个新的UUID。",
+                    f"❌ **操作被阻止！**\n此UUID (`{new_uuid_str[:8]}...`) 被核心荣誉 **“{config_honor.name}”** 所保留。\n"
+                    "杯赛荣誉系统不能修改由 toml 配置定义的荣誉。请在 toml 中更换一个新的UUID。",
                     ephemeral=True
                 )
                 return
