@@ -7,24 +7,26 @@ import discord
 from discord.ext import commands
 
 import config
-# 导入我们的配置和模块
 import config_data
+# 导入我们的配置和模块
 from activity_tracker.TrackActivityCog import TrackActivityCog
 from core.CoreCog import CoreCog
 from core.embed_guides.embed_guides_command import EmbedGuidesConfigCog
 from core.role_backup_cog import BackupCog
-from role_system.fashion.FashionCog import FashionCog
-from honor_system.module.anniversary_module import HonorAnniversaryModuleCog
-from honor_system.module.claimable_honor_module import ClaimableHonorModuleCog
 from honor_system.HonorCog import HonorCog
 from honor_system.HonorConfigCog import HonorConfigCog
 from honor_system.cup_honor.cup_honor_module import CupHonorModuleCog
+from honor_system.module.anniversary_module import HonorAnniversaryModuleCog
+from honor_system.module.claimable_honor_module import ClaimableHonorModuleCog
 from honor_system.module.role_sync_honor_module import RoleClaimHonorModuleCog
 from information.HeartbeatInformationCog import HeartbeatInformationCog
-from role_system.model_fan_roles.ModelFanRolesCog import ModelFanRolesCog
 from role_application.RoleApplicationCog import RoleApplicationCog
-from role_system.role_jukebox.RoleJukeboxCog import RoleJukeboxCog
 from role_sync.RoleSyncCog import RoleSyncCog
+from role_system.fashion.FashionCog import FashionCog
+from role_system.fashion.FashionConfigCog import FashionConfigCog
+from role_system.model_fan_roles.ModelFanRolesCog import ModelFanRolesCog
+from role_system.model_fan_roles.ModelFanRolesConfigCog import ModelFanRolesConfigCog
+from role_system.role_jukebox.RoleJukeboxCog import RoleJukeboxCog
 from role_system.role_viewer.RoleViewerCog import RoleViewerCog
 from role_system.self_service.SelfServiceCog import SelfServiceCog
 from role_system.timed_role.TimedRolesCog import TimedRolesCog
@@ -149,8 +151,14 @@ class CogManager:
             "core": [CoreCog, EmbedGuidesConfigCog],
             "backup": BackupCog,
             "self_service": SelfServiceCog,
-            "fashion": FashionCog,
-            "model_fan_roles": ModelFanRolesCog,
+            "fashion": [
+                FashionCog,
+                FashionConfigCog
+            ],
+            "model_fan_roles": [
+                ModelFanRolesCog,
+                ModelFanRolesConfigCog
+            ],
             "heartbeat_information": HeartbeatInformationCog,
             "timed_role": TimedRolesCog,
             "role_sync": RoleSyncCog,

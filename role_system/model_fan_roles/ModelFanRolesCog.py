@@ -11,7 +11,11 @@ from typing import Dict, List, Optional
 import discord
 from discord import ui
 
-from role_system.model_fan_roles.model_config import MODEL_ROLES_CONFIG, ModelRoleConfig
+import config
+from role_system.model_fan_roles.model_fan_roles_config_manager import (
+    ModelFanRolesConfigManager,
+)
+from role_system.model_fan_roles.model_fan_roles_config_models import ModelRoleConfig
 from role_system.model_fan_roles.view import ModelRolesView
 from utility.auth import is_role_dangerous
 from utility.feature_cog import FeatureCog, PanelEntry
@@ -48,7 +52,12 @@ class ModelFanRolesCog(FeatureCog, name="ModelFanRoles"):
         ]
 
     async def update_safe_roles_cache(self):
-        """【接口方法】从配置中加载并验证身份组安全性。"""
+        """【接口方法】从配置中加载并验证身份组安全性。
+
+        数据源：``ModelFanRolesConfigManager`` 读 ``data/model_fan_roles_{guild_id}.toml``。
+        遍历 ``config.GUILD_IDS``（顶层硬编码常量）覆盖到所有已知 guild。无 toml 的 guild
+        跳过——与原 ``MODEL_ROLES_CONFIG`` 字典不存在的语义一致。
+        """
         self.logger.info("ModelFanRolesCog: 开始更新模型身份组缓存...")
 
         core_cog = self.bot.get_cog("Core")
@@ -56,16 +65,23 @@ class ModelFanRolesCog(FeatureCog, name="ModelFanRoles"):
             self.logger.warning("ModelFanRolesCog: Core Cog 未加载，跳过缓存更新。")
             return
 
+        manager = ModelFanRolesConfigManager.get_instance()
+
         new_cache = {}
 
-        for guild_id, models_list in MODEL_ROLES_CONFIG.items():
+        for guild_id in config.GUILD_IDS:
             guild = self.bot.get_guild(guild_id)
             if not guild:
                 continue
 
+            models_cfg = manager.get(guild_id)
+            if models_cfg is None:
+                # 该服没 toml——视作"未启用模型阵营"
+                continue
+
             safe_models_list = []
 
-            for model_data in models_list:
+            for model_data in models_cfg.models:
                 role_id = model_data.role_id
                 role = guild.get_role(role_id)
 

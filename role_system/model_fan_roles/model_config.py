@@ -1,27 +1,15 @@
-from typing import Dict, List, Optional
+"""DEPRECATED 桩文件。
 
-from pydantic import BaseModel
+2026-08 model_fan_roles 迁 toml 后，旧的硬编码 ``MODEL_ROLES_CONFIG`` 字典已经删除。
+``ModelRoleConfig`` pydantic class 也已迁移到：
 
+    role_system.model_fan_roles.model_fan_roles_config_models
 
-class ModelRoleConfig(BaseModel):
-    name: str
-    display_name: str
-    role_id: int
-    emoji: Optional[str] = None
+请更新 import 路径。任何继续从本模块 import ``MODEL_ROLES_CONFIG`` 或
+``ModelRoleConfig`` 的代码都会触发 ``ImportError``——这是有意为之，避免
+"真相撕裂"（旧 dict 和新 toml 双轨运行，bot 行为不确定）。
 
+如果你看到这条消息，说明你正在触碰一个已经迁完的模块。
+"""
 
-# 格式: { 服务器ID: [ ModelRoleConfig(...), ... ] }
-
-MODEL_ROLES_CONFIG: Dict[int, List[ModelRoleConfig]] = {
-    1134557553011998840: [
-        ModelRoleConfig(name="Gemini", display_name="哈基米", role_id=1444246888512753764),
-        ModelRoleConfig(name="Claude", display_name="小克", role_id=1444248769494384666),
-        ModelRoleConfig(name="DeepSeek", display_name="小鲸鱼", role_id=1444248821079998554),
-        ModelRoleConfig(name="ChatGPT", display_name="ChatGPT", role_id=1444248662292304035),
-        ModelRoleConfig(name="Grok", display_name="Grok, is this true?", role_id=1444259773100068864),
-        ModelRoleConfig(name="Mimo", display_name="Mimo同学", role_id=1506269290855268532),
-        ModelRoleConfig(name="豆包", display_name="豆包豆包，", role_id=1506271728496672828),
-        ModelRoleConfig(name="GLM", display_name="GLM", role_id=1506271442054938725),
-        ModelRoleConfig(name="Kimi", display_name="月之Kimi", role_id=1506269804863160430),
-    ],
-}
+__all__: list[str] = []  # 故意空——任何 import 都会失败

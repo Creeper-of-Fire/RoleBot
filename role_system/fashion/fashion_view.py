@@ -6,7 +6,8 @@ import discord
 from discord import Color, ui
 
 import config
-import config_data
+from role_system.fashion.fashion_config_manager import FashionConfigManager
+from role_system.fashion.fashion_config_models import FashionMapEntry
 from utility.auth import is_role_dangerous
 
 if typing.TYPE_CHECKING:
@@ -29,14 +30,31 @@ class FashionManageView(PaginatedView):
         # 1. 准备数据
         safe_fashion_map = self.cog.safe_fashion_map_cache.get(self.guild.id, {})
         self.fashion_to_base_map: Dict[int, List[int]] = {}
+        # fashion_to_entries: fashion_id → 包含该幻化组的所有 entry（同一幻化组可能被
+        # 多个 entry 引用）。UI 过滤「锁定后是否隐藏」时取所有 entry 的 AND：
+        # 任意 entry 是 hidden_when_locked = false → 不隐藏。
+        self.fashion_to_entries: Dict[int, List[FashionMapEntry]] = {}
         all_fashion_options = []
 
+        # 从 toml 读完整 entries（safe_fashion_map_cache 已过滤危险角色，但丢了
+        # entry 自己的 hidden_when_locked 字段；UI 行为要从原 entries 拿）。
+        fashion_cfg = FashionConfigManager.get_instance().get(self.guild.id)
+        safe_entries: list[FashionMapEntry] = []
+        if fashion_cfg is not None:
+            safe_base_ids = set(safe_fashion_map.keys())
+            # 仅保留「至少有一个 safe fashion」的 entry——cog 的 cache 已经做了安全过滤。
+            safe_entries = [
+                e for e in fashion_cfg.fashion_map
+                if e.base_role_id in safe_base_ids
+            ]
+
         temp_fashion_to_bases: Dict[int, set[int]] = {}
-        for base_id, fashion_ids_list in safe_fashion_map.items():
-            for fashion_id in fashion_ids_list:
+        for entry in safe_entries:
+            for fashion_id in entry.fashion_role_ids:
                 if fashion_id not in temp_fashion_to_bases:
                     temp_fashion_to_bases[fashion_id] = set()
-                temp_fashion_to_bases[fashion_id].add(base_id)
+                temp_fashion_to_bases[fashion_id].add(entry.base_role_id)
+                self.fashion_to_entries.setdefault(fashion_id, []).append(entry)
 
         for fashion_id, base_ids_set in temp_fashion_to_bases.items():
             self.fashion_to_base_map[fashion_id] = list(base_ids_set)
@@ -83,6 +101,7 @@ class FashionManageView(PaginatedView):
         self.add_item(FashionRoleSelect(
             self.cog, self.guild.id,
             fashion_to_base_map=self.fashion_to_base_map,
+            fashion_to_entries=self.fashion_to_entries,
             page_options_data=page_fashion_options,
             member_role_ids=member_role_ids,
             page_num=self.page, total_pages=self.total_pages,
@@ -95,15 +114,23 @@ class FashionManageView(PaginatedView):
 
 
 class FashionRoleSelect(ui.Select):
-    """幻化身份组的选择菜单，会根据用户是否拥有基础组来显示锁定/解锁状态。"""
+    """幻化身份组的选择菜单，会根据用户是否拥有基础组来显示锁定/解锁状态。
 
-    def __init__(self, cog: 'FashionCog', guild_id: int, fashion_to_base_map: Dict[int, List[int]],
+    「锁定后是否隐藏」现在从 entry.hidden_when_locked 字段读取——每条 entry 自带
+    UI 行为属性，不再依赖外部全局 not_normal_role_ids 列表。同一 fashion_id 可能
+    被多个 entry 引用（不同 base_role 都能解锁同一个幻化组）；采用 AND 语义：
+    所有 entry 都是 hidden_when_locked = true 才隐藏，任意 entry 是 false 就不藏。
+    """
+
+    def __init__(self, cog: 'FashionCog', guild_id: int,
+                 fashion_to_base_map: Dict[int, List[int]],
+                 fashion_to_entries: Dict[int, List[FashionMapEntry]],
                  page_options_data: List[tuple[int, int]],
                  member_role_ids: set[int], page_num: int, total_pages: int):
         self.cog = cog
         self.guild_id = guild_id
         self.fashion_to_base_map = fashion_to_base_map
-        self.not_normal_role_ids = set(config_data.FASHION_NOT_NORMAL_ROLE_IDS)
+        self.fashion_to_entries = fashion_to_entries
 
         sorted_page_options_data = sorted(page_options_data,
                                           key=lambda x: any(base_id in member_role_ids for base_id in self.fashion_to_base_map.get(x[0], [])),
@@ -116,12 +143,12 @@ class FashionRoleSelect(ui.Select):
 
             is_unlocked = any(base_id in member_role_ids for base_id in required_base_ids)
 
-            # --- 新增的过滤逻辑 ---
-            # 如果幻化是锁定的，并且其所有解锁条件都是非普通身份组，且用户不具备本身份组，则不向该用户显示此选项
-            if not is_unlocked:
-                is_member_have_role = fashion_id in member_role_ids
-                is_not_normal_only_unlock = required_base_ids and all(bid in self.not_normal_role_ids for bid in required_base_ids)
-                if is_not_normal_only_unlock and not is_member_have_role:
+            # --- UI 过滤逻辑（OO 化后）---
+            # 锁定 + 用户也没持有该幻化 + 所有引用它的 entry 都是 hidden_when_locked = true
+            # → 隐藏（典型：Server Boosted → 幻化-Server Booster，未持有 boost 的普通用户看不到）
+            if not is_unlocked and fashion_id not in member_role_ids:
+                entries = self.fashion_to_entries.get(fashion_id, [])
+                if entries and all(e.hidden_when_locked for e in entries):
                     continue  # 跳过，不渲染此选项
             # --- 过滤逻辑结束 ---
 
@@ -205,9 +232,8 @@ class FashionRoleSelect(ui.Select):
                     self.cog.logger.warning(f"用户 {member.id} 尝试获取危险/不存在的幻化 {role_id}，已阻止。")
             else:
                 role_name = self.cog.role_name_cache.get(role_id, f"ID:{role_id}")
-                display_base_ids = [bid for bid in required_base_ids if bid not in self.not_normal_role_ids]
-                if display_base_ids:
-                    base_names = [self.cog.role_name_cache.get(bid, f"ID:{bid}") for bid in display_base_ids]
+                if required_base_ids:
+                    base_names = [self.cog.role_name_cache.get(bid, f"ID:{bid}") for bid in required_base_ids]
                     failed_attempts.append(f"**{role_name}** (需要 {' 或 '.join(f'**{name}**' for name in base_names if name)} 中任意一个)")
                 else:
                     failed_attempts.append(f"**{role_name}** (不满足特殊解锁条件)")

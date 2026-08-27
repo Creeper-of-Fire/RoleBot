@@ -4,7 +4,10 @@ from enum import StrEnum
 
 from dotenv import load_dotenv
 
-from config_data import GUILD_CONFIGS, FASHION_CONFIG, ROLE_SYNC_CONFIG
+# 2026-08 修：FASHION_CONFIG 已经迁 toml 移除；GUILD_CONFIGS / ROLE_SYNC_CONFIG 仍在
+# config_data.py 里（timed_role / self_service / role_sync 还在用），所以仍要 import。
+# 注意：FASHION_CONFIG 不要再 import——它已经不存在。
+from config_data import GUILD_CONFIGS, ROLE_SYNC_CONFIG
 
 load_dotenv()
 # ===================================================================
@@ -72,7 +75,20 @@ COGS = {
 # ===================================================================
 
 # 从GUILD_CONFIGS中提取所有服务器ID，用于命令同步
-GUILD_IDS = set(list(GUILD_CONFIGS.keys()) + list(FASHION_CONFIG.keys()) + list(ROLE_SYNC_CONFIG.keys()))
+#
+# 历史：本集合曾是 `GUILD_CONFIGS.keys() | FASHION_CONFIG.keys() | ROLE_SYNC_CONFIG.keys()`，
+# 每次新加 per-guild 配置层都得改这里。2026-08 重构后，fashion / model_fan_roles 已迁 toml，
+# 不再需要在 config_data 里持有 dict 注册。改为硬编码顶层常量——加服时改这一处即可。
+#
+# 已知 guild（按主要场景）：
+# - 1134557553011998840  类脑主服（honor / fashion / model_fan_roles 都跑这）
+# - 1265862009673486408  神人研究所（fashion 跑这）
+# - 1380075940285124724  类脑卡区（共享类脑 active group，无 honor/fashion）
+GUILD_IDS: typing.Set[int] = {
+    1134557553011998840,
+    1265862009673486408,
+    1380075940285124724,
+}
 
 # 机器人状态
 STATUS_TEXT = "用户的身份组发放请求"  # 显示在机器人状态上的文字

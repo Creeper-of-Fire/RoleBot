@@ -7,8 +7,9 @@ import discord
 from discord import ui, Color
 from discord.ext import tasks
 
-import config_data
+import config
 from core.embed_guides.embed_guides_manager import EmbedGuidesConfigManager
+from role_system.fashion.fashion_config_manager import FashionConfigManager
 from role_system.fashion.fashion_view import FashionManageView
 from utility.auth import is_role_dangerous
 from utility.feature_cog import FeatureCog, PanelEntry
@@ -49,23 +50,39 @@ class FashionCog(FeatureCog, name="Fashion"):
     # 注：guide_url 已删除——toml 是 source of truth，不再有 Discord 跳转 URL。
 
     async def update_safe_roles_cache(self):
-        """【接口方法】更新本模块的安全身份组缓存。"""
+        """【接口方法】更新本模块的安全身份组缓存。
+
+        数据源：``FashionConfigManager`` 读 ``data/fashion_{guild_id}.toml``。
+        遍历 ``config.GUILD_IDS``（顶层硬编码常量，2026-08 迁 toml 后不再依赖
+        config_data 字典的 keys）覆盖到所有已知 guild。无 toml 的 guild 跳过——
+        与原 ``FASHION_CONFIG`` 字典不存在的语义一致。
+        """
         self.logger.info("FashionCog: 开始更新安全幻化身份组缓存...")
         core_cog: CoreCog | None = self.bot.get_cog("Core")
         if not core_cog: return
 
-        for guild_id, fashion_cfg in config_data.FASHION_CONFIG.items():
-            guild = self.bot.get_guild(guild_id)
-            if not guild: continue
+        manager = FashionConfigManager.get_instance()
 
-            configured_fashion_map = fashion_cfg.get("fashion_map", {})
+        for guild_id in config.GUILD_IDS:
+            guild = self.bot.get_guild(guild_id)
+            if not guild:
+                continue
+
+            fashion_cfg = manager.get(guild_id)
+            if fashion_cfg is None:
+                # 该服没 toml——视作"未配置幻化系统"
+                self.safe_fashion_map_cache.pop(guild_id, None)
+                continue
+
+            configured_fashion_map = fashion_cfg.fashion_map
             current_safe_fashion_map = {}
-            for base_role_id, fashion_role_ids_list in configured_fashion_map.items():
+            for entry in configured_fashion_map:
+                base_role_id = entry.base_role_id
                 base_role = guild.get_role(base_role_id)
                 if base_role: core_cog.role_name_cache[base_role_id] = base_role.name
 
                 safe_fashions_for_base = []
-                for fashion_role_id in fashion_role_ids_list:
+                for fashion_role_id in entry.fashion_role_ids:
                     fashion_role = guild.get_role(fashion_role_id)
                     if fashion_role:
                         core_cog.role_name_cache[fashion_role_id] = fashion_role.name
