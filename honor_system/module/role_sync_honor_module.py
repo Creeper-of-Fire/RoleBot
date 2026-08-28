@@ -36,10 +36,23 @@ class RoleClaimHonorModuleCog(FeatureCog, name="RoleClaimHonorModule"):
         super().__init__(bot)
         self.honor_data_manager = HonorDataManager.getDataManager(logger=bot.logger)
 
-    async def check_and_grant_role_sync_honor(self, member: discord.Member, guild: discord.Guild):
+    async def check_and_grant_role_sync_honor(
+        self,
+        member: discord.Member,
+        guild: discord.Guild,
+        honor_uuid: str | None = None,
+    ) -> int:
         """
         【按需检查】检查用户是否因持有特定身份组而符合荣誉授予条件。
-        此函数在用户与荣誉系统交互（如打开荣誉墙）时被调用。
+        此函数在用户与荣誉系统交互（如打开荣誉墙）时被调用，也可由 admin 手动批量 sync 调用。
+
+        Args:
+            member: 目标成员
+            guild: 目标 guild
+            honor_uuid: 只同步特定 honor（None = 同步所有 role_sync_honor=true 的 honor）
+
+        Returns:
+            新增 grant的 honor 记录数（0 / 1+）。
 
         配置示例 (在 config_data.py 的 honor definition 中):
         {
@@ -54,30 +67,38 @@ class RoleClaimHonorModuleCog(FeatureCog, name="RoleClaimHonorModule"):
         all_definitions = honor_cog.get_all_config_honor_definitions()
 
         member_role_ids = {role.id for role in member.roles}
+        granted_count = 0
 
         # 2. 遍历所有荣誉定义，查找标记为 role_sync_honor 的荣誉
         for honor_def in all_definitions:
-            # 检查是否是“角色认领”类型的荣誉
+            # 检查是否是"角色认领"类型的荣誉
             if not honor_def.role_sync_honor:
                 continue
 
+            # ★ 新增：按 honor_uuid 过滤（None = 同步全部）
+            if honor_uuid is not None and str(honor_def.uuid) != honor_uuid:
+                continue
+
             # 检查配置是否完整
-            honor_uuid = str(honor_def.uuid) # 确保是字符串
+            cur_uuid = str(honor_def.uuid) # 确保是字符串
             role_id = honor_def.role_id
-            if not honor_uuid or not role_id:
+            if not cur_uuid or not role_id:
                 self.logger.warning(f"一个 role_sync_honor 的定义缺少 role_id: {honor_def.name}")
                 continue
 
             # 3. 如果用户拥有对应的身份组，则尝试授予荣誉
             if role_id in member_role_ids:
                 # grant_honor 方法是幂等的，如果用户已拥有则不会重复操作
-                granted_def = self.honor_data_manager.grant_honor(member.id, honor_uuid)
+                granted_def = self.honor_data_manager.grant_honor(member.id, cur_uuid)
 
                 if granted_def:
+                    granted_count += 1
                     self.logger.info(
                         f"[身份组认领] 用户 {member} ({member.id}) 因持有身份组 ID {role_id} "
                         f"而自动认领了荣誉 '{granted_def.name}'"
                     )
+
+        return granted_count
 
 
 async def setup(bot: 'RoleBot'):
