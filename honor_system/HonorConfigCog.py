@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import logging
+import uuid as uuid_lib
 from typing import TYPE_CHECKING, List, Optional
 
 import discord
@@ -141,6 +142,30 @@ class HonorConfigCog(FeatureCog):
             label="honor",
             permission_check=None,
         )
+
+    @honor_config_group.command(
+        name="生成UUID",
+        description="生成一个新 UUID，用于 honor toml [[definitions]] 块的 uuid 字段（手机友好）",
+    )
+    @is_admin()
+    async def cmd_gen_uuid(self, interaction: discord.Interaction):
+        """生成一个新 UUID 字符串，admin 一键复制粘贴到 honor toml 的 [[definitions]] 块。
+
+        设计动机：手机端没有方便的 UUID 生成工具；admin 在 discord bot 里点一下
+        就能拿到一个 token，复制到 toml 的 `uuid = "..."` 字段。ephemeral 消息
+        只对调用者可见，避免泄露到公共频道。
+        """
+        new_uuid = str(uuid_lib.uuid4())
+        embed = discord.Embed(
+            title="🆔 新 UUID",
+            description=(
+                f"复制下面这串到 `data/honor_<guild_id>.toml` 的 `[[definitions]]` 块：\n\n"
+                f"`{new_uuid}`\n\n"
+                f"⚠️ 这是 token，请只粘贴到 toml 文件，不要发到公共频道。"
+            ),
+            color=discord.Color.blue(),
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 __all__ = ["HonorConfigCog"]
