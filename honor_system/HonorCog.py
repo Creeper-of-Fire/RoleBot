@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import re
 from pathlib import Path
-from typing import cast, Optional, TYPE_CHECKING, Dict, List
+from typing import cast, Optional, Tuple, TYPE_CHECKING, Dict, List
 
 import discord
 from discord import ui, Color, app_commands
@@ -271,6 +271,357 @@ class HonorCog(FeatureCog, name="Honor"):
 
         view = HonorHoldersManageView(self, guild, honor_def)
         await view.start(interaction, ephemeral=True)
+
+    # === 同步角色荣誉（手动批量 sync） ===
+
+    async def role_id_autocomplete(
+            self,
+            interaction: discord.Interaction,
+            current: str,
+    ) -> List[app_commands.Choice[int]]:
+        """列出 role_sync_honor=true 的 honor 对应的 Discord 身份组 ID（按身份组名匹配）。"""
+        guild = interaction.guild
+        if guild is None:
+            return []
+
+        all_defs = self.data_manager.get_all_honor_definitions(guild.id)
+        choices: List[app_commands.Choice[int]] = []
+
+        for honor_def in all_defs:
+            if honor_def.is_archived:
+                continue
+            if not honor_def.role_sync_honor or not honor_def.role_id:
+                continue
+
+            role = guild.get_role(honor_def.role_id)
+            if not role:
+                continue
+
+            role_name = role.name
+            if not current or current.lower() in role_name.lower():
+                choices.append(app_commands.Choice(
+                    name=f"🎭 {role_name} ({role.id})"[:100],
+                    value=role.id,
+                ))
+
+        return choices[:25]
+
+    async def role_sync_honor_uuid_autocomplete(
+            self,
+            interaction: discord.Interaction,
+            current: str,
+    ) -> List[app_commands.Choice[str]]:
+        """只列出 role_sync_honor=true 的 honor UUID。"""
+        all_defs = self.data_manager.get_all_honor_definitions(interaction.guild_id)
+        choices: List[app_commands.Choice[str]] = []
+
+        for honor_def in all_defs:
+            if honor_def.is_archived:
+                continue
+            if not honor_def.role_sync_honor:
+                continue
+
+            choice_name = f"{honor_def.name} ({str(honor_def.uuid)[:8]})"
+            if current.lower() in choice_name.lower():
+                choices.append(app_commands.Choice(name=choice_name, value=str(honor_def.uuid)))
+
+        return choices[:25]
+
+    @honor_admin_group.command(
+        name="同步角色荣誉",
+        description="批量 sync role_sync_honor honor 的 role 持有者。三个入口互斥：all_sync / role_id / honor_uuid；执行前需二次确认。",
+    )
+    @app_commands.describe(
+        all_sync="同步全部 role_sync_honor=true 的 honor",
+        role_id="按 Discord 身份组 ID 同步（自动补全）",
+        honor_uuid="按 honor UUID 同步（自动补全）",
+    )
+    @app_commands.autocomplete(role_id=role_id_autocomplete)
+    @app_commands.autocomplete(honor_uuid=role_sync_honor_uuid_autocomplete)
+    @app_commands.checks.has_permissions(manage_roles=True)
+    async def cmd_sync_role_honors(
+            self,
+            interaction: discord.Interaction,
+            all_sync: bool = False,
+            role_id: Optional[int] = None,
+            honor_uuid: Optional[str] = None,
+    ):
+        """手动批量 sync：遍历 guild 所有成员，给持有 role_sync_honor=true honor role 的人 grant_honor。
+
+        三个入口互斥，必须恰好指定一个：
+        - all_sync=True：同步全部 role_sync_honor=true 的 honor
+        - role_id=<id>：按 Discord 身份组 ID 找对应 honor
+        - honor_uuid=<uuid>：按 honor UUID 找
+
+        执行前发送 ephemeral 二次确认 view。
+        """
+        # 1. 互斥校验
+        specified = sum([all_sync, role_id is not None, honor_uuid is not None])
+        if specified != 1:
+            await interaction.response.send_message(
+                "❌ 必须恰好指定一个参数：all_sync / role_id / honor_uuid",
+                ephemeral=True,
+            )
+            return
+
+        guild = cast(discord.Guild, interaction.guild)
+        if guild is None:
+            await interaction.response.send_message("❌ guild 未就绪", ephemeral=True)
+            return
+
+        # 2. 解析 scope + 找 target_honor_uuids
+        target_honor_uuids: List[str] = []
+        scope_desc = ""
+
+        if all_sync:
+            all_defs = self.data_manager.get_all_honor_definitions(guild.id)
+            target_honor_uuids = [
+                str(d.uuid) for d in all_defs
+                if d.role_sync_honor and d.role_id and not d.is_archived
+            ]
+            scope_desc = "🌐 全部 role_sync_honor=true honor"
+        elif role_id is not None:
+            with self.data_manager.get_db() as db:
+                honor_def = db.query(HonorDefinition).filter_by(
+                    role_id=role_id, is_archived=False,
+                ).first()
+            if honor_def is None or not honor_def.role_sync_honor:
+                await interaction.response.send_message(
+                    f"❌ 身份组 ID {role_id} 没有对应 role_sync_honor 的 honor",
+                    ephemeral=True,
+                )
+                return
+            target_honor_uuids = [str(honor_def.uuid)]
+            role = guild.get_role(role_id)
+            role_name = role.name if role else f"ID:{role_id}"
+            scope_desc = f"🎭 [身份组] {role_name}"
+        else:  # honor_uuid
+            with self.data_manager.get_db() as db:
+                honor_def = db.query(HonorDefinition).filter_by(
+                    uuid=honor_uuid, is_archived=False,
+                ).first()
+            if honor_def is None or not honor_def.role_sync_honor or not honor_def.role_id:
+                await interaction.response.send_message(
+                    f"❌ honor '{honor_uuid[:8]}' 无效或非 role_sync_honor 类型",
+                    ephemeral=True,
+                )
+                return
+            target_honor_uuids = [honor_uuid]
+            scope_desc = f"🏆 [Honor] {honor_def.name}"
+
+        if not target_honor_uuids:
+            await interaction.response.send_message(
+                "❌ 没有可同步的 honor（toml 没配或都已归档）",
+                ephemeral=True,
+            )
+            return
+
+        # 3. 二次确认 embed + view
+        # ★ 按 role 入手计算 sync_pairs（不遍历 guild.members）
+        if all_sync:
+            scope = "all"
+            target_value = None
+        elif role_id is not None:
+            scope = "role"
+            target_value = role_id
+        else:
+            scope = "honor"
+            target_value = honor_uuid
+
+        sync_pairs, skip_reasons = self._collect_sync_pairs(guild, scope, target_value)
+
+        # role/honor scope：skip_reasons 非空 → 直接报错（admin 输入无效）
+        if scope in ("role", "honor") and skip_reasons:
+            await interaction.response.send_message(
+                "\n".join(skip_reasons),
+                ephemeral=True,
+            )
+            return
+
+        estimated_members = sum(
+            len([m for m in role.members if not m.bot])
+            for _, role in sync_pairs
+        )
+
+        confirm_embed = discord.Embed(
+            title="⚠️ 确认同步角色荣誉",
+            description=(
+                f"**Scope**: {scope_desc}\n"
+                f"**目标 honor 数**: {len(sync_pairs)}\n"
+                f"**预估影响成员**: {estimated_members} 名\n\n"
+                f"按 role 入口扫描（不走全 guild）。\n"
+                f"此操作**不可撤销**（honor 是永久记录）。"
+            ),
+            color=discord.Color.orange(),
+        )
+
+        # all scope：skip_reasons 展示在二次确认 embed（admin 二次确认时能看到）
+        if scope == "all" and skip_reasons:
+            shown = "\n".join(skip_reasons[:10])
+            extra = f"\n... 共 {len(skip_reasons)} 项" if len(skip_reasons) > 10 else ""
+            confirm_embed.add_field(
+                name="⚠️ 将被 skip 的项（不阻断）",
+                value=shown + extra,
+                inline=False,
+            )
+
+        view = ConfirmSyncView(
+            on_confirm=lambda: self._do_sync_role_honors(
+                interaction, scope, target_value, skip_reasons,
+            ),
+        )
+        await interaction.response.send_message(embed=confirm_embed, view=view, ephemeral=True)
+
+    def _collect_sync_pairs(
+            self,
+            guild: discord.Guild,
+            scope: str,
+            target: Optional[str | int],
+    ) -> Tuple[List[Tuple[str, discord.Role]], List[str]]:
+        """收集 (sync_pairs, skip_reasons)。
+
+        - all_sync scope：找不到的项记 skip_reason（不阻断，由 caller 决定如何展示）
+        - role/honor scope：找不到 → skip_reason 非空，caller 应直接报错
+        """
+        sync_pairs: List[Tuple[str, discord.Role]] = []
+        skip_reasons: List[str] = []
+
+        if scope == "all":
+            all_defs = self.data_manager.get_all_honor_definitions(guild.id)
+            for honor_def in all_defs:
+                if not honor_def.role_sync_honor or not honor_def.role_id or honor_def.is_archived:
+                    continue
+                role = guild.get_role(honor_def.role_id)
+                if role is None:
+                    skip_reasons.append(
+                        f"⚠️ honor `{honor_def.name}` ({str(honor_def.uuid)[:8]}) 的 "
+                        f"role_id {honor_def.role_id} 在 Discord 中不存在"
+                    )
+                    continue
+                sync_pairs.append((str(honor_def.uuid), role))
+        elif scope == "role":
+            with self.data_manager.get_db() as db:
+                honor_def = db.query(HonorDefinition).filter_by(
+                    role_id=target, is_archived=False,
+                ).first()
+            if honor_def is None or not honor_def.role_sync_honor:
+                skip_reasons.append(f"❌ 身份组 ID {target} 没有对应 role_sync_honor 的 honor")
+            else:
+                role = guild.get_role(honor_def.role_id)
+                if role is None:
+                    skip_reasons.append(f"❌ 身份组 ID {target} 在 Discord 中不存在")
+                else:
+                    sync_pairs.append((str(honor_def.uuid), role))
+        else:  # scope == "honor"
+            honor_def = self.data_manager.get_honor_definition_by_uuid(target)
+            if honor_def is None or not honor_def.role_sync_honor or not honor_def.role_id:
+                skip_reasons.append(f"❌ honor `{target[:8]}` 无效或非 role_sync_honor 类型")
+            else:
+                role = guild.get_role(honor_def.role_id)
+                if role is None:
+                    skip_reasons.append(
+                        f"❌ honor `{honor_def.name}` 的 role_id {honor_def.role_id} 在 Discord 中不存在"
+                    )
+                else:
+                    sync_pairs.append((target, role))
+
+        return sync_pairs, skip_reasons
+
+    async def _do_sync_role_honors(
+            self,
+            interaction: discord.Interaction,
+            scope: str,
+            target: Optional[str | int],
+            skip_reasons: List[str],
+    ) -> None:
+        """按 role 入口扫描 sync（避免遍历整个 guild）。被 ConfirmSyncView.confirm 触发。"""
+        guild = interaction.guild
+        if guild is None:
+            return
+
+        sync_pairs, _ = self._collect_sync_pairs(guild, scope, target)
+        total_pairs = len(sync_pairs)
+
+        def _progress_text(processed_pairs: int, granted: int) -> str:
+            if total_pairs == 0:
+                return (
+                    "无需处理（没有可同步的 honor/role 配置）\n"
+                    f"已新增 {granted} 条 honor 记录"
+                )
+            percent = int(processed_pairs / total_pairs * 100)
+            bar_width = 10
+            filled = "█" * (percent * bar_width // 100)
+            empty = "░" * (bar_width - len(filled))
+            return (
+                f"[{filled}{empty}] {percent}% ({processed_pairs}/{total_pairs})\n"
+                f"已扫描 {processed_pairs} 个 honor/role 组合\n"
+                f"已新增 {granted} 条 honor 记录"
+            )
+
+        progress_embed = discord.Embed(
+            title="🔄 同步角色荣誉中...",
+            description=_progress_text(0, 0),
+            color=discord.Color.blue(),
+        )
+        progress_msg = await interaction.followup.send(embed=progress_embed)
+
+        granted_count = 0
+        processed_pairs = 0
+        update_every = max(1, total_pairs // 20)
+
+        for honor_uuid, role in sync_pairs:
+            # ★ role.members 直接拿持有该 role 的成员（不遍历 guild.members）
+            members = [m for m in role.members if not m.bot]
+            for member in members:
+                if self.data_manager.grant_honor(member.id, honor_uuid):
+                    granted_count += 1
+
+            processed_pairs += 1
+            if processed_pairs % update_every == 0 or processed_pairs == total_pairs:
+                progress_embed.description = _progress_text(processed_pairs, granted_count)
+                try:
+                    await progress_msg.edit(embed=progress_embed)
+                except discord.NotFound:
+                    pass
+
+        done_embed = discord.Embed(
+            title="✅ 同步角色荣誉完成",
+            description=_progress_text(processed_pairs, granted_count),
+            color=discord.Color.green(),
+        )
+
+        # ★ 完成时汇报 skip 的项（admin 知道具体哪些 role/honor 配置有问题）
+        if skip_reasons:
+            shown = "\n".join(skip_reasons[:10])
+            extra = f"\n... 共 {len(skip_reasons)} 项" if len(skip_reasons) > 10 else ""
+            done_embed.add_field(
+                name="⚠️ 被 skip 的项（建议检查 toml / Discord role_id）",
+                value=shown + extra,
+                inline=False,
+            )
+
+        await progress_msg.edit(embed=done_embed)
+
+
+class ConfirmSyncView(ui.View):
+    """同步角色荣誉前的二次确认 view（ephemeral，60s timeout）。"""
+
+    def __init__(self, on_confirm):
+        super().__init__(timeout=60)
+        self.on_confirm = on_confirm
+
+    @ui.button(label="✅ 确认同步", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: ui.Button):
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(view=self)
+        await self.on_confirm()
+
+    @ui.button(label="❌ 取消", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: ui.Button):
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(content="❌ 已取消", embed=None, view=self)
 
 
 async def setup(bot: 'RoleBot'):
