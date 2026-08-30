@@ -1,0 +1,960 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>创作大会 admin & dev 教程</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+:root {
+  --bg: #f7f5f0;
+  --bg-soft: #efeadc;
+  --card: #ffffff;
+  --border: #e9e3d6;
+  --border-soft: #f0e9d8;
+  --text: #14171e;
+  --text-mid: #3a4256;
+  --text-muted: #7c7a72;
+  --primary: #c97b3f;
+  --primary-bg: rgba(201, 123, 63, 0.08);
+  --primary-border: rgba(201, 123, 63, 0.22);
+  --secondary: #2f6f5e;
+  --secondary-bg: rgba(47, 111, 94, 0.08);
+  --secondary-border: rgba(47, 111, 94, 0.22);
+  --warn: #b06367;
+  --warn-bg: rgba(176, 99, 103, 0.08);
+  --info: #4a6491;
+  --info-bg: rgba(74, 100, 145, 0.08);
+  --line-soft: #ece5d8;
+  --code-bg: #1a1a2e;
+  --code-text: #e6e1d3;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  font-family: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+body::before {
+  content: "";
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background:
+    radial-gradient(circle at 0% 0%, var(--primary-bg) 0%, transparent 35%),
+    radial-gradient(circle at 100% 100%, var(--secondary-bg) 0%, transparent 35%);
+  pointer-events: none;
+  z-index: -1;
+}
+
+/* ====== Layout ====== */
+.wrap { max-width: 920px; margin: 0 auto; padding: 56px 24px 80px; }
+section { margin-bottom: 48px; }
+section:last-child { margin-bottom: 0; }
+
+/* ====== Hero ====== */
+.hero {
+  margin-bottom: 56px;
+  padding-bottom: 32px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.hero-tag {
+  display: inline-block;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--primary);
+  background: var(--primary-bg);
+  border: 1px solid var(--primary-border);
+  border-radius: 999px;
+  margin-bottom: 20px;
+}
+h1 {
+  font-family: 'DM Serif Display', serif;
+  font-size: 42px;
+  line-height: 1.15;
+  font-weight: 400;
+  letter-spacing: -0.005em;
+  margin: 0 0 16px;
+  color: var(--text);
+}
+.hero-sub {
+  font-size: 17px;
+  line-height: 1.5;
+  color: var(--text-mid);
+  max-width: 640px;
+  margin: 0;
+}
+.hero-meta {
+  display: flex;
+  gap: 24px;
+  margin-top: 24px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.hero-meta-item { display: flex; align-items: center; gap: 6px; }
+
+/* ====== Typography ====== */
+h2 {
+  font-family: 'DM Serif Display', serif;
+  font-size: 28px;
+  line-height: 1.25;
+  font-weight: 400;
+  margin: 0 0 6px;
+  color: var(--text);
+}
+h2-num {
+  display: inline-block;
+  font-family: 'Outfit', sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--primary);
+  letter-spacing: 0.1em;
+  margin-bottom: 4px;
+}
+h3 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0 0 8px;
+  color: var(--text);
+}
+p { margin: 0 0 12px; }
+.lede {
+  font-size: 15px;
+  color: var(--text-mid);
+  margin: 0 0 24px;
+  max-width: 720px;
+}
+
+/* ====== Cards ====== */
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 22px 24px;
+  margin-bottom: 16px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.025);
+  transition: all 200ms ease;
+}
+.card:hover {
+  box-shadow: 0 4px 14px rgba(0,0,0,0.06);
+}
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.card-grid .card { margin-bottom: 0; }
+.card-tag {
+  display: inline-block;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border-radius: 4px;
+  margin-bottom: 10px;
+}
+.card-tag.primary { color: var(--primary); background: var(--primary-bg); }
+.card-tag.secondary { color: var(--secondary); background: var(--secondary-bg); }
+.card-tag.warn { color: var(--warn); background: var(--warn-bg); }
+.card-tag.info { color: var(--info); background: var(--info-bg); }
+
+/* ====== KV (key-value) ====== */
+.kv {
+  display: grid;
+  grid-template-columns: 130px 1fr;
+  row-gap: 8px;
+  column-gap: 16px;
+  margin: 0;
+  font-size: 13px;
+}
+.kv dt {
+  color: var(--text-muted);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  padding: 2px 0;
+}
+.kv dd {
+  margin: 0;
+  color: var(--text);
+  padding: 2px 0;
+}
+
+/* ====== Bench bars (data comparison) ====== */
+.bench {
+  display: grid;
+  grid-template-columns: 160px 1fr 80px;
+  gap: 14px;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px dashed var(--line-soft);
+  font-size: 13px;
+}
+.bench:last-child { border-bottom: 0; }
+.bench-label { color: var(--text-mid); font-weight: 500; }
+.bench-track {
+  height: 12px;
+  background: var(--line-soft);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.bench-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--primary) 0%, var(--warn) 100%);
+  border-radius: 6px;
+  transition: width 400ms ease;
+}
+.bench-val {
+  text-align: right;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: var(--text);
+}
+
+/* ====== Timeline (vertical rail) ====== */
+.timeline {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 16px;
+  position: relative;
+}
+.timeline::before {
+  content: "";
+  position: absolute;
+  left: 9px;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  background: var(--primary);
+  opacity: 0.35;
+}
+.timeline li {
+  position: relative;
+  padding: 0 0 20px 36px;
+}
+.timeline li:last-child { padding-bottom: 0; }
+.timeline li::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 6px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--bg);
+  border: 3px solid var(--primary);
+}
+.timeline-title {
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 4px;
+  font-size: 14px;
+}
+.timeline-body { color: var(--text-mid); font-size: 13px; }
+
+/* ====== Code ====== */
+code, pre {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12.5px;
+}
+code {
+  background: var(--bg-soft);
+  padding: 1px 6px;
+  border-radius: 4px;
+  color: var(--text);
+}
+pre {
+  background: var(--code-bg);
+  color: var(--code-text);
+  padding: 14px 18px;
+  border-radius: 10px;
+  overflow-x: auto;
+  margin: 12px 0;
+  line-height: 1.5;
+}
+pre code {
+  background: transparent;
+  padding: 0;
+  color: inherit;
+}
+
+/* ====== Command badge ====== */
+.cmd {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: var(--code-bg);
+  color: var(--code-text);
+  border-radius: 6px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  font-weight: 500;
+}
+.cmd::before {
+  content: "/";
+  color: var(--primary);
+  font-weight: 700;
+}
+
+/* ====== Tables ====== */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0;
+  font-size: 13px;
+}
+th {
+  text-align: left;
+  padding: 10px 12px;
+  background: var(--bg-soft);
+  font-weight: 600;
+  color: var(--text-mid);
+  border-bottom: 2px solid var(--border);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-soft);
+  color: var(--text);
+  vertical-align: top;
+}
+tr:last-child td { border-bottom: 0; }
+tbody tr:hover { background: var(--bg-soft); }
+
+/* ====== Callout ====== */
+.callout {
+  display: flex;
+  gap: 14px;
+  padding: 16px 20px;
+  background: var(--warn-bg);
+  border-left: 3px solid var(--warn);
+  border-radius: 6px;
+  margin: 16px 0;
+}
+.callout-icon { flex-shrink: 0; margin-top: 2px; }
+.callout-body { color: var(--text); font-size: 13px; }
+.callout-body strong { color: var(--warn); }
+.callout.info { background: var(--info-bg); border-left-color: var(--info); }
+.callout.info .callout-body strong { color: var(--info); }
+.callout.primary { background: var(--primary-bg); border-left-color: var(--primary); }
+.callout.primary .callout-body strong { color: var(--primary); }
+.callout.success { background: var(--secondary-bg); border-left-color: var(--secondary); }
+.callout.success .callout-body strong { color: var(--secondary); }
+
+/* ====== Channel diagram ====== */
+.channel-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 12px;
+  margin: 20px 0;
+}
+.channel {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  text-align: center;
+}
+.channel-icon { margin-bottom: 8px; }
+.channel-name {
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+.channel-desc { font-size: 11px; color: var(--text-muted); }
+
+/* ====== Mermaid container ====== */
+.mermaid {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 24px;
+  margin: 16px 0;
+  display: flex;
+  justify-content: center;
+  overflow-x: auto;
+}
+
+/* ====== Checklist ====== */
+.checklist {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.checklist li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px dashed var(--line-soft);
+  font-size: 13px;
+}
+.checklist li:last-child { border-bottom: 0; }
+.check-icon { flex-shrink: 0; margin-top: 1px; }
+
+/* ====== TOC ====== */
+.toc {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 24px 28px;
+  margin-bottom: 48px;
+}
+.toc-title {
+  font-family: 'DM Serif Display', serif;
+  font-size: 20px;
+  font-weight: 400;
+  margin: 0 0 16px;
+  color: var(--text);
+}
+.toc-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 4px 24px;
+}
+.toc-list a {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  color: var(--text-mid);
+  text-decoration: none;
+  font-size: 13px;
+  transition: color 150ms;
+}
+.toc-list a:hover { color: var(--primary); }
+.toc-num {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+  width: 28px;
+  flex-shrink: 0;
+}
+
+/* ====== Icon ====== */
+.icon { display: inline-block; vertical-align: middle; }
+.icon-12 { width: 12px; height: 12px; }
+.icon-14 { width: 14px; height: 14px; }
+.icon-16 { width: 16px; height: 16px; }
+.icon-20 { width: 20px; height: 20px; }
+
+/* ====== Mobile ====== */
+@media (max-width: 768px) {
+  .wrap { padding: 32px 18px 56px; }
+  h1 { font-size: 30px; }
+  h2 { font-size: 22px; }
+  .channel-grid { grid-template-columns: 1fr; }
+  .toc-list { grid-template-columns: 1fr; }
+  .bench { grid-template-columns: 1fr; gap: 4px; }
+  .bench-val { text-align: left; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <span class="hero-tag">admin + dev 教程</span>
+  <h1>创作大会 — 从准备到上线的完整流程</h1>
+  <p class="hero-sub">类脑社区每半年一次的创作活动，bot 自动做按钮 / Modal / 推广面板，admin 负责 toml 配置 + Discord 端频道权限 + 身份组管理。本教程涵盖 admin 操作、dev 本地测试两条线。</p>
+  <div class="hero-meta">
+    <span class="hero-meta-item">
+      <svg class="icon icon-14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      30 分钟读完
+    </span>
+    <span class="hero-meta-item">
+      <svg class="icon icon-14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 7 9 18l-5-5"/></svg>
+      8 节教程
+    </span>
+    <span class="hero-meta-item">
+      <svg class="icon icon-14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M2 12h20"/></svg>
+      role_bot / discord-bots
+    </span>
+  </div>
+</header>
+
+<!-- ============ TOC ============ -->
+<nav class="toc">
+  <h2 class="toc-title">目录</h2>
+  <ul class="toc-list">
+    <li><a href="#overview"><span class="toc-num">01</span>赛季生命周期（if-else）</a></li>
+    <li><a href="#prep"><span class="toc-num">02</span>准备工作清单</a></li>
+    <li><a href="#channels"><span class="toc-num">03</span>频道设置 + 权限</a></li>
+    <li><a href="#toml"><span class="toc-num">04</span>toml 配置详解</a></li>
+    <li><a href="#flow"><span class="toc-num">05</span>赛季流程命令</a></li>
+    <li><a href="#honor"><span class="toc-num">06</span>永久贡献者荣誉（bot 自动 grant_honor）</a></li>
+    <li><a href="#reclaim"><span class="toc-num">07</span>身份组回收（admin 全权）</a></li>
+    <li><a href="#test"><span class="toc-num">08</span>本地测试（dev）</a></li>
+  </ul>
+</nav>
+
+<!-- ============ 01 赛季生命周期 ============ -->
+<section id="overview">
+  <span class="h2-num">01 / OVERVIEW</span>
+  <h2>赛季生命周期（if-else，不是状态机）</h2>
+  <p class="lede">bot <strong>不维护状态字段</strong>——投稿期判断 = <code>start_date &lt;= today &lt;= end_date</code>（一个 if-else）。admin 改 toml 即可调整时间窗，立即生效。</p>
+
+  <div class="mermaid">
+flowchart LR
+  T{"today 在<br/>[start_date, end_date]<br/>区间内?"}
+  T -->|是| OPEN[投稿期内<br/>bot 接受投稿]
+  T -->|否| CLOSED[投稿期外<br/>bot 拒绝投稿]
+  OPEN -.投稿期结束<br/>推广面板停止.-> CLOSED
+  CLOSED -.admin 改 toml.-> OPEN
+  classDef active fill:#ddeae5,stroke:#2f6f5e,color:#14171e
+  classDef inactive fill:#e9e3d6,stroke:#7c7a72,color:#14171e
+  classDef gate fill:#f0e9d8,stroke:#c97b3f,color:#14171e
+  class T gate
+  class OPEN active
+  class CLOSED inactive
+  </div>
+
+  <div class="callout info">
+    <svg class="icon icon-16 callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+    <div class="callout-body"><strong>bot 不做的事</strong>——投票、身份组设计、forum 帖子自动识别、胜负判断、自动发面板、管理投稿 / 取缔资格、最终身份组（winner_role）发放、<strong>身份组过期提醒 / 自动回收</strong>、<strong>游客领取面板</strong>。这些由管理组 + 委员会 + 其他 bot 负责。</div>
+  </div>
+
+  <div class="callout primary">
+    <svg class="icon icon-16 callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2H3v16h5l4 4v-4h9V2z"/></svg>
+    <div class="callout-body"><strong>unix 哲学核心</strong>——bot 提供最少工具（投稿面板 + 主入口面板 + 撤销投稿 + grant_honor）；身份组回收、winner_role 发放、胜负判断、状态机切换、过期提醒全部由 admin / 委员会负责。</div>
+  </div>
+</section>
+
+<!-- ============ 02 准备工作清单 ============ -->
+<section id="prep">
+  <span class="h2-num">02 / PREPARATION</span>
+  <h2>准备工作清单</h2>
+  <p class="lede">第一次启用一个 guild 时，按顺序完成这些事。已完成的事可以跳过。</p>
+
+  <div class="card">
+    <h3><span class="card-tag primary">Admin</span>Discord 端操作</h3>
+    <ol class="checklist">
+      <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--secondary)" stroke-width="2.5"><path d="M20 6 9 17l-5-5"/></svg>创建 3 个频道（主入口 + A 组分区 + B 组分区），见 §3</li>
+      <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--secondary)" stroke-width="2.5"><path d="M20 6 9 17l-5-5"/></svg>创建 4 个 Discord 身份组（见下方表格），记下 ID</li>
+      <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--secondary)" stroke-width="2.5"><path d="M20 6 9 17l-5-5"/></svg>把 bot 邀请到服务器，授予 manage_roles 权限</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <h3><span class="card-tag secondary">Bot</span>通过命令操作</h3>
+    <ol class="checklist">
+      <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--secondary)" stroke-width="2.5"><path d="M20 6 9 17l-5-5"/></svg><span class="cmd">合战丨配置 下载配置</span> 拿当前 toml + SHA-256</li>
+      <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--secondary)" stroke-width="2.5"><path d="M20 6 9 17l-5-5"/></svg>用文本编辑器修改 toml（见 §4 字段详解）</li>
+      <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--secondary)" stroke-width="2.5"><path d="M20 6 9 17l-5-5"/></svg><span class="cmd">合战丨配置 上传配置</span> + 粘上 SHA-256 前 12 字符</li>
+    </ol>
+  </div>
+
+  <h3 style="margin-top: 28px;">4 个必需身份组（简化版）</h3>
+  <table>
+    <thead>
+      <tr><th>身份组</th><th>数量</th><th>用途</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>A 组支持者</td><td>1</td><td>用户点 A 按钮后 bot add；<strong>过期 / 移除由 admin 手动到 Discord 处理</strong>（bot 不推提醒）</td></tr>
+      <tr><td>B 组支持者</td><td>1</td><td>同上</td></tr>
+      <tr><td>A 组参赛者</td><td>1</td><td>用户投 A 后 bot add；<strong>过期 / 移除由 admin 手动到 Discord 处理</strong></td></tr>
+      <tr><td>B 组参赛者</td><td>1</td><td>同上</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <svg class="icon icon-16 callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01M12 2 1 22h22Z"/></svg>
+    <div class="callout-body"><strong>最终身份组（winner_role）不在这里管</strong>——bot 完全不参与 winner_role 发放。委员会走 7+7 人工流程后，admin 手动到 Discord 给获胜方 supporter add winner_role（持续到下次合战结束）。</div>
+  </div>
+
+  <div class="callout primary">
+    <svg class="icon icon-16 callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2H3v16h5l4 4v-4h9V2z"/></svg>
+    <div class="callout-body"><strong>游客领取</strong>——bot <strong>不</strong>发游客面板（游客身份由 admin 用 honor claimable 模块或 Discord 手动 add）。</div>
+  </div>
+</section>
+
+<!-- ============ 03 频道设置 ============ -->
+<section id="channels">
+  <span class="h2-num">03 / CHANNELS</span>
+  <h2>频道设置 + 权限</h2>
+  <p class="lede">bot <strong>不管</strong>频道权限——所有可见性由 Discord 端管理组设置。如果分区权限没设好，所有人（包括对方阵营）都能看到——这是 admin 的责任。</p>
+
+  <div class="channel-grid">
+    <div class="channel">
+      <div class="channel-icon">
+        <svg class="icon icon-20" viewBox="0 0 24 24" fill="none" stroke="var(--info)" stroke-width="2"><path d="M3 7h18M3 12h18M3 17h18"/></svg>
+      </div>
+      <div class="channel-name">主入口频道</div>
+      <div class="channel-desc">所有人可见<br/>A 组 / B 组 阵营选择按钮</div>
+    </div>
+    <div class="channel">
+      <div class="channel-icon">
+        <svg class="icon icon-20" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" stroke-width="2"><path d="M5 3v18M19 3v18M3 12h18"/></svg>
+      </div>
+      <div class="channel-name">A 组分区</div>
+      <div class="channel-desc">仅 A 组阵营可见<br/>📨 投稿按钮 + A 组推广</div>
+    </div>
+    <div class="channel">
+      <div class="channel-icon">
+        <svg class="icon icon-20" viewBox="0 0 24 24" fill="none" stroke="var(--info)" stroke-width="2"><path d="M12 2v20M2 12h20"/></svg>
+      </div>
+      <div class="channel-name">B 组分区</div>
+      <div class="channel-desc">仅 B 组阵营可见<br/>📨 投稿按钮 + B 组推广</div>
+    </div>
+  </div>
+
+  <h3 style="margin-top: 28px;">权限示例（A 组分区）</h3>
+  <pre><code>@everyone       → ❌ view_channel
+@A 组支持者身份组 → ✅ view_channel
+@Bot 角色        → ✅ view_channel + send_messages + manage_messages</code></pre>
+
+  <div class="callout">
+    <svg class="icon icon-16 callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01M12 2 1 22h22Z"/></svg>
+    <div class="callout-body"><strong>权限出错怎么办？</strong>检查 Discord 端频道权限覆盖 + bot 的角色权限。如果 bot 在某频道没有 view_channel，发消息会失败但不会报错。</div>
+  </div>
+</section>
+
+<!-- ============ 04 toml 配置详解 ============ -->
+<section id="toml">
+  <span class="h2-num">04 / TOML CONFIG</span>
+  <h2>toml 配置详解</h2>
+  <p class="lede">完整字段定义。每个字段都标注了来源（是 admin 必填 / bot 自动 / 可选）。</p>
+
+  <h3>完整示例</h3>
+  <pre><code>[meta]
+season_label = "第零赛季 秋冬"
+season_id = "S0-2026-autumn-winter"    # ★ 用作 json 文件名后缀（admin 自由编辑）
+theme = "秋冬"
+start_date = "2026-09-01"              # 投稿期开始（含）
+end_date = "2026-12-31"                # 投稿期结束（含）；now 在 [start, end] 就接受投稿
+
+[promotion]
+main_channel_id = 1134557553011998840   # 主入口频道（可留空 → 不发主入口面板）
+refresh_minutes = 5                    # 推广面板刷新频率（仅投稿期内更新）
+random_count_per_faction = 2
+
+[[factions]]
+key = "faction_a"                       # 必须小写英文 + 下划线
+display_name = "A 组"
+emoji = "🅰️"
+supporter_role_id = 111111111           # bot add；过期 / 移除由 admin 手动
+submission_channel_id = 444444444        # A 组分区频道（可留空）
+
+# ★ 简化版：per-faction 黑/白名单（OO 一点）
+#   黑名单：持任一角色即拒绝加入/投稿 A；黑名单优先于白名单
+#   白名单：非空时必须持任一角色才允许加入/投稿 A；空 = 不限制
+blacklist_role_ids = []                  # 例：[999] 表示持 999 角色不能加 A
+whitelist_role_ids = []                  # 例：[888] 表示必须有 888 才能加 A
+
+# ★ 简化版：投稿成功后 bot 调 grant_honor 用的 UUID（从 honor toml 引用）
+#   留空 = 不 grant_honor
+contributor_honor_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+[[factions]]
+key = "faction_b"
+display_name = "B 组"
+emoji = "🅱️"
+supporter_role_id = 555555555
+submission_channel_id = 888888888
+blacklist_role_ids = []
+whitelist_role_ids = []
+contributor_honor_uuid = "11111111-2222-3333-4444-555555555555"
+
+[notification]
+channel_id = 999999999
+admin_role_id = 000000000</code></pre>
+
+  <h3 style="margin-top: 24px;">字段约束（pydantic 自动校验）</h3>
+  <div class="bench">
+    <span class="bench-label">faction 数量</span>
+    <div class="bench-track"><div class="bench-fill" style="width:100%"></div></div>
+    <span class="bench-val">必须 = 2</span>
+  </div>
+  <div class="bench">
+    <span class="bench-label">faction.key 唯一</span>
+    <div class="bench-track"><div class="bench-fill" style="width:100%"></div></div>
+    <span class="bench-val">必须唯一</span>
+  </div>
+  <div class="bench">
+    <span class="bench-label">end_date</span>
+    <div class="bench-track"><div class="bench-fill" style="width:100%"></div></div>
+    <span class="bench-val">&gt; start_date</span>
+  </div>
+  <div class="bench">
+    <span class="bench-label">season_id</span>
+    <div class="bench-track"><div class="bench-fill" style="width:100%"></div></div>
+    <span class="bench-val">非空字符串</span>
+  </div>
+  <div class="bench">
+    <span class="bench-label">blacklist / whitelist_role_ids</span>
+    <div class="bench-track"><div class="bench-fill" style="width:100%"></div></div>
+    <span class="bench-val">空 list = 不限制</span>
+  </div>
+  <div class="bench">
+    <span class="bench-label">contributor_honor_uuid</span>
+    <div class="bench-track"><div class="bench-fill" style="width:100%"></div></div>
+    <span class="bench-val">可选（None = 不 grant_honor）</span>
+  </div>
+
+  <div class="callout primary">
+    <svg class="icon icon-16 callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2H3v16h5l4 4v-4h9V2z"/></svg>
+    <div class="callout-body"><strong>上传流程：</strong>先 <span class="cmd">合战丨配置 下载配置</span> → 修改 toml → <span class="cmd">合战丨配置 上传配置</span> + 粘 SHA-256 前 12 字符。hash 不匹配 = 拒绝写入（防止覆盖别人版本）。</div>
+  </div>
+</section>
+
+<!-- ============ 05 赛季流程命令 ============ -->
+<section id="flow">
+  <span class="h2-num">05 / SEASON FLOW</span>
+  <h2>赛季流程命令</h2>
+  <p class="lede">简化版：4 个核心命令——admin 手动发面板 + 撤销投稿（bot 按 toml 时间 if-else 判断投稿期，bot 投稿后自动 grant_honor）。</p>
+
+  <ol class="timeline">
+    <li>
+      <div class="timeline-title">发送主入口面板 <span class="card-tag primary" style="margin-left:6px;">main</span></div>
+      <div class="timeline-body">
+        <code>/合战丨核心 发送面板 channel_key:main</code><br>
+        发 A 组 / B 组 <strong>互斥领取</strong>按钮 + 两阵营统计到主入口频道。channel_key 自动补全。
+      </div>
+    </li>
+    <li>
+      <div class="timeline-title">发送分区投稿面板（每个阵营各一次）</div>
+      <div class="timeline-body">
+        <code>/合战丨核心 发送面板 channel_key:faction_a</code><br>
+        <code>/合战丨核心 发送面板 channel_key:faction_b</code><br>
+        发 📨 投稿按钮 + 该阵营 random 几个投稿。分区频道由 <code>submission_channel_id</code> 决定。
+      </div>
+    </li>
+    <li>
+      <div class="timeline-title">撤销投稿（admin 命令）</div>
+      <div class="timeline-body">
+        <code>/合战丨核心 撤销投稿 submission_id=&lt;UUID&gt;</code><br>
+        从 json 删除该投稿（<strong>不</strong> remove contributor_role，<strong>不</strong> 撤销 honor）。如需撤销身份组 / honor，admin 自己处理。
+      </div>
+    </li>
+    <li>
+      <div class="timeline-title">投稿成功后 bot 自动 grant_honor</div>
+      <div class="timeline-body">
+        不用命令——bot 在用户投稿成功后<strong>自动调</strong> honor 系统的 <code>grant_honor(member.id, contributor_honor_uuid)</code>。前提：honor toml 已配对应 UUID + creative_battle toml 引用（见 §6）。
+      </div>
+    </li>
+  </ol>
+
+  <div class="callout">
+    <svg class="icon icon-16 callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01M12 2 1 22h22Z"/></svg>
+    <div class="callout-body"><strong>channel_key 自动补全</strong>——输入 <code>fac</code> 会自动建议 <code>faction_a</code> / <code>faction_b</code> / <code>main</code>。</div>
+  </div>
+
+  <div class="callout primary">
+    <svg class="icon icon-16 callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2H3v16h5l4 4v-4h9V2z"/></svg>
+    <div class="callout-body"><strong>互斥领取</strong>——用户已选 A 后点 B，bot <strong>拒绝加入并提示"如需更换请联系管理组"</strong>。bot <strong>不</strong> remove A 的 supporter_role（unix 哲学：身份组生命周期由 admin 管）。</div>
+  </div>
+</section>
+
+<!-- ============ 06 永久贡献者荣誉 ============ -->
+<section id="honor">
+  <span class="h2-num">06 / HONOR INTEGRATION</span>
+  <h2>永久贡献者荣誉（bot 自动 grant_honor）</h2>
+  <p class="lede">简化版：bot 在投稿成功后<strong>直接调</strong> honor 系统的 <code>grant_honor</code> 接口。uuid 在 creative_battle toml 配，从 honor toml 引用。</p>
+
+  <div class="card-grid">
+    <div class="card">
+      <span class="card-tag primary">步骤 1</span>
+      <h3>honor toml 加 [[definitions]]</h3>
+      <p>用 <span class="cmd">荣誉头衔丨配置 下载配置</span> 拿 honor toml，加 2 个 <code>[[definitions]]</code> 块（每个阵营一个）。UUID 用 <span class="cmd">荣誉头衔丨配置 生成UUID</span> 拿。</p>
+      <pre><code>[[definitions]]
+uuid = "&lt;UUID v4 即可，或用 生成UUID 命令&gt;"
+name = "🍃 A 组之贡献者"
+description = "参与创作大会·A 组投稿"
+role_id = 222222222    # 仅供参考（= A 组 contributor_role_id）
+hidden_until_earned = true</code></pre>
+    </div>
+    <div class="card">
+      <span class="card-tag primary">步骤 2</span>
+      <h3>creative_battle toml 引用 UUID</h3>
+      <p>把上一步的 UUID 填到对应阵营的 <code>contributor_honor_uuid</code> 字段。</p>
+      <pre><code>[[factions]]
+key = "faction_a"
+contributor_honor_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"</code></pre>
+    </div>
+    <div class="card">
+      <span class="card-tag primary">步骤 3</span>
+      <h3>bot 自动处理</h3>
+      <p>赛季内：用户投稿 → bot 自动 <code>add_roles(contributor_role_id)</code> + <strong>自动 <code>grant_honor(member.id, contributor_honor_uuid)</code></strong>。无需 admin 操作。</p>
+      <p style="margin-top: 8px; font-size: 13px;"><strong>失败处理</strong>：<code>grant_honor</code> 失败不阻断投稿——json 标记 <code>honor_granted=false</code>，admin 看到后手动到 honor 系统补。</p>
+    </div>
+  </div>
+
+  <div class="callout">
+    <svg class="icon icon-16 callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01M12 2 1 22h22Z"/></svg>
+    <div class="callout-body"><strong>UUID 命令只是方便工具</strong>——任何恰当熵池（如 <code>uuid.uuid4()</code> 输出）都行，不会跟现有 record 冲突。命令的好处是手机上点一下复制。</div>
+  </div>
+
+  <div class="callout">
+    <svg class="icon icon-16 callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01M12 2 1 22h22Z"/></svg>
+    <div class="callout-body"><strong>撤销投稿不撤销 honor</strong>——bot 的 <code>/合战丨核心 撤销投稿</code> 命令只删 json，<strong>不</strong>撤销已授予的 honor。如需撤销，请到 honor 系统的 <code>/荣誉头衔丨核心</code> 处理。</div>
+  </div>
+</section>
+
+<!-- ============ 07 身份组回收 ============ -->
+<section id="reclaim">
+  <span class="h2-num">07 / ROLE RECLAIM</span>
+  <h2>身份组回收（admin 全权负责）</h2>
+  <p class="lede">简化版：<strong>bot 完全不做身份组过期提醒 / 自动回收</strong>。所有身份组 remove 由 admin 手动到 Discord 处理。</p>
+
+  <table>
+    <thead>
+      <tr><th>身份组</th><th>何时回收</th><th>回收方</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>A 组 / B 组 supporter_role</td><td>admin 自己定（赛季结束后 / 比赛结算后）</td><td><strong>admin 手动</strong>（到 Discord 身份组设置 remove 成员）</td></tr>
+      <tr><td>A 组 / B 组 contributor_role</td><td>admin 自己定</td><td><strong>admin 手动</strong></td></tr>
+      <tr><td>最终身份组（winner_role）</td><td><strong>bot 不参与</strong>——admin 走 7+7 人工流程后手动 add；下次合战结束时手动 remove</td><td><strong>admin 手动</strong></td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout primary">
+    <svg class="icon icon-16 callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2H3v16h5l4 4v-4h9V2z"/></svg>
+    <div class="callout-body"><strong>unix 哲学</strong>——bot 是工具，身份组生命周期由 admin 决定。bot 不维护过期时间字段、不推提醒、不调 remove。admin 看到需要回收时，自己到 Discord 处理。</div>
+  </div>
+
+  <div class="callout">
+    <svg class="icon icon-16 callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01M12 2 1 22h22Z"/></svg>
+    <div class="callout-body"><strong>为什么 bot 不管回收？</strong>回收时机完全由 admin 决定（比赛结束？一周后？一个月后？永久保留？）。bot 硬编码任何"几月后"规则都是过度防御 + 业务越界。</div>
+  </div>
+</section>
+
+<!-- ============ 08 本地测试 ============ -->
+<section id="test">
+  <span class="h2-num">08 / LOCAL TEST</span>
+  <h2>本地测试（dev）</h2>
+  <p class="lede">在部署到生产前，先在本地 Discord 测试服务器上完整跑一遍。</p>
+
+  <h3>前置准备</h3>
+  <div class="card-grid">
+    <div class="card">
+      <span class="card-tag secondary">1</span>
+      <h3>本地 Discord 测试服务器</h3>
+      <p>建一个 Discord 服务器（你自己当 owner）。在 Discord Developer Portal 创建一个 bot，token 写到本地 <code>.env</code>。</p>
+    </div>
+    <div class="card">
+      <span class="card-tag secondary">2</span>
+      <h3>启用 venv</h3>
+      <pre><code>cd D:\Dev\Workspace\discord-bots\role_bot
+.\.venv\Scripts\Activate.ps1</code></pre>
+    </div>
+    <div class="card">
+      <span class="card-tag secondary">3</span>
+      <h3>smoke test（不需要 bot token）</h3>
+      <pre><code>.venv\Scripts\python.exe -m creative_battle._schema_smoke_test
+.venv\Scripts\python.exe -m creative_battle.test_state_manager
+.venv\Scripts\python.exe -m creative_battle.test_cog_init
+.venv\Scripts\python.exe -m utility.test_toml_filename_utils</code></pre>
+    </div>
+  </div>
+
+  <h3 style="margin-top: 32px;">完整真起测试清单</h3>
+  <div class="card">
+    <h3><span class="card-tag primary">Pre-flight</span></h3>
+    <ol class="checklist">
+      <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>确认 <code>config.py</code> 里 <code>COGS</code> 包含 <code>"creative_battle"</code>（v2 默认 enabled=False，测试时手动改 True）</li>
+      <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>本地测试服务器建 3 个频道（主入口 + 两个分区）+ 4 个身份组（见 §2）</li>
+      <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>设置 Discord 端频道权限（见 §3）</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <h3><span class="card-tag primary">Toml 配置</span></h3>
+    <ol class="checklist">
+      <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>编辑本地 <code>data/creative_battle_&lt;test_guild_id&gt;.toml</code>（参考 §4 示例，把所有 ID 换成测试服务器的）</li>
+      <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>通过 <span class="cmd">合战丨配置 上传配置</span> 上传（首次可省略 hash）</li>
+      <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>如果走永久贡献者荣誉流程，<strong>同时</strong>在 honor toml 加 2 个 <code>[[definitions]]</code>，并在 creative_battle toml 填 <code>contributor_honor_uuid</code> 引用</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <h3><span class="card-tag primary">启动 bot</span></h3>
+    <ol class="checklist">
+      <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg><code>python main.py</code> 启动 bot，看启动日志确认 CreativeBattleCog 注册成功</li>
+      <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>确认 bot 已加入测试服务器，斜杠命令出现在聊天框</li>
+      <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>把 <code>config.py</code> 的 <code>creative_battle.enabled</code> 改成 <code>True</code> + 编辑 toml 把 <code>start_date</code> 改成今天，验证投稿可正常走通</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <h3><span class="card-tag primary">按钮交互测试</span></h3>
+    <p>用第二个 Discord 账号（或测试服务器里建一个 dummy 用户）测以下流程：</p>
+    <ol class="checklist">
+      <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>跑 <span class="cmd">合战丨核心 发送面板 channel_key:main</span> → 主入口收到 A 组 / B 组 按钮</li>
+      <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>点 A 组 → 拿到 A 组支持者身份组 + 收到 ephemeral 确认</li>
+      <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg><strong>互斥测试</strong>：已选 A 后点 B 组 → bot 应拒绝并提示"你已在 A 组，如需更换请联系管理组"，A 角色不被 remove</li>
+      <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>跑 <span class="cmd">合战丨核心 发送面板 channel_key:faction_a</span> → A 组分区收到 📨 按钮</li>
+      <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>点 📨 → 弹 Modal → 填标题 + 描述 → 提交 → 拿到 A 组参赛者身份组 + <strong>自动 grant_honor</strong></li>
+      <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>重复 4-5 步（让另一个 dummy 用户加 B 组 + 投稿）</li>
+      <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>等 5 分钟看推广 embed 是否 refresh（<code>promotion.refresh_minutes</code> 默认 5，<strong>仅投稿期内刷新</strong>）</li>
+      <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg><strong>撤销投稿测试</strong>：拿到 submission_id（从 <code>data/creative_battles_*.json</code> 里读）→ 跑 <span class="cmd">合战丨核心 撤销投稿 submission_id=...</span> → json 应删除该投稿，contributor_role 不被 remove</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <h3><span class="card-tag primary">投稿期外测试（简化版：if-else）</span></h3>
+    <ol class="checklist">
+      <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg><strong>投稿期结束测试</strong>：编辑 toml 把 <code>end_date</code> 改成昨天 → 用户点 📨 → bot 应拒绝"当前不是投稿期"。<strong>不需要重启 bot</strong>——下一条投稿请求立即用新时间。</li>
+      <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg><strong>推广面板停止更新测试</strong>：投稿期外等 5 分钟 → 推广 embed <strong>不应再 refresh</strong>（但消息本身还在频道里）</li>
+      <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg><strong>身份组回收测试</strong>：bot <strong>不</strong>做任何 remove 操作。admin 手动到 Discord 身份组设置 → remove 成员。验证人工流程跑通。</li>
+      <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg><strong>最终身份组测试</strong>：bot <strong>不参与</strong>——admin 手动到 Discord 给获胜方所有 supporter add winner_role（验证人工 7+7 流程）</li>
+      <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg><strong>grant_honor 验证</strong>：投稿后到 honor 系统查 <code>/荣誉头衔丨核心</code> 或用户荣誉墙，确认投稿用户已持有 <code>🍃 A/B 组之贡献者</code> honor</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <h3><span class="card-tag warn">常见故障</span></h3>
+    <dl class="kv">
+      <dt>按钮没反应</dt><dd>看 bot 日志是否报错；可能是 toml 加载失败或 channel_id 配错</dd>
+      <dt>Modal 提交失败</dt><dd>看 bot 日志确认 <code>add_roles</code> 抛了 <code>Forbidden</code>——bot 缺权限</dd>
+      <dt>自动补全不工作</dt><dd>需要先让 admin 在该 guild 跑过一次 <code>/合战丨配置 上传配置</code>，让 toml 被加载</dd>
+      <dt>用户已选 A 后想换 B</dt><dd>bot 设计为互斥——拒绝并提示"请联系管理组"。admin 手动 remove A 后用户重新点 B</dd>
+      <dt>投稿时提示"黑/白名单"</dt><dd>检查 toml 对应 faction 的 <code>blacklist_role_ids</code> / <code>whitelist_role_ids</code> 配置</dd>
+      <dt>grant_honor 失败</dt><dd>json 里 <code>honor_granted=false</code> 表示失败。检查 honor toml 是否有对应 UUID 块</dd>
+      <dt>promotion 不 refresh</dt><dd>检查 <code>promotion.refresh_minutes</code> 是否合理；bot 重启后 <code>tasks.loop</code> 会从 0 开始计时；投稿期外 bot 不刷新</dd>
+      <dt>json 文件损坏</dt><dd>从 BACKUP_CHANNEL_ID 12h zip 备份还原</dd>
+    </dl>
+  </div>
+</section>
+
+<!-- ============ Footer ============ -->
+<footer style="margin-top: 64px; padding-top: 24px; border-top: 1px solid var(--line-soft); text-align: center; color: var(--text-muted); font-size: 12px;">
+  <p>本页配套文档：<a href="creative-battle-design.md" style="color: var(--primary);">design.md</a>（dev 视角）+ <a href="creative-battle-admin-doc.md" style="color: var(--primary);">admin-doc.md</a>（admin 视角纯命令手册）</p>
+  <p style="margin-top: 8px;">role_bot / discord-bots · 2026-08-29（简化版：unix 哲学 + if-else 投稿期 + per-faction 黑/白名单）</p>
+</footer>
+
+</div>
+
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'base',
+    themeVariables: {
+      primaryColor: '#f7f5f0',
+      primaryTextColor: '#14171e',
+      primaryBorderColor: '#e9e3d6',
+      lineColor: '#c97b3f',
+      secondaryColor: '#f7f5f0',
+      tertiaryColor: '#efeadc',
+      fontFamily: "'Outfit', sans-serif",
+    },
+  });
+</script>
+</body>
+</html>

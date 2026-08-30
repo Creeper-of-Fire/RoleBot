@@ -13,6 +13,8 @@ from activity_tracker.TrackActivityCog import TrackActivityCog
 from core.CoreCog import CoreCog
 from core.embed_guides.embed_guides_command import EmbedGuidesConfigCog
 from core.role_backup_cog import BackupCog
+from creative_battle.CreativeBattleCog import CreativeBattleCog
+from creative_battle.CreativeBattleConfigCog import CreativeBattleConfigCog
 from honor_system.HonorCog import HonorCog
 from honor_system.HonorConfigCog import HonorConfigCog
 from honor_system.cup_honor.cup_honor_module import CupHonorModuleCog
@@ -173,6 +175,10 @@ class CogManager:
                 ClaimableHonorModuleCog,
                 CupHonorModuleCog,
                 RoleClaimHonorModuleCog,
+            ],
+            "creative_battle": [
+                CreativeBattleCog,
+                CreativeBattleConfigCog,
             ],
         }
 
