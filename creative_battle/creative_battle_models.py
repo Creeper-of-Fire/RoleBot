@@ -27,9 +27,9 @@
   ``now in [start_date, end_date]`` 就接受投稿，否则拒。不是状态机。
 - **互斥**：用户已选 A 阵营后点 B → bot 拒绝（ephemeral 提示），
   不 remove A。如需更换请管理组手动 remove A 后再点 B。
-- **黑/白名单 per-faction**：每个阵营各自一份
-  - ``blacklist_role_ids``：持任一即拒绝加入 / 投稿（黑名单语义）
-  - ``whitelist_role_ids``：非空时持任一才允许加入 / 投稿（白名单语义）
+- **投稿黑/白名单 per-faction**：每个阵营各自一份（仅投稿路径生效；加入靠 supporter_role 互斥）
+  - ``submission_blacklist_role_ids``：持任一即拒绝投稿（黑名单语义）
+  - ``submission_whitelist_role_ids``：非空时持任一才允许投稿（白名单语义）
   - 两者并存时：**黑名单优先**（黑名单中的角色即使在白名单也拒）
 - **grant_honor**：bot 在投稿成功后**直接调** honor 系统的 ``grant_honor`` 接口，
   uuid 在 toml 的 ``contributor_honor_uuid`` 配置（per-faction，从 honor toml 引用）
@@ -126,20 +126,23 @@ class FactionConfig(BaseModel):
         description="该阵营分区频道 ID（投稿按钮 + 分区推广面板）。未配置则不发该组分区面板",
     )
 
-    # --- 黑/白名单（per-faction，unix 哲学：黑名单优先） ---
+    # --- 投稿黑/白名单（per-faction，unix 哲学：黑名单优先） ---
+    # ★ 仅 _handle_submission（投稿路径）使用；加入路径靠 supporter_role 互斥检查。
 
-    blacklist_role_ids: list[int] = Field(
+    submission_blacklist_role_ids: list[int] = Field(
         default_factory=list,
         description=(
-            "黑名单身份组 ID 列表。**持任一即拒**（拒绝加入 / 拒绝投稿该阵营）。"
+            "投稿黑名单身份组 ID 列表。**持任一即拒**（拒绝投稿该阵营）。"
             "黑名单优先于白名单——即使持白名单角色之一，黑名单命中也拒。"
+            "**仅**作用于投稿路径；加入路径不调本字段。"
         ),
     )
-    whitelist_role_ids: list[int] = Field(
+    submission_whitelist_role_ids: list[int] = Field(
         default_factory=list,
         description=(
-            "白名单身份组 ID 列表。**非空时持任一才允许**加入 / 投稿该阵营；"
+            "投稿白名单身份组 ID 列表。**非空时持任一才允许**投稿该阵营；"
             "**空列表 = 不限制**。黑名单优先于白名单。"
+            "**仅**作用于投稿路径；加入路径不调本字段。"
         ),
     )
 
@@ -179,6 +182,46 @@ class PromotionConfig(BaseModel):
     )
     random_count_per_faction: int = Field(
         2, ge=1, le=10, description="每个分区推广 random 展示几个投稿",
+    )
+
+    # --- 文案（admin 必填；不设 default 避免事务耦合到代码层） ---
+
+    main_intro_text: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "主面板 intro 文案（admin 必填）。"
+            "建议说明：阵营互斥、选择后不可更换、每人只有一次机会。"
+            "嵌入主入口面板 embed description 顶部——为空会让 bot 加载时 fail-fast。"
+        ),
+    )
+
+    # --- 数字梗化开关（OFF 默认值合理：开关默认是关闭状态） ---
+
+    main_anonymize_enabled: bool = Field(
+        False,
+        description=(
+            "主面板数字梗化开关。ON 时刷新面板会把"
+            "'支持 X 人 / 参赛 X 人'数字随机替换成 anonymize_options 里的梗。"
+            "OFF 显示真实数字。"
+        ),
+    )
+    faction_anonymize_enabled: bool = Field(
+        False,
+        description=(
+            "分区面板数字梗化开关。ON 时刷新分区面板会把"
+            "'当前支持者 / 参赛者'数字随机替换成 anonymize_options 里的梗。"
+            "OFF 显示真实数字。"
+        ),
+    )
+    anonymize_options: list[str] = Field(
+        ...,
+        min_length=1,
+        description=(
+            "梗选项（admin 必填，至少 1 项）。"
+            "梗开关 ON 时每次刷新从这里 random.choice 抽一个替换数字。"
+            "示例：[\"乱码\", \"114514\", \"黑条\", \"我不告诉你\"]。"
+        ),
     )
 
 

@@ -653,11 +653,11 @@ supporter_role_id = 111111111           # 支持者：bot add；过期/移除由
 contributor_role_id = 222222222         # ★ 参赛者：bot add；过期由 honor toml 的顶层 `expiration_date` 字段配置 + HonorExpirationCog 推提醒
 submission_channel_id = 444444444        # A 组分区频道（可留空）
 
-# ★ 简化版：per-faction 黑/白名单（OO 一点）
-#   黑名单：持任一角色即拒绝加入/投稿 A；黑名单优先于白名单
-#   白名单：非空时必须持任一角色才允许加入/投稿 A；空 = 不限制
-blacklist_role_ids = []                  # 例：[999] 表示持 999 角色不能加 A
-whitelist_role_ids = []                  # 例：[888] 表示必须有 888 才能加 A
+# ★ 简化版：per-faction 投稿黑/白名单（**仅投稿路径生效**；加入靠身份组互斥）
+#   投稿黑名单：持任一角色即拒绝投稿 A；黑名单优先于白名单
+#   投稿白名单：非空时必须持任一角色才允许投稿 A；空 = 不限制
+submission_blacklist_role_ids = []       # 例：[999] 表示持 999 角色不能投稿 A
+submission_whitelist_role_ids = []       # 例：[888] 表示必须有 888 才能投稿 A
 
 # ★ 简化版：投稿成功后 bot 调 grant_honor 用的 UUID（从 honor toml 引用）
 #   留空 = 不 grant_honor
@@ -672,8 +672,8 @@ emoji = "🅱️"
 supporter_role_id = 555555555
 contributor_role_id = 666666666
 submission_channel_id = 888888888
-blacklist_role_ids = []
-whitelist_role_ids = []
+submission_blacklist_role_ids = []
+submission_whitelist_role_ids = []
 contributor_honor_uuid = "11111111-2222-3333-4444-555555555555"
 
 [notification]
@@ -702,7 +702,7 @@ admin_role_id = 000000000</code></pre>
     <span class="bench-val">非空字符串</span>
   </div>
   <div class="bench">
-    <span class="bench-label">blacklist / whitelist_role_ids</span>
+    <span class="bench-label">submission_blacklist_role_ids / submission_whitelist_role_ids</span>
     <div class="bench-track"><div class="bench-fill" style="width:100%"></div></div>
     <span class="bench-val">空 list = 不限制</span>
   </div>
@@ -1026,8 +1026,8 @@ contributor_honor_uuid = "11111111-2222-3333-4444-555555555555"</code></pre>
       <dt>按钮没反应</dt><dd>看 bot 日志是否报错；可能是 toml 加载失败或 channel_id 配错</dd>
       <dt>Modal 提交失败</dt><dd>看 bot 日志确认 <code>add_roles</code> 抛了 <code>Forbidden</code>——bot 缺权限</dd>
       <dt>自动补全不工作</dt><dd>需要先让 admin 在该 guild 跑过一次 <code>/合战丨配置 上传配置</code>，让 toml 被加载</dd>
-      <dt>用户已选 A 后想换 B</dt><dd>bot 设计为互斥——拒绝并提示"请联系管理组"。admin 手动 remove A 后用户重新点 B</dd>
-      <dt>投稿时提示"黑/白名单"</dt><dd>检查 toml 对应 faction 的 <code>blacklist_role_ids</code> / <code>whitelist_role_ids</code> 配置</dd>
+      <dt>用户已选 A 后想换 B</dt><dd>bot 设计为互斥——拒绝并不给用户暴露"联系管理组"。admin 手动 remove A 后用户重新点 B 即可</dd>
+      <dt>投稿时提示"黑/白名单"</dt><dd>检查 toml 对应 faction 的 <code>submission_blacklist_role_ids</code> / <code>submission_whitelist_role_ids</code> 配置</dd>
       <dt>grant_honor 失败</dt><dd>json 里 <code>honor_granted=false</code> 表示失败。检查 honor toml 是否有对应 UUID 块</dd>
       <dt>promotion 不 refresh</dt><dd>检查 <code>promotion.refresh_minutes</code> 是否合理；bot 重启后 <code>tasks.loop</code> 会从 0 开始计时；投稿期外 bot 不刷新</dd>
       <dt>json 文件损坏</dt><dd>从 BACKUP_CHANNEL_ID 12h zip 备份还原</dd>

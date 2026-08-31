@@ -11,8 +11,9 @@
 - **不硬编码 faction key**：所有 faction 处理走 ``for f in cfg.factions`` 遍历
 - **投稿期判断 = if-else**：bot 读 toml 的 ``start_date`` / ``end_date``，
   ``now in [start_date, end_date]`` 就接受投稿；否则拒绝。**不是状态机**。
-- **互斥**：用户已选 A 阵营后点 B → bot 拒绝（ephemeral 提示），
-  不 remove A。如需更换请管理组手动 remove A 后再点 B。
+- **互斥**：用户已选 A 阵营后点 B → bot 拒绝（ephemeral 提示"因为你已持有 X 身份组，
+  所以不能加入其他阵营"），不 remove A。admin 仍能通过管理命令强制 remove + 重新加入，
+  但 admin 工具不暴露在面向用户的提示中——避免几万人缠着管理组换阵营。
 - **黑/白名单 per-faction**：每个阵营独立配，黑名单优先于白名单。
 - **grant_honor 直接调**：bot 在投稿成功后调 honor 系统的 ``grant_honor`` 接口
   （uuid 在 toml 的 ``contributor_honor_uuid`` 配置）。
@@ -69,7 +70,9 @@ class MainPanelView(ui.View):
     """主入口面板：A 组 / B 组阵营互斥领取按钮（按 cfg.factions 遍历）。
 
     互斥语义由 ``_handle_join`` 实现：用户已选 A 后点 B → bot 拒绝
-    （ephemeral 提示"你已在 A 阵营，如需更换请联系管理组"）。
+    （ephemeral 提示"因为你已持有 A 身份组，所以不能加入其他阵营"——
+    不提管理组；admin 仍可通过管理命令手动 remove + 重新加入，
+    但这是 admin 工具，不暴露在面向用户的文案中）。
     """
 
     def __init__(self, cog: "CreativeBattleCog", factions: List[FactionConfig]) -> None:
@@ -113,6 +116,14 @@ class FactionPanelView(ui.View):
         self.add_item(submit_btn)
 
     async def _on_submit_click(self, interaction: discord.Interaction) -> None:
+        # ★ 前置检查在按钮 click 时完成——不通过就立即 ephemeral 报错，
+        #   不让用户白填 modal（按用户产品决策）。
+        reject_msg = await self.cog._check_submission_preconditions(
+            interaction, self.faction_key
+        )
+        if reject_msg:
+            await interaction.response.send_message(reject_msg, ephemeral=True)
+            return
         await interaction.response.send_modal(SubmissionModal(self.cog, self.faction_key))
 
 
@@ -216,29 +227,91 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
         held = {r.id for r in member.roles}
         return any(rid in held for rid in role_ids)
 
-    def _check_blacklist_whitelist(
+    def _check_submission_blacklist_whitelist(
         self,
         member: discord.Member,
         faction: FactionConfig,
+        all_factions: List[FactionConfig],
     ) -> Optional[str]:
-        """per-faction 黑/白名单检查（unix 哲学：黑名单优先于白名单）。
+        """per-faction 投稿黑/白名单检查（unix 哲学：黑名单优先于白名单）。
+
+        **仅**由投稿路径（按钮 click + modal submit 兜底）调用；_handle_join 走
+        supporter_role 互斥检查，不调本方法。
 
         Returns:
             None 表示通过；非 None = 拒绝原因（中文，给用户看）。
         """
         # 黑名单优先：持任一即拒
-        if faction.blacklist_role_ids and self._member_holds_any_role(
-            member, faction.blacklist_role_ids
+        if faction.submission_blacklist_role_ids and self._member_holds_any_role(
+            member, faction.submission_blacklist_role_ids
         ):
-            return f"❌ 你持有的某个身份组不允许加入/投稿 {faction.display_name}（黑名单）。"
+            # ★ 把黑名单里的 role_id 映射回具体阵营——给用户看"你已加入 X，不能投稿 Y"
+            other_faction = next(
+                (
+                    f for f in all_factions
+                    if f.supporter_role_id in faction.submission_blacklist_role_ids
+                ),
+                None,
+            )
+            other_label = (
+                f"{other_faction.emoji}{other_faction.display_name}"
+                if other_faction
+                else "对面阵营"
+            )
+            return (
+                f"❌ 你已加入{other_label}，不能投稿{faction.display_name}。"
+                f"如需投稿{faction.display_name}，请先到主面板换阵营。"
+            )
 
         # 白名单：非空时持任一才允许
-        if faction.whitelist_role_ids and not self._member_holds_any_role(
-            member, faction.whitelist_role_ids
+        if faction.submission_whitelist_role_ids and not self._member_holds_any_role(
+            member, faction.submission_whitelist_role_ids
         ):
-            return f"❌ 你未持有加入/投稿 {faction.display_name} 所需的身份组（白名单）。"
+            # ★ 明确告诉用户怎么解决——去主面板加阵营
+            return (
+                f"❌ 投稿{faction.display_name}必须先加入本阵营（点击主面板的"
+                f"「加入 {faction.emoji}{faction.display_name}」按钮，获得身份组后才能投稿）。"
+            )
 
         return None
+
+    async def _check_submission_preconditions(
+        self,
+        interaction: discord.Interaction,
+        faction_key: str,
+    ) -> Optional[str]:
+        """投稿前置检查（按钮 click 时调用，避免白填 modal；modal submit 兜底再调一次）。
+
+        检查项：
+        1. cfg 存在 + enabled
+        2. 现在 in [start_date, end_date]
+        3. faction 找到
+        4. member 找到
+        5. 投稿黑/白名单通过
+
+        Returns:
+            None 表示通过；非 None = 拒绝原因（中文，给用户看）。
+        """
+        cfg = self.config_mgr.get(interaction.guild.id)
+        if cfg is None or not cfg.enabled:
+            return "❌ 当前服务器未启用创作大会。"
+
+        # ★ 投稿期 if-else（不是状态机）
+        today = _dt.datetime.now(UTC8).date()
+        if not self._is_submission_open(cfg, today):
+            return (
+                f"❌ 当前不是投稿期（投稿期：{cfg.meta.start_date} ~ {cfg.meta.end_date}）。"
+            )
+
+        faction = next((f for f in cfg.factions if f.key == faction_key), None)
+        if faction is None:
+            return f"❌ 阵营 '{faction_key}' 配置异常，请联系 BOT 维护者。"
+
+        member = interaction.guild.get_member(interaction.user.id)
+        if member is None:
+            return "❌ 找不到你的成员信息。请重试或刷新 Discord。"
+
+        return self._check_submission_blacklist_whitelist(member, faction, cfg.factions)
 
     @staticmethod
     def _other_supporter_role_ids(
@@ -280,19 +353,23 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
                 (f for f in cfg.factions if f.supporter_role_id in held_other),
                 None,
             )
+            # ★ 不提管理组——文案只陈述事实："你已持有 X，所以不能加入其他阵营"
+            #   admin 仍然能通过管理命令手动 remove + 重新加入，但这是 admin 工具，
+            #   不应在面向用户的提示里暴露（避免几万人缠着管理组换阵营）
+            held_label = (
+                f"{held_faction.emoji}{held_faction.display_name}"
+                if held_faction
+                else "其他阵营"
+            )
             await interaction.response.send_message(
-                f"❌ 你已在 {held_faction.emoji if held_faction else '其他'}"
-                f"{held_faction.display_name if held_faction else '阵营'}。"
-                f"如需更换阵营，请联系管理组手动移除原身份组后再点击。",
+                f"❌ 因为你已持有 {held_label} 身份组，所以不能加入其他阵营。",
                 ephemeral=True,
             )
             return
 
-        # ★ 黑/白名单检查（per-faction）
-        reject_msg = self._check_blacklist_whitelist(member, faction)
-        if reject_msg:
-            await interaction.response.send_message(reject_msg, ephemeral=True)
-            return
+        # ★ 不调黑/白名单——加入路径靠 supporter_role 互斥检查（line 275-298）就够了。
+        #   黑/白名单**仅**用于 _handle_submission：投稿时必须持有本阵营 supporter
+        #   （白名单）+ 持有对面 supporter 即拒（黑名单）。
 
         # 幂等 add（重复点不会报错）
         supporter_role = interaction.guild.get_role(faction.supporter_role_id)
@@ -334,39 +411,17 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
         title: str,
         description: Optional[str],
     ) -> None:
-        cfg = self.config_mgr.get(interaction.guild.id)
-        if cfg is None or not cfg.enabled:
-            await interaction.response.send_message(
-                "❌ 当前服务器未启用创作大会。", ephemeral=True
-            )
-            return
-
-        # ★ 投稿期 if-else（不是状态机）
-        today = _dt.datetime.now(UTC8).date()
-        if not self._is_submission_open(cfg, today):
-            await interaction.response.send_message(
-                f"❌ 当前不是投稿期（投稿期：{cfg.meta.start_date} ~ {cfg.meta.end_date}）。",
-                ephemeral=True,
-            )
-            return
-
-        faction = next((f for f in cfg.factions if f.key == faction_key), None)
-        if faction is None:
-            await interaction.response.send_message(
-                f"❌ 阵营 '{faction_key}' 未配置。", ephemeral=True
-            )
-            return
-
-        member = interaction.guild.get_member(interaction.user.id)
-        if member is None:
-            await interaction.response.send_message("❌ 找不到成员。", ephemeral=True)
-            return
-
-        # ★ 投稿者也走黑/白名单检查（per-faction）
-        reject_msg = self._check_blacklist_whitelist(member, faction)
+        # ★ 前置检查兜底——按钮 click 时已做（_on_submit_click），modal submit
+        #   再做一次防止 race condition（用户连续点击 / 跨面板 / 上传期间配置变更）。
+        reject_msg = await self._check_submission_preconditions(interaction, faction_key)
         if reject_msg:
             await interaction.response.send_message(reject_msg, ephemeral=True)
             return
+
+        # 通过前置检查后再读 cfg / faction / member（preconditions 已读，这里复用）
+        cfg = self.config_mgr.get(interaction.guild.id)
+        faction = next((f for f in cfg.factions if f.key == faction_key), None)
+        member = interaction.guild.get_member(interaction.user.id)
 
         # 写 json（先写状态——即使后续 grant_honor 失败也保留提交记录）
         state = self.state_mgr.ensure_season(interaction.guild.id, cfg.meta.season_id)
@@ -523,8 +578,12 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
             )
             return
 
-        msg = await channel.send(embed=embed, view=view)
-        state.season.promotion_message_ids[channel_key] = msg.id
+        # ★ delegate 给 _refresh_promotion——跟 promotion_loop 走同一条 send/edit
+        # 路径（避免两边各写一份 send 逻辑漂移；将来加 lock / view 修复都在一处改）。
+        await self._refresh_promotion(
+            interaction.guild, state, channel_key, channel_id,
+            embed=embed, view=view,
+        )
         await self.state_mgr.save_data(state)
         await interaction.response.send_message(
             f"✅ {channel_key} 面板已发送到 {channel.mention}", ephemeral=True
@@ -590,13 +649,27 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
             if is_open
             else f"⚫ 非投稿期（{cfg.meta.start_date} ~ {cfg.meta.end_date}）"
         )
+
+        # ★ 数字行：开关 ON 时每次刷新 random.choice 抽梗替换；OFF 显示真实数字
+        opts = cfg.promotion.anonymize_options
+
+        def fmt_support(f: FactionConfig) -> str:
+            if cfg.promotion.main_anonymize_enabled:
+                return random.choice(opts)
+            return f"{supporters.get(f.key, 0)} 人"
+
+        def fmt_submission(f: FactionConfig) -> str:
+            if cfg.promotion.main_anonymize_enabled:
+                return random.choice(opts)
+            return f"{submissions.get(f.key, 0)} 人"
+
         embed = discord.Embed(
             title=f"🎉 {cfg.meta.season_label}",
             description=(
                 f"{status_line}\n\n"
-                f"点下方按钮加入你要支持的组（A/B **互斥**，如需更换请联系管理组）。\n\n"
+                f"{cfg.promotion.main_intro_text}\n\n"
                 + "\n".join(
-                    f"{f.emoji} **{f.display_name}** — 支持 {supporters.get(f.key, 0)} 人 / 参赛 {submissions.get(f.key, 0)} 人"
+                    f"{f.emoji} **{f.display_name}** — 支持 {fmt_support(f)} / 参赛 {fmt_submission(f)}"
                     for f in cfg.factions
                 )
             ),
@@ -622,10 +695,19 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
         today = _dt.datetime.now(UTC8).date()
         is_open = self._is_submission_open(cfg, today)
 
+        # ★ 数字行：开关 ON 时 random.choice 抽梗替换；OFF 显示真实数字
+        opts = cfg.promotion.anonymize_options
+        if cfg.promotion.faction_anonymize_enabled:
+            supporter_token = random.choice(opts)
+            submission_token = random.choice(opts)
+        else:
+            supporter_token = f"{supporters} 人"
+            submission_token = f"{len(subs)} 人"
+
         embed = discord.Embed(
             title=f"{faction.emoji} {cfg.meta.season_label} — {faction.display_name}",
             description=(
-                f"当前支持者：{supporters} 人 / 参赛者：{len(subs)} 人\n"
+                f"当前支持者：{supporter_token} / 参赛者：{submission_token}\n"
                 + (
                     f"🟢 投稿期内，点下方按钮提交你的作品。"
                     if is_open
@@ -655,15 +737,15 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
 
     @tasks.loop(minutes=5)
     async def promotion_loop(self) -> None:
-        today = _dt.datetime.now(UTC8).date()
         for guild_id in self._iter_configured_guild_ids():
             cfg = self.config_mgr.get(guild_id)
             if cfg is None or not cfg.enabled:
                 continue
 
-            # ★ if-else（不是状态机）：仅投稿期内刷新
-            if not self._is_submission_open(cfg, today):
-                continue
+            # ★ 不再卡投稿期——pre-launch 阶段 _handle_join 已经能加入，
+            #   所以面板数字也要保持刷新（一致性：joinable ↔ refresh）。
+            #   投稿期约束只作用在 _handle_submission（投稿模块），
+            #   其他模块（加入、刷新面板）保持无知。
 
             state = self.state_mgr.ensure_season(guild_id, cfg.meta.season_id)
             guild = self.bot.get_guild(guild_id)
@@ -678,6 +760,7 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
                     "main",
                     cfg.promotion.main_channel_id,
                     embed=self._build_main_embed(cfg, state.season),
+                    view=MainPanelView(self, cfg.factions),
                 )
 
             # 2. ★ 遍历每个 faction（不硬编码）
@@ -690,6 +773,7 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
                     faction.key,
                     faction.submission_channel_id,
                     embed=self._build_faction_embed(cfg, state.season, faction),
+                    view=FactionPanelView(self, faction_key=faction.key),
                 )
 
             await self.state_mgr.save_data(state)
@@ -705,24 +789,30 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
         channel_key: str,
         channel_id: int,
         embed: discord.Embed,
+        view: discord.ui.View,
     ) -> None:
         """单一持久 embed：edit 上次消息，没有则新发。
 
         bot 不管面板自身生命周期——如果被 admin / 用户删了，下次 loop 检测到 NotFound 重发。
+
+        **view 每次都从当前 cfg 重新构造**：faction.display_name / emoji 是 toml
+        里的可编辑字段，admin 改文案后下一轮 loop 要把按钮文字一起刷新过去。所以
+        send 路径和 edit 路径都传 view（edit 不传 view = dpy 2.x 保留旧 view，按钮
+        文字就跟不上 admin 的文案变更了）。
         """
         channel = guild.get_channel(channel_id)
         if channel is None:
             return
         msg_id = state.season.promotion_message_ids.get(channel_key)
         if msg_id is None:
-            msg = await channel.send(embed=embed)
+            msg = await channel.send(embed=embed, view=view)
             state.season.promotion_message_ids[channel_key] = msg.id
         else:
             try:
                 msg = await channel.fetch_message(msg_id)
-                await msg.edit(embed=embed)
+                await msg.edit(embed=embed, view=view)
             except discord.NotFound:
-                msg = await channel.send(embed=embed)
+                msg = await channel.send(embed=embed, view=view)
                 state.season.promotion_message_ids[channel_key] = msg.id
 
 

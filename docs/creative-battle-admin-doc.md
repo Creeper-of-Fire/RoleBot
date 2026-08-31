@@ -147,11 +147,12 @@ contributor_role_expire_at = "2026-12-31T23:59:59+08:00"
 
 # ★ 简化版新增：per-faction 黑/白名单
 #   - 黑名单：持任一角色即拒绝加入/投稿 A
-#   - 白名单：非空时必须持任一角色才允许加入/投稿 A
+#   - 白名单：非空时必须持任一角色才允许投稿 A
 #   - 黑名单优先于白名单
 #   - 留空 [] = 不限制
-blacklist_role_ids = []                # 例：[999999, 888888] 表示这俩角色不能加 A
-whitelist_role_ids = []                # 例：[111111] 表示必须有 111111 才能加 A
+#   ⚠️ 这俩字段**仅作用于投稿路径**；加入路径不读，靠身份组 supporter_role 互斥检查
+submission_blacklist_role_ids = []     # 例：[999999, 888888] 表示这俩角色不能投稿 A
+submission_whitelist_role_ids = []     # 例：[111111] 表示必须有 111111 才能投稿 A
 
 # ★ 简化版新增：投稿成功后 bot 调 grant_honor 用的 UUID（从 honor toml 引用）
 #   留空（""或 null）= 不 grant_honor
@@ -166,8 +167,8 @@ supporter_role_id = 555555555
 contributor_role_id = 666666666
 submission_channel_id = 888888888
 contributor_role_expire_at = "2026-12-31T23:59:59+08:00"
-blacklist_role_ids = []
-whitelist_role_ids = []
+submission_blacklist_role_ids = []
+submission_whitelist_role_ids = []
 contributor_honor_uuid = "11111111-2222-3333-4444-555555555555"
 
 [notification]
@@ -203,11 +204,11 @@ admin_role_id = 000000000              # 公告要 @ 的身份组
 ```toml
 [[factions]]
 key = "faction_a"
-blacklist_role_ids = [123456789012345678]   # 管理组身份组 ID
+submission_blacklist_role_ids = [123456789012345678]   # 管理组身份组 ID
 
 [[factions]]
 key = "faction_b"
-blacklist_role_ids = [123456789012345678]   # 同上
+submission_blacklist_role_ids = [123456789012345678]   # 同上
 ```
 
 **场景 2：A 组只允许"VIP 用户"投稿**
@@ -215,8 +216,8 @@ blacklist_role_ids = [123456789012345678]   # 同上
 ```toml
 [[factions]]
 key = "faction_a"
-whitelist_role_ids = [987654321098765432]   # VIP 身份组 ID
-blacklist_role_ids = []
+submission_whitelist_role_ids = [987654321098765432]   # VIP 身份组 ID
+submission_blacklist_role_ids = []
 ```
 
 **场景 3：A 组允许所有人投稿，但禁止"已封禁"角色**
@@ -224,8 +225,8 @@ blacklist_role_ids = []
 ```toml
 [[factions]]
 key = "faction_a"
-blacklist_role_ids = [111222333444555666]   # 已封禁身份组
-whitelist_role_ids = []
+submission_blacklist_role_ids = [111222333444555666]   # 已封禁身份组
+submission_whitelist_role_ids = []
 ```
 
 ### 2.5 投稿期时间窗调整
@@ -478,7 +479,7 @@ bot 的 `/合战丨核心 撤销投稿` 命令**只删 json**，**不撤销已�
 
 **解决**：
 
-1. 检查 toml 中对应 faction 的 `blacklist_role_ids` / `whitelist_role_ids` 配置
+1. 检查 toml 中对应 faction 的 `submission_blacklist_role_ids` / `submission_whitelist_role_ids` 配置
 2. 如需调整，修改 toml 后上传
 3. 黑名单优先——即使在白名单中，黑名单命中也拒
 

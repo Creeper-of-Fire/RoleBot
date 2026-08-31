@@ -27,8 +27,8 @@ _BASE_FACTION_FIELDS = {
     "supporter_role_id": 111,
     "contributor_role_id": 222,
     "submission_channel_id": 444,
-    "blacklist_role_ids": [],
-    "whitelist_role_ids": [],
+    "submission_blacklist_role_ids": [],
+    "submission_whitelist_role_ids": [],
     "contributor_honor_uuid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
 }
 
@@ -52,8 +52,8 @@ def test_toml_schema_basic():
                 "supporter_role_id": 111,
                 "contributor_role_id": 222,
                 "submission_channel_id": 444,
-                "blacklist_role_ids": [999, 998],
-                "whitelist_role_ids": [],
+                "submission_blacklist_role_ids": [999, 998],
+                "submission_whitelist_role_ids": [],
                 "contributor_honor_uuid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
             },
             {
@@ -63,8 +63,8 @@ def test_toml_schema_basic():
                 "supporter_role_id": 555,
                 "contributor_role_id": 666,
                 "submission_channel_id": 888,
-                "blacklist_role_ids": [],
-                "whitelist_role_ids": [100, 200],
+                "submission_blacklist_role_ids": [],
+                "submission_whitelist_role_ids": [100, 200],
                 "contributor_honor_uuid": "11111111-2222-3333-4444-555555555555",
             },
         ],
@@ -79,8 +79,8 @@ def test_toml_schema_basic():
     # 撤回的 expire_at 字段
     assert not hasattr(cfg.factions[0], "contributor_role_expire_at")
     # 黑/白名单
-    assert cfg.factions[0].blacklist_role_ids == [999, 998]
-    assert cfg.factions[1].whitelist_role_ids == [100, 200]
+    assert cfg.factions[0].submission_blacklist_role_ids == [999, 998]
+    assert cfg.factions[1].submission_whitelist_role_ids == [100, 200]
     # grant_honor uuid
     assert cfg.factions[0].contributor_honor_uuid == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
     # 删除字段
@@ -163,7 +163,7 @@ def test_toml_schema_rejects_bad_date_range():
 
 
 def test_toml_schema_accepts_empty_black_white_lists():
-    """简化版：blacklist/whitelist 空 list 是合法的（不限制）。"""
+    """简化版：submission_blacklist_role_ids/submission_whitelist_role_ids 空 list 是合法的（不限制）。"""
     cfg = CreativeBattleGuildConfig(
         enabled=True,
         meta={
@@ -175,15 +175,15 @@ def test_toml_schema_accepts_empty_black_white_lists():
         },
         factions=[
             {**_BASE_FACTION_FIELDS, "key": "faction_a", "display_name": "A", "emoji": "✨", "supporter_role_id": 1, "submission_channel_id": 10,
-             "blacklist_role_ids": [], "whitelist_role_ids": []},
+             "submission_blacklist_role_ids": [], "submission_whitelist_role_ids": []},
             {**_BASE_FACTION_FIELDS, "key": "faction_b", "display_name": "B", "emoji": "✨", "supporter_role_id": 4, "submission_channel_id": 11,
-             "blacklist_role_ids": [], "whitelist_role_ids": []},
+             "submission_blacklist_role_ids": [], "submission_whitelist_role_ids": []},
         ],
         notification={"channel_id": 1, "admin_role_id": 2},
     )
-    assert cfg.factions[0].blacklist_role_ids == []
-    assert cfg.factions[0].whitelist_role_ids == []
-    print("✅ empty black/white lists accepted (semantic: no restriction)")
+    assert cfg.factions[0].submission_blacklist_role_ids == []
+    assert cfg.factions[0].submission_whitelist_role_ids == []
+    print("✅ empty submission black/white lists accepted (semantic: no restriction)")
 
 
 def test_toml_schema_accepts_optional_honor_uuid():

@@ -20,9 +20,9 @@
   - 点击弹 Modal（标题 + 描述）→ bot add contributor_role + 写 json + grant_honor
 - **推广面板**定时 refresh（**仅投稿期内**——投稿期结束 → 停止更新）
 - **投稿期判断 = if-else**：bot 读 toml 的 `start_date` / `end_date`，`now in [start_date, end_date]` 就接受投稿；否则拒绝。**不是状态机**。
-- **投稿黑/白名单 per-faction**：每个阵营独立配置
-  - `blacklist_role_ids`：持任一即拒（黑名单优先于白名单）
-  - `whitelist_role_ids`：非空时持任一才允许
+- **投稿黑/白名单 per-faction**：每个阵营独立配置（**仅投稿路径生效**；加入路径靠 supporter_role 互斥）
+  - `submission_blacklist_role_ids`：持任一即拒（黑名单优先于白名单）
+  - `submission_whitelist_role_ids`：非空时持任一才允许
 - **grant_honor 直接调**：投稿成功后 bot 直接调 honor 系统的 `grant_honor` 接口
   - uuid 在 toml 的 `contributor_honor_uuid` 配置（per-faction）
 - **contributor_role 过期 = HonorExpirationCog 通用机制**（honor_system/honor_expiration_cog.py）：
@@ -127,8 +127,8 @@ submission_channel_id = 444444444        # A 组分区频道（发投稿面板�
 
 # ★ 简化版新增：per-faction 黑/白名单（OO 一点，admin 自己配）
 #   黑名单：持任一即拒；白名单：非空时持任一才允许；黑名单优先于白名单
-blacklist_role_ids = []                  # 空 = 不限制；非空 = 持任一角色即拒绝加入/投稿 A
-whitelist_role_ids = []                  # 空 = 不限制；非空 = 必须持任一角色才允许加入/投稿 A
+submission_blacklist_role_ids = []      # 投稿黑名单（仅投稿路径生效）；空 = 不限制；非空 = 持任一角色即拒绝投稿 A
+submission_whitelist_role_ids = []      # 投稿白名单（仅投稿路径生效）；空 = 不限制；非空 = 必须持任一角色才允许投稿 A
 
 # ★ 简化版新增：contributor_honor_uuid（per-faction，从 honor toml 引用）
 #   投稿成功后 bot 调 grant_honor(member.id, contributor_honor_uuid)
@@ -145,8 +145,8 @@ supporter_role_id = 555555555
 contributor_role_id = 666666666
 contributor_role_expire_at = 2026-12-31T23:59:59+08:00
 submission_channel_id = 888888888
-blacklist_role_ids = []
-whitelist_role_ids = [123456789]         # 例：B 组要求白名单角色 123456789
+submission_blacklist_role_ids = []
+submission_whitelist_role_ids = [123456789]         # 例：B 组要求白名单角色 123456789
 contributor_honor_uuid = "11111111-2222-3333-4444-555555555555"
 
 [notification]
@@ -194,9 +194,9 @@ class FactionConfig(BaseModel):
     supporter_role_id: int                # bot add；过期由 admin 手动管理
     submission_channel_id: Optional[int]  # 未配置则不发该组分区面板
 
-    # ★ 简化版新增：per-faction 黑/白名单
-    blacklist_role_ids: list[int] = Field(default_factory=list)  # 持任一即拒
-    whitelist_role_ids: list[int] = Field(default_factory=list)  # 非空时持任一才允许
+    # ★ 简化版新增：per-faction 投稿黑/白名单（仅投稿路径生效）
+    submission_blacklist_role_ids: list[int] = Field(default_factory=list)  # 持任一即拒
+    submission_whitelist_role_ids: list[int] = Field(default_factory=list)  # 非空时持任一才允许
 
     # ★ 简化版新增：投稿成功后 grant_honor 的 UUID（从 honor toml 引用）
     contributor_honor_uuid: Optional[str] = None
@@ -367,11 +367,8 @@ async def _handle_join(self, interaction, faction_key):
         )
         return
 
-    # ★ 黑/白名单检查（per-faction，黑名单优先）
-    reject_msg = self._check_blacklist_whitelist(member, faction)
-    if reject_msg:
-        await interaction.response.send_message(reject_msg, ephemeral=True)
-        return
+    # ★ 不调黑/白名单——加入路径靠 supporter_role 互斥检查就够了。
+    #   黑/白名单仅用于 _handle_submission（投稿路径）。
 
     # add supporter_role（幂等）
     await member.add_roles(faction.supporter_role_id, reason=f"创作大会 加入 {faction.display_name}")
@@ -385,12 +382,15 @@ async def _handle_join(self, interaction, faction_key):
     await interaction.response.send_message(f"✅ 你已加入 {faction.emoji} {faction.display_name}！", ephemeral=True)
 
 
-def _check_blacklist_whitelist(self, member, faction):
-    """per-faction 黑/白名单检查（unix 哲学：黑名单优先于白名单）。"""
-    if faction.blacklist_role_ids and self._member_holds_any_role(member, faction.blacklist_role_ids):
-        return f"❌ 你持有的某个身份组不允许加入/投稿 {faction.display_name}（黑名单）。"
-    if faction.whitelist_role_ids and not self._member_holds_any_role(member, faction.whitelist_role_ids):
-        return f"❌ 你未持有加入/投稿 {faction.display_name} 所需的身份组（白名单）。"
+def _check_submission_blacklist_whitelist(self, member, faction):
+    """per-faction 投稿黑/白名单检查（unix 哲学：黑名单优先于白名单）。
+
+    仅由 _handle_submission 调用；_handle_join 走 supporter_role 互斥检查。
+    """
+    if faction.submission_blacklist_role_ids and self._member_holds_any_role(member, faction.submission_blacklist_role_ids):
+        return f"❌ 你持有的某个身份组不允许投稿 {faction.display_name}（黑名单）。"
+    if faction.submission_whitelist_role_ids and not self._member_holds_any_role(member, faction.submission_whitelist_role_ids):
+        return f"❌ 你未持有投稿 {faction.display_name} 所需的身份组（白名单）。"
     return None
 ```
 
@@ -452,8 +452,8 @@ async def _handle_submission(self, interaction, faction_key, title, description)
         await interaction.response.send_message("❌ 找不到成员。", ephemeral=True)
         return
 
-    # 投稿者也走黑/白名单检查（per-faction）
-    reject_msg = self._check_blacklist_whitelist(member, faction)
+    # 投稿者走投稿黑/白名单检查（per-faction）
+    reject_msg = self._check_submission_blacklist_whitelist(member, faction)
     if reject_msg:
         await interaction.response.send_message(reject_msg, ephemeral=True)
         return
@@ -763,27 +763,27 @@ class ClaimableButton(ui.Button):
 
 **触发重构的信号**：第二个 cog 也需要"黑/白名单 + grant_honor"流程时（比如未来有"勋章领取面板"），再考虑抽。
 
-### 11.2 互斥 vs 黑名单的等价性
+### 11.2 互斥 vs 投稿黑名单的等价性
 
-**观察**：本设计的"用户已选 A 后点 B → bot 拒绝"逻辑，**本质上**是"对方阵营 supporter_role 在黑名单里"。如果把"其他阵营的 supporter_role_id"动态加到本阵营的 `blacklist_role_ids`，互斥检查和黑名单检查可以走同一路径。
+**观察**：本设计的"用户已选 A 后点 B → bot 拒绝"逻辑，**本质上**是"对方阵营 supporter_role 在投稿黑名单里"。如果把"其他阵营的 supporter_role_id"动态加到本阵营的 `submission_blacklist_role_ids`，互斥检查和投稿黑名单检查可以走同一路径。
 
-**当前实现**：`_handle_join` 里显式检查 `other_supporter_role_ids`（通过 `_other_supporter_role_ids()` 辅助函数），独立于 `_check_blacklist_whitelist()` 的黑/白名单逻辑。
+**当前实现**：`_handle_join` 里显式检查 `other_supporter_role_ids`（通过 `_other_supporter_role_ids()` 辅助函数），独立于 `_check_submission_blacklist_whitelist()` 的黑/白名单逻辑。`_handle_join` **不**调投稿黑/白名单——加入靠身份组互斥，投稿黑/白名单只用于 `_handle_submission`。
 
 ```python
 # 当前——两套独立检查
 other_supporter_ids = {f.supporter_role_id for f in cfg.factions if f.key != faction.key}
 if held_other: return "已在 X 阵营"  # 互斥
 
-reject_msg = self._check_blacklist_whitelist(member, faction)  # 黑/白名单
+reject_msg = self._check_submission_blacklist_whitelist(member, faction)  # 投稿黑/白名单（仅投稿路径）
 if reject_msg: return reject_msg
 ```
 
-**潜在优化**：在 `FactionConfig` 加载或 `_handle_join` 里，把 `other_supporter_ids` 临时扩展进 `faction.blacklist_role_ids` 再调 `_check_blacklist_whitelist`。
+**潜在优化**：在 `FactionConfig` 加载或 `_handle_submission` 里，把 `other_supporter_ids` 临时扩展进 `faction.submission_blacklist_role_ids` 再调 `_check_submission_blacklist_whitelist`。
 
 **为何不实施**：
 
-- **toml 字段语义混淆**：admin 看 toml 里的 `blacklist_role_ids`，不知道里面是否被 bot 自动注入了"其他阵营 supporter_role"
-- **互斥语义独立清晰**：admin doc §3.4 "已选 A 后想换 B 怎么办"明确解释互斥——和黑名单概念分开讲更好懂
+- **toml 字段语义混淆**：admin 看 toml 里的 `submission_blacklist_role_ids`，不知道里面是否被 bot 自动注入了"其他阵营 supporter_role"
+- **互斥语义独立清晰**：admin doc §3.4 "已选 A 后想换 B 怎么办"明确解释互斥——和投稿黑名单概念分开讲更好懂
 - **实现已经够清晰**：当前两套独立路径加起来才 30 行代码，重构收益低
 
 

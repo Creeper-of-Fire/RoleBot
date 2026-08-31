@@ -128,8 +128,8 @@ def _make_cfg_and_cog(tmp_dir, today: _dt.date | None = None):
                 supporter_role_id=100,
                 contributor_role_id=222,
                 submission_channel_id=200,
-                blacklist_role_ids=[999],  # 999 是被禁的
-                whitelist_role_ids=[],
+                submission_blacklist_role_ids=[999],  # 999 是被禁的
+                submission_whitelist_role_ids=[],
                 contributor_honor_uuid="aaaaaaaa-1111",
             ),
             FactionConfig(
@@ -139,8 +139,8 @@ def _make_cfg_and_cog(tmp_dir, today: _dt.date | None = None):
                 supporter_role_id=300,
                 contributor_role_id=444,
                 submission_channel_id=400,
-                blacklist_role_ids=[],
-                whitelist_role_ids=[500],  # 必须持 500 才能加入 B
+                submission_blacklist_role_ids=[],
+                submission_whitelist_role_ids=[500],  # 必须持 500 才能加入 B
                 contributor_honor_uuid=None,  # 测试可选 honor_uuid
             ),
         ],
@@ -170,8 +170,8 @@ emoji = "{cfg.factions[0].emoji}"
 supporter_role_id = {cfg.factions[0].supporter_role_id}
 contributor_role_id = {cfg.factions[0].contributor_role_id}
 submission_channel_id = {cfg.factions[0].submission_channel_id}
-blacklist_role_ids = {cfg.factions[0].blacklist_role_ids}
-whitelist_role_ids = {cfg.factions[0].whitelist_role_ids}
+submission_blacklist_role_ids = {cfg.factions[0].submission_blacklist_role_ids}
+submission_whitelist_role_ids = {cfg.factions[0].submission_whitelist_role_ids}
 contributor_honor_uuid = "{cfg.factions[0].contributor_honor_uuid}"
 
 [[factions]]
@@ -181,8 +181,8 @@ emoji = "{cfg.factions[1].emoji}"
 supporter_role_id = {cfg.factions[1].supporter_role_id}
 contributor_role_id = {cfg.factions[1].contributor_role_id}
 submission_channel_id = {cfg.factions[1].submission_channel_id}
-blacklist_role_ids = {cfg.factions[1].blacklist_role_ids}
-whitelist_role_ids = {cfg.factions[1].whitelist_role_ids}
+submission_blacklist_role_ids = {cfg.factions[1].submission_blacklist_role_ids}
+submission_whitelist_role_ids = {cfg.factions[1].submission_whitelist_role_ids}
 
 [notification]
 channel_id = {cfg.notification.channel_id}

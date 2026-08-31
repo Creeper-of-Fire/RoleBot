@@ -35,14 +35,14 @@ def _make_test_factions():
             key="faction_a", display_name="A 组", emoji="🅰️",
             supporter_role_id=1, contributor_role_id=2,
             submission_channel_id=10,
-            blacklist_role_ids=[999], whitelist_role_ids=[],
+            submission_blacklist_role_ids=[999], submission_whitelist_role_ids=[],
             contributor_honor_uuid="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
         ),
         FactionConfig(
             key="faction_b", display_name="B 组", emoji="🅱️",
             supporter_role_id=4, contributor_role_id=5,
             submission_channel_id=11,
-            blacklist_role_ids=[], whitelist_role_ids=[100],
+            submission_blacklist_role_ids=[], submission_whitelist_role_ids=[100],
             contributor_honor_uuid=None,
         ),
     ]
@@ -94,7 +94,7 @@ def test_cog_has_required_attributes():
     assert hasattr(cog, "cmd_send_panel"), "missing cmd_send_panel"
     assert hasattr(cog, "cmd_revoke_submission"), "missing cmd_revoke_submission"
     assert hasattr(cog, "_is_submission_open"), "missing _is_submission_open"
-    assert hasattr(cog, "_check_blacklist_whitelist"), "missing _check_blacklist_whitelist"
+    assert hasattr(cog, "_check_submission_blacklist_whitelist"), "missing _check_submission_blacklist_whitelist"
 
     # 简化版删除：expire / 状态机 / winner 相关
     assert not hasattr(cog, "cmd_end_season"), "ver4 final 已删 cmd_end_season"
