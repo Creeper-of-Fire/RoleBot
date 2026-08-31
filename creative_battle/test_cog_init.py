@@ -86,7 +86,9 @@ def test_cog_has_required_attributes():
     cog = CreativeBattleCog(mock)
 
     assert hasattr(cog, "config_mgr"), "missing config_mgr"
-    assert hasattr(cog, "state_mgr"), "missing state_mgr"
+    # state_mgr 已从 cog 移除——3f99469 改用 per (guild_id, season_id) 单例，
+    # 访问入口是 _state_for(guild_id, season_id) helper
+    assert hasattr(cog, "_state_for"), "missing _state_for (per-key state singleton accessor)"
     assert hasattr(cog, "honor_data_manager"), "missing honor_data_manager"
     assert hasattr(cog, "admin_group"), "missing admin_group"
     assert hasattr(cog, "_handle_join"), "missing _handle_join"
@@ -161,6 +163,7 @@ def test_is_submission_open_if_else():
     import datetime as _dt
     from creative_battle.creative_battle_models import (
         CreativeBattleGuildConfig, CreativeBattleMeta, NotificationConfig,
+        PromotionConfig,
     )
 
     cfg = CreativeBattleGuildConfig(
@@ -169,6 +172,10 @@ def test_is_submission_open_if_else():
             season_label="S0", season_id="S0", theme="t",
             start_date=_dt.date(2026, 9, 1),
             end_date=_dt.date(2026, 12, 31),
+        ),
+        promotion=PromotionConfig(
+            main_intro_text="投稿期：%s ~ %s 之间可投稿" % ("2026-09-01", "2026-12-31"),
+            anonymize_options=["数字"],
         ),
         notification=NotificationConfig(channel_id=1, admin_role_id=2),
     )
