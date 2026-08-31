@@ -8,9 +8,14 @@
 
 - ``GuildSeasonData`` —— 一个 guild 的某个赛季数据（顶层）
 - ``season: SeasonState`` —— 当前赛季的状态
-  - ``supporters: dict[user_id, ParticipantEntry]`` —— 点阵营按钮的支持者
   - ``submissions: dict[submission_id, SubmissionEntry]`` —— 提交作品的参赛者
-  - ``promotion_message_ids: dict[channel_key, message_id]`` —— 推广面板消息 ID
+  - ``promotion_message_ids: dict[channel_key, message_id]`` —— 推广面板消息 ID（loop 刷新目标）
+
+**不再存储 supporters**：支持者状态 = Discord ``member.roles``（互斥检查、计数都走 cached ``role.members``，
+不 fetch 因为 rate limit 太紧）。这样：
+- 不需要 bot 在 add_role 之后再写一道 json（之前 race 的一个源头）
+- admin 手动 add/remove 角色能直接反映在面板数字上
+- 跨赛季切换不需清理 json
 
 设计哲学
 --------
@@ -31,20 +36,6 @@ import uuid as _uuid_lib
 from typing import Optional
 
 from pydantic import BaseModel, Field
-
-
-# --- supporters ---
-
-
-class ParticipantEntry(BaseModel):
-    """一个支持者的状态（点主入口面板'加入阵营'按钮）。"""
-
-    user_id: int
-    faction: str = Field(..., description="阵营 key（= toml factions[*].key）")
-    joined_at: _dt.datetime
-    supporter_role_granted: bool = Field(
-        False, description="是否已 add supporter_role（幂等标志）",
-    )
 
 
 # --- submissions ---
@@ -80,13 +71,11 @@ class SeasonState(BaseModel):
     简化版**不维护状态字段**：投稿期判断 = ``cfg.meta.start_date <= today <= cfg.meta.end_date``。
     bot 不需要 ``status`` / ``started_at`` / ``ended_at`` 等字段——这些是 ver4 final
     "状态机" 设计的残留，简化版彻底删除。
+
+    **supporters 不在这里**——支持者 = Discord ``member.roles``，json 不重复存。
     """
 
     season_id: str
-    supporters: dict[int, ParticipantEntry] = Field(
-        default_factory=dict,
-        description="user_id -> 支持者条目",
-    )
     submissions: dict[str, SubmissionEntry] = Field(
         default_factory=dict,
         description="submission_id -> 投稿条目",
@@ -110,7 +99,6 @@ class GuildSeasonData(BaseModel):
 
 
 __all__ = [
-    "ParticipantEntry",
     "SubmissionEntry",
     "SeasonState",
     "GuildSeasonData",

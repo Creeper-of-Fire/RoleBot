@@ -47,7 +47,6 @@ from creative_battle.creative_battle_models import (
 )
 from creative_battle.creative_battle_season_models import (
     GuildSeasonData,
-    ParticipantEntry,
     SeasonState,
     SubmissionEntry,
 )
@@ -179,9 +178,22 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
     def __init__(self, bot: "RoleBot") -> None:
         super().__init__(bot)
         self.config_mgr = CreativeBattleConfigManager.get_instance()
-        self.state_mgr = CreativeBattleStateManager.get_instance(logger=self.logger)
+        # ★ state_mgr 是 per (guild_id, season_id) 单例——不在 __init__ 里固定引用，
+        #   改用 ``_state_for`` / ``_save_state`` helper 按需取。
         # honor 系统：bot 直接调 grant_honor（仿 claimable_honor_module 模式）
         self.honor_data_manager = HonorDataManager.getDataManager(logger=self.logger)
+
+    def _state_for(self, guild_id: int, season_id: str) -> "GuildSeasonData":
+        """取 (guild_id, season_id) 对应的 in-memory state（不写盘）。"""
+        return CreativeBattleStateManager.get_instance(
+            guild_id, season_id, logger=self.logger
+        ).ensure_season()
+
+    async def _save_state(self, guild_id: int, season_id: str) -> None:
+        """节流落盘（base 的 asyncio.Lock + _background_save_loop 处理并发）。"""
+        await CreativeBattleStateManager.get_instance(
+            guild_id, season_id, logger=self.logger
+        ).save_data()
 
     async def cog_load(self) -> None:
         """注册 persistent view + 启动 promotion_loop。"""
@@ -390,14 +402,8 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
             )
             return
 
-        state = self.state_mgr.ensure_season(interaction.guild.id, cfg.meta.season_id)
-        state.season.supporters[interaction.user.id] = ParticipantEntry(
-            user_id=interaction.user.id,
-            faction=faction_key,
-            joined_at=_dt.datetime.now(UTC8),
-            supporter_role_granted=True,
-        )
-        await self.state_mgr.save_data(state)
+        # ★ supporters 不存 json：add_role 本身就是支持者状态的唯一真相源。
+        #   面板"当前支持者 X 人"走 cached role.members（不 fetch）。
         await interaction.response.send_message(
             f"✅ 你已加入 {faction.emoji} {faction.display_name}！", ephemeral=True
         )
@@ -424,7 +430,7 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
         member = interaction.guild.get_member(interaction.user.id)
 
         # 写 json（先写状态——即使后续 grant_honor 失败也保留提交记录）
-        state = self.state_mgr.ensure_season(interaction.guild.id, cfg.meta.season_id)
+        state = self._state_for(interaction.guild.id, cfg.meta.season_id)
         submission = SubmissionEntry(
             user_id=interaction.user.id,
             faction=faction_key,
@@ -435,7 +441,7 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
             honor_granted=False,
         )
         state.season.submissions[submission.submission_id] = submission
-        await self.state_mgr.save_data(state)
+        await self._save_state(interaction.guild.id, cfg.meta.season_id)
 
         # add contributor_role
         contributor_role = interaction.guild.get_role(faction.contributor_role_id)
@@ -445,7 +451,7 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
                 ephemeral=True,
             )
             submission.contributor_role_granted = False
-            await self.state_mgr.save_data(state)
+            await self._save_state(interaction.guild.id, cfg.meta.season_id)
             return
         try:
             await member.add_roles(
@@ -460,7 +466,7 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
             )
             # 仍然标记失败但 json 已记录——admin 可后续手动补
             submission.contributor_role_granted = False
-            await self.state_mgr.save_data(state)
+            await self._save_state(interaction.guild.id, cfg.meta.season_id)
             return
 
         # ★ grant_honor（按 toml contributor_honor_uuid 配置；可选）
@@ -487,7 +493,7 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
                     f"grant_honor 失败: {e}"
                 )
 
-        await self.state_mgr.save_data(state)
+        await self._save_state(interaction.guild.id, cfg.meta.season_id)
         await interaction.response.send_message(
             f"✅ 作品已提交！\n标题：{title}", ephemeral=True
         )
@@ -540,7 +546,7 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
                 "❌ 当前服务器未启用创作大会。", ephemeral=True
             )
             return
-        state = self.state_mgr.ensure_season(interaction.guild.id, cfg.meta.season_id)
+        state = self._state_for(interaction.guild.id, cfg.meta.season_id)
 
         if channel_key == "main":
             if not cfg.promotion.main_channel_id:
@@ -549,7 +555,7 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
                 )
                 return
             channel_id = cfg.promotion.main_channel_id
-            embed = self._build_main_embed(cfg, state.season)
+            embed = self._build_main_embed(cfg, state.season, interaction.guild)
             view = MainPanelView(self, cfg.factions)
         else:
             # ★ 遍历 cfg.factions 找匹配（不硬编码）
@@ -568,7 +574,7 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
                 )
                 return
             channel_id = faction.submission_channel_id
-            embed = self._build_faction_embed(cfg, state.season, faction)
+            embed = self._build_faction_embed(cfg, state.season, faction, interaction.guild)
             view = FactionPanelView(self, faction_key=faction.key)
 
         channel = interaction.guild.get_channel(channel_id)
@@ -584,7 +590,7 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
             interaction.guild, state, channel_key, channel_id,
             embed=embed, view=view,
         )
-        await self.state_mgr.save_data(state)
+        await self._save_state(interaction.guild.id, cfg.meta.season_id)
         await interaction.response.send_message(
             f"✅ {channel_key} 面板已发送到 {channel.mention}", ephemeral=True
         )
@@ -606,7 +612,7 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
                 "❌ 当前服务器未启用创作大会。", ephemeral=True
             )
             return
-        state = self.state_mgr.ensure_season(interaction.guild.id, cfg.meta.season_id)
+        state = self._state_for(interaction.guild.id, cfg.meta.season_id)
 
         sub = state.season.submissions.get(submission_id)
         if sub is None:
@@ -618,7 +624,7 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
 
         # 撤销：只删 json entry，**不** remove contributor_role，**不** 撤 honor
         del state.season.submissions[submission_id]
-        await self.state_mgr.save_data(state)
+        await self._save_state(interaction.guild.id, cfg.meta.season_id)
 
         faction_display = next(
             (f.display_name for f in cfg.factions if f.key == sub.faction), sub.faction,
@@ -633,11 +639,16 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
     # --- Embed builders ---
 
     def _build_main_embed(
-        self, cfg: CreativeBattleGuildConfig, season: SeasonState
+        self, cfg: CreativeBattleGuildConfig, season: SeasonState, guild: discord.Guild
     ) -> discord.Embed:
-        supporters = self._count_by_faction(
-            [(p.faction,) for p in season.supporters.values()]
-        )
+        # ★ supporters 不在 json 里——直接走 cached role.members（不 fetch，避免 rate limit）。
+        #   跨赛季会膨胀（admin 切赛季要手动 remove 旧 supporter_role），但能反映 admin
+        #   手动 add/remove，且不会跟 add_role 之间出现 race。
+        supporters = {
+            f.key: len((guild.get_role(f.supporter_role_id).members
+                        if guild.get_role(f.supporter_role_id) else []))
+            for f in cfg.factions
+        }
         submissions = self._count_by_faction(
             [(s.faction,) for s in season.submissions.values()]
         )
@@ -682,11 +693,12 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
         cfg: CreativeBattleGuildConfig,
         season: SeasonState,
         faction: FactionConfig,
+        guild: discord.Guild,
     ) -> discord.Embed:
         subs = [s for s in season.submissions.values() if s.faction == faction.key]
-        supporters = sum(
-            1 for p in season.supporters.values() if p.faction == faction.key
-        )
+        # ★ 走 cached role.members（见 _build_main_embed 注释）
+        role = guild.get_role(faction.supporter_role_id)
+        supporters = len(role.members) if role else 0
 
         # random N 个投稿
         random_count = min(cfg.promotion.random_count_per_faction, len(subs))
@@ -747,7 +759,7 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
             #   投稿期约束只作用在 _handle_submission（投稿模块），
             #   其他模块（加入、刷新面板）保持无知。
 
-            state = self.state_mgr.ensure_season(guild_id, cfg.meta.season_id)
+            state = self._state_for(guild_id, cfg.meta.season_id)
             guild = self.bot.get_guild(guild_id)
             if guild is None:
                 continue
@@ -759,7 +771,7 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
                     state,
                     "main",
                     cfg.promotion.main_channel_id,
-                    embed=self._build_main_embed(cfg, state.season),
+                    embed=self._build_main_embed(cfg, state.season, guild),
                     view=MainPanelView(self, cfg.factions),
                 )
 
@@ -772,11 +784,11 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
                     state,
                     faction.key,
                     faction.submission_channel_id,
-                    embed=self._build_faction_embed(cfg, state.season, faction),
+                    embed=self._build_faction_embed(cfg, state.season, faction, guild),
                     view=FactionPanelView(self, faction_key=faction.key),
                 )
 
-            await self.state_mgr.save_data(state)
+            await self._save_state(guild_id, cfg.meta.season_id)
 
     @promotion_loop.before_loop
     async def before_promotion_loop(self) -> None:
