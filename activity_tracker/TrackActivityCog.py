@@ -397,8 +397,28 @@ class TrackActivityCog(commands.Cog, name="TrackActivity"):
             self.activity_group.interaction_check = lambda i: False
             return
 
+        # Redis 健康后再启动实时入站的批量 flush 任务（on_message 路径）。
+        # 启动失败会让 record_message 走同步直写，仍然受连接池上限保护。
+        try:
+            await self.data_manager.start_buffer_flusher()
+        except Exception as e:
+            self.logger.error(f"启动批量 flush 任务失败，回退到直写模式: {e}", exc_info=True)
+
         self.logger.info("Bot is ready. Creating startup incremental sync task...")
         self.bot.loop.create_task(self._incremental_sync_on_startup())
+
+    def cog_unload(self):
+        """
+        Cog 卸载 / bot 关闭时执行：尽力做一次最终 flush，把内存缓冲里的
+        实时消息记录落盘。bot.close() 取消任务时这条可能跑不完，是已知风险——
+        缓冲窗口默认 200ms，最坏情况丢 ≤200ms 数据，可接受。
+        """
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.create_task(self.data_manager.stop_buffer_flusher())
+        except RuntimeError:
+            pass
 
     @staticmethod
     def is_not_valid_message(message: discord.Message) -> tuple[bool, Optional[str]]:

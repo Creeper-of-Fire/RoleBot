@@ -9,6 +9,7 @@ import gzip
 import io
 import logging
 import typing
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 import pytz
@@ -27,6 +28,23 @@ USER_CHANNELS_KEY_TEMPLATE = "index:user_channels:{guild_id}:{user_id}"  # SET: 
 ACTIVE_BACKFILLS_KEY = "active_backfills"  # SET: {guild_id, ...}
 LAST_SYNC_TIMESTAMP_KEY_TEMPLATE = "sync_timestamp:{guild_id}"
 
+# --- 实时入站缓冲的 flush 阈值 ---
+# on_message 高并发时每条消息开 pipeline 会瞬间吃光 500 连接池（见 2026-08-31 trace）；
+# 改成入内存缓冲 + 批量 pipeline：阈值或定时器任一触发就刷一次。默认 200ms / 200 条。
+DEFAULT_FLUSH_INTERVAL_SECONDS = 0.2
+DEFAULT_FLUSH_THRESHOLD = 200
+
+
+@dataclass(slots=True)
+class _MessageRecord:
+    """一条待写入的实时消息记录（缓冲区内）。"""
+    guild_id: int
+    channel_id: int
+    user_id: int
+    message_id: int
+    timestamp: float
+    retention_days: int
+
 
 class DataManager:
     """
@@ -42,12 +60,24 @@ class DataManager:
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self, host: str, port: int, db: int, logger: logging.Logger):
+    def __init__(self, host: str, port: int, db: int, logger: logging.Logger,
+                 flush_interval_seconds: float = DEFAULT_FLUSH_INTERVAL_SECONDS,
+                 flush_threshold: int = DEFAULT_FLUSH_THRESHOLD):
         if not hasattr(self, '_initialized'):
             self.logger = logger
             # redis-py 8.x 将 asyncio 连接池默认 max_connections 从「无限」砍到 100，
             # backfill 高并发时会耗尽并触发 MaxConnectionsError（368 次风暴），故显式放大。
             self.redis = redis.Redis(host=host, port=port, db=db, decode_responses=True, max_connections=500)
+
+            # --- 实时入站缓冲：on_message 改成入队 + 批量 flush ---
+            self._buffer: list[_MessageRecord] = []
+            self._buffer_lock = asyncio.Lock()
+            self._flush_interval = flush_interval_seconds
+            self._flush_threshold = flush_threshold
+            self._flusher_task: typing.Optional[asyncio.Task] = None
+            self._flush_stop_event: typing.Optional[asyncio.Event] = None
+            self._pending_flush_tasks: set[asyncio.Task] = set()
+
             self._initialized = True
 
     async def check_connection(self):
@@ -63,28 +93,146 @@ class DataManager:
     async def record_message(self, guild_id: int, channel_id: int, user_id: int,
                              message_id: int, created_at_timestamp: float, retention_days: int):
         """
-        记录用户发送的消息，并同步更新索引。
-        """
-        activity_key = CHANNEL_ACTIVITY_KEY_TEMPLATE.format(
-            guild_id=guild_id, channel_id=channel_id, user_id=user_id
-        )
-        guild_users_key = GUILD_USERS_KEY_TEMPLATE.format(guild_id=guild_id)
-        user_channels_key = USER_CHANNELS_KEY_TEMPLATE.format(guild_id=guild_id, user_id=user_id)
+        【已重构】记录用户发送的消息，并同步更新索引。
 
+        实现细节：on_message 高并发时每条消息开 pipeline 会瞬间吃光 Redis 连接池（见
+        2026-08-31 MaxConnectionsError trace）。这里改成**入内存缓冲 + 批量 flush**：
+        - 入队本身只动 list（O(1) + 短锁），不开 Redis 连接
+        - 后台周期任务每隔 `_flush_interval` 秒或缓冲满 `_flush_threshold` 条触发一次
+          flush，把整批消息压成 1 个 pipeline 写入（只占 1 个连接）
+
+        权衡：
+        - 优点：连接数从「每条消息 1 个」降到「每批 1 个」，500 池子不再爆
+        - 代价：写入有最多 `_flush_interval` 的延迟；非正常崩溃（无 shutdown flush）会丢
+          不到 `_flush_interval` 秒的数据，Discord 消息可接受（已有 backfill 兜底）
+        - 失败语义：flush 失败时整批 re-enqueue 到缓冲头部，不静默丢
+        """
+        item = _MessageRecord(
+            guild_id=guild_id, channel_id=channel_id, user_id=user_id,
+            message_id=message_id, timestamp=created_at_timestamp,
+            retention_days=retention_days,
+        )
+        should_flush = False
+        async with self._buffer_lock:
+            self._buffer.append(item)
+            if len(self._buffer) >= self._flush_threshold:
+                # 在锁内搬走 buffer，避免阈值分支和后台任务并发各拿一份
+                items_to_flush = self._buffer
+                self._buffer = []
+                should_flush = True
+        if should_flush:
+            self._schedule_flush(items_to_flush)
+
+    def _schedule_flush(self, items: list[_MessageRecord]) -> None:
+        """Fire-and-forget：调度一次 flush，不阻塞 record_message 调用方。"""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # 不在事件循环里（理论上不该发生），退化为同步日志并丢弃
+            self.logger.error(
+                f"DataManager: _schedule_flush 在事件循环外被调用，{len(items)} 条记录被丢弃。"
+            )
+            return
+        task = loop.create_task(self._flush_items(items))
+        self._pending_flush_tasks.add(task)
+        task.add_done_callback(self._pending_flush_tasks.discard)
+
+    async def _flush_items(self, items: list[_MessageRecord]) -> None:
+        """把一批 record 入 Redis。失败时整批 re-enqueue，避免静默丢失。"""
+        if not items:
+            return
         try:
             async with self.redis.pipeline() as pipe:
-                # 1. 记录消息到 ZSET
-                await pipe.zadd(activity_key, {str(message_id): created_at_timestamp})
-                # 2. 更新索引
-                await pipe.sadd(guild_users_key, str(user_id))
-                await pipe.sadd(user_channels_key, str(channel_id))
-                # 3. 清理过期数据
-                cutoff_timestamp = (datetime.now(timezone.utc) - timedelta(days=retention_days)).timestamp()
-                await pipe.zremrangebyscore(activity_key, '-inf', cutoff_timestamp)
-                # 4. 执行
+                # ZREMRANGEBYSCORE 同 key 只需执行一次（cutoff 与 retention 一一对应；
+                # retention 是按 guild 配的，activity_key 含 guild，所以同 key 的所有 item
+                # cutoff 都相同）。用一个 dict 去重，最后一次性补全。
+                cutoff_per_key: dict[str, float] = {}
+                for item in items:
+                    activity_key = CHANNEL_ACTIVITY_KEY_TEMPLATE.format(
+                        guild_id=item.guild_id, channel_id=item.channel_id, user_id=item.user_id
+                    )
+                    guild_users_key = GUILD_USERS_KEY_TEMPLATE.format(guild_id=item.guild_id)
+                    user_channels_key = USER_CHANNELS_KEY_TEMPLATE.format(
+                        guild_id=item.guild_id, user_id=item.user_id
+                    )
+                    await pipe.zadd(activity_key, {str(item.message_id): item.timestamp})
+                    await pipe.sadd(guild_users_key, str(item.user_id))
+                    await pipe.sadd(user_channels_key, str(item.channel_id))
+                    if activity_key not in cutoff_per_key:
+                        cutoff_per_key[activity_key] = (
+                            datetime.now(timezone.utc) - timedelta(days=item.retention_days)
+                        ).timestamp()
+                for activity_key, cutoff in cutoff_per_key.items():
+                    await pipe.zremrangebyscore(activity_key, '-inf', cutoff)
                 await pipe.execute()
         except exceptions.RedisError as e:
-            self.logger.error(f"DataManager: 记录消息到 Redis 失败 (Key: {activity_key}): {e}", exc_info=True)
+            # 失败：把整批塞回缓冲头部，下次 flush 重试
+            async with self._buffer_lock:
+                self._buffer[0:0] = items
+            self.logger.error(
+                f"DataManager: 批量 flush 失败 ({len(items)} 条已重入缓冲): {e}",
+                exc_info=True,
+            )
+
+    async def start_buffer_flusher(self) -> None:
+        """
+        启动后台周期 flush 任务。重复调用是 no-op。
+        应在 cog 加载完成、Redis 已连通后调用。
+        """
+        if self._flusher_task is not None and not self._flusher_task.done():
+            return
+        self._flush_stop_event = asyncio.Event()
+        self._flusher_task = asyncio.create_task(self._flusher_loop())
+        self.logger.info(
+            f"DataManager: 后台 flush 任务已启动 (interval={self._flush_interval}s, "
+            f"threshold={self._flush_threshold})"
+        )
+
+    async def stop_buffer_flusher(self) -> None:
+        """
+        停止后台 flush 任务，并在停之前做一次最终 flush。
+        应在 cog 卸载 / bot 关闭时调用。
+        """
+        if self._flush_stop_event is not None:
+            self._flush_stop_event.set()
+        if self._flusher_task is not None:
+            try:
+                await asyncio.wait_for(self._flusher_task, timeout=5.0)
+            except asyncio.TimeoutError:
+                self._flusher_task.cancel()
+        # 等所有 in-flight 阈值触发 flush 收尾
+        if self._pending_flush_tasks:
+            await asyncio.gather(*self._pending_flush_tasks, return_exceptions=True)
+        # 最后做一次同步 flush 把残留缓冲写完
+        await self.flush_buffer()
+
+    async def flush_buffer(self) -> None:
+        """手动 flush 当前缓冲（不影响后台任务）。"""
+        async with self._buffer_lock:
+            if not self._buffer:
+                return
+            items = self._buffer
+            self._buffer = []
+        await self._flush_items(items)
+
+    async def _flusher_loop(self) -> None:
+        """后台周期 flush 循环。"""
+        assert self._flush_stop_event is not None
+        while not self._flush_stop_event.is_set():
+            try:
+                await asyncio.wait_for(
+                    self._flush_stop_event.wait(), timeout=self._flush_interval
+                )
+                # 正常触发 stop_event：退出循环
+                break
+            except asyncio.TimeoutError:
+                pass
+            async with self._buffer_lock:
+                if not self._buffer:
+                    continue
+                items = self._buffer
+                self._buffer = []
+            await self._flush_items(items)
 
     async def remove_message(self, guild_id: int, channel_id: int, user_id: int, message_id: int):
         activity_key = CHANNEL_ACTIVITY_KEY_TEMPLATE.format(
