@@ -18,14 +18,16 @@
 - 用户点 📨 投稿按钮 → 弹 Modal → 用户填标题 → bot 自动 add contributor_role + 写 json + grant_honor
 - 主入口 + 分区频道的推广面板 → bot 定时 refresh（**仅投稿期内更新；投稿期结束 → 停止**）
 - 投稿期判断 = **if-else**：bot 读 toml 的 `start_date` / `end_date`，admin 改 toml 即可调整时间
+- **contributor_role 过期 = 杯赛（cup_honor）模式**——honor toml 配 cup_honor 类型，cup_honor 模块的 24h 轮询自动监控到期 + 推提醒到 notification 频道；admin 看到提醒后手动 remove contributor_role
 
 ### admin 需要手动做的事（bot **不**自动）
 
 - 发送主入口 / 分区面板（`/合战丨核心 发送面板`，bot **不**自动发）
 - 撤销投稿（`/合战丨核心 撤销投稿 submission_id`——bot 只删 json，不 remove contributor_role 也不撤销 honor）
 - 最终身份组发放 → 走人工 7 天投稿 + 7 天投票流程（bot 不参与）
-- supporter / contributor 身份组回收 → admin 手动到 Discord remove
-- 永久贡献者荣誉 → 在 honor toml 配 UUID，bot 投稿成功后自动 grant_honor
+- supporter_role 身份组回收 → admin 手动到 Discord remove（cup_honor 不管这个）
+- contributor_role 身份组回收 → 收到 cup_honor 推的过期提醒后到 Discord 手动 remove
+- honor toml 的 cup_honor 类型配置 → 管理员一次性配好 `cup_honor.expiration_date` 字段
 
 ---
 
@@ -75,26 +77,30 @@ bot 在状态切换时（在通知频道发公告，@ 公告身份组）：
 bot 在投稿成功后会自动调 honor 系统的 `grant_honor(member.id, contributor_honor_uuid)`。
 UUID 在 **honor toml** 配，creative_battle toml **引用**这个 UUID。
 
+**强烈建议**配成 **cup_honor 类型**——这样 cup_honor 模块的 24h 轮询会自动监控到期 + 推提醒到 notification 频道（详见 §5）。
+
 **步骤**：
 
 1. 用 `/荣誉头衔丨配置` 下载 `honor_{guild_id}.toml`
-2. 加两个 `[[definitions]]` 块（每个阵营一个）：
+2. 加两个 `[[definitions]]` 块（每个阵营一个），配 cup_honor 字段：
 
 ```toml
 [[definitions]]
 uuid = "<UUID v4 即可，或用 /荣誉头衔丨配置 里'生成UUID'命令>"
 name = "🍃 A 组之贡献者"
 description = "参与创作大会·A 组投稿"
-role_id = 222222222            # = creative_battle toml 的 A 组 contributor_role_id（**仅做参考**，bot 直接 grant_honor 不靠 role sync）
+role_id = 222222222            # = creative_battle toml 的 A 组 contributor_role_id
 hidden_until_earned = true
+expiration_date = "2026-12-31T23:59:59+08:00"   # ★ 顶层字段——HonorExpirationCog 监控过期 + 推提醒
 ```
 
 > 💡 **UUID 命令只是方便工具**——任何恰当熵池（UUID v4 通过 `uuid.uuid4()` 即可）都行，不会跟现有 record 冲突。
 
 3. 上传 honor toml 回 bot
-4. 把上面的 UUID 填到 creative_battle toml 的 `factions[*].contributor_honor_uuid`（详见 §2.1）
+4. 把上面的 UUID 填到 creative_battle toml 的 `factions[*].contributor_honor_uuid`，并配 `contributor_role_expire_at = 上面的 expiration_date`（详见 §2.1）
 
 > **如果不配 `contributor_honor_uuid`**：bot 不会 grant_honor——投稿流程仍然正常完成（add role + 写 json），只是不记录永久贡献者荣誉。
+> **如果不配 `cup_honor` 字段**：honor 永久保留，**不会有过期提醒**——admin 自己判断何时手动 remove contributor_role。
 
 ---
 
@@ -130,7 +136,14 @@ key = "faction_a"
 display_name = "A 组"
 emoji = "🅰️"
 supporter_role_id = 111111111          # A 组支持者身份组 ID
+contributor_role_id = 222222222        # ★ A 组参赛者身份组 ID（honor toml 对应 honor 的 role_id + cup_honor 类型）
 submission_channel_id = 444444444      # A 组分区频道 ID
+
+# ★ 杯赛模式：contributor_role 过期时间
+#   = honor toml 对应 honor 的 cup_honor.expiration_date
+#   cup_honor.expiration_check_loop 24h 轮询检查这个时间，到时推提醒到 notification.channel_id
+#   admin 看到提醒后手动到 Discord remove contributor_role
+contributor_role_expire_at = "2026-12-31T23:59:59+08:00"
 
 # ★ 简化版新增：per-faction 黑/白名单
 #   - 黑名单：持任一角色即拒绝加入/投稿 A
@@ -142,6 +155,7 @@ whitelist_role_ids = []                # 例：[111111] 表示必须有 111111 �
 
 # ★ 简化版新增：投稿成功后 bot 调 grant_honor 用的 UUID（从 honor toml 引用）
 #   留空（""或 null）= 不 grant_honor
+#   ⚠️ 强烈建议配成 cup_honor 类型 honor（见 §5）—— 这样有自动过期提醒
 contributor_honor_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
 [[factions]]
@@ -149,7 +163,9 @@ key = "faction_b"
 display_name = "B 组"
 emoji = "🅱️"
 supporter_role_id = 555555555
+contributor_role_id = 666666666
 submission_channel_id = 888888888
+contributor_role_expire_at = "2026-12-31T23:59:59+08:00"
 blacklist_role_ids = []
 whitelist_role_ids = []
 contributor_honor_uuid = "11111111-2222-3333-4444-555555555555"
@@ -314,24 +330,38 @@ bot 每 5 分钟（`promotion.refresh_minutes`）自动 refresh 各频道的推�
 
 ---
 
-## 5. 永久贡献者荣誉（bot 自动 grant_honor）
+## 5. 永久贡献者荣誉 + 自动过期（cup_honor 模式）
 
-> 简化版：bot 在投稿成功后**自动调** honor 系统的 `grant_honor` 接口。
-> uuid 在 creative_battle toml 的 `contributor_honor_uuid` 配，从 honor toml 引用。
+> **关键设计**（2026-08-31 用户拍板）：贡献者荣誉在 **honor toml** 配 `expiration_date` 顶层字段。
+> HonorExpirationCog 24h 轮询检查这个时间，到时推提醒。
+> （cup_honor 类型是另一条路径——杯赛 honor 走 cup_honors.json 自己的 `expiration_date`，不在 toml 里）
+> HonorExpirationCog（独立 cog）的 24h 轮询自动监控到期 + 推过期提醒到 notification 频道，
+> admin 看到提醒后手动到 Discord remove contributor_role。bot 不调 remove_roles。
+
+> **架构关键**（2026-08-31）：db 是 honor 历史记录表，**不存过期时间**——过期时间只在 toml/json 配置层。
+> 普通 honor（无 cup_honor 字段）的身份组**永不过期**，admin 自行手动管理。
 
 **需要 admin 做的事**（**前置**——首次启用前）：
 
-### 步骤 1：在 honor toml 加 `[[definitions]]`
+### 步骤 1：在 honor toml 加 `[[definitions]]` + 顶层 `expiration_date` 字段
 
-用 `/荣誉头衔丨配置` 下载 `honor_{guild_id}.toml`，加两个 `[[definitions]]` 块：
+用 `/荣誉头衔丨配置` 下载 `honor_{guild_id}.toml`，加两个 `[[definitions]]` 块（含顶层 `expiration_date` 字段）。
+
+**关键字段**：`expiration_date`（**顶层**字段，`HonorDefinitionItem` 直接属性）——HonorExpirationCog 24h 轮询检查这个时间，到时推提醒。
+
+**完整 toml 示例**（每个 contributor_role 一条 honor）：
 
 ```toml
 [[definitions]]
 uuid = "<UUID v4 即可，或用 /荣誉头衔丨配置 里'生成UUID'命令>"
 name = "🍃 A 组之贡献者"
 description = "参与创作大会·A 组投稿"
-role_id = 222222222            # 仅供参考（= A 组 contributor_role_id）
+role_id = 222222222            # = creative_battle toml 的 A 组 contributor_role_id
 hidden_until_earned = true
+
+expiration_date = "2026-12-31T23:59:59+08:00"   # ★ 顶层字段（HonorDefinitionItem）——HonorExpirationCog 监控过期 + 推提醒
+expiration_date = "2026-12-31T23:59:59+08:00"
+lead_days = 3
 
 [[definitions]]
 uuid = "<另一个 UUID>"
@@ -339,53 +369,71 @@ name = "🍃 B 组之贡献者"
 description = "参与创作大会·B 组投稿"
 role_id = 666666666
 hidden_until_earned = true
+expiration_date = "2026-12-31T23:59:59+08:00"   # ★ 顶层字段——HonorExpirationCog 监控过期 + 推提醒
+lead_days = 3
 ```
 
 上传回 bot。
+
+> 💡 **UUID 命令只是方便工具**——任何恰当熵池（UUID v4 通过 `uuid.uuid4()` 即可）都行，不会跟现有 record 冲突。
 
 ### 步骤 2：在 creative_battle toml 引用 UUID
 
 ```toml
 [[factions]]
 key = "faction_a"
-contributor_honor_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"   # = 上一步 A 组 UUID
+contributor_role_id = 222222222        # = honor toml 里的 role_id
+contributor_honor_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"   # = honor toml 里的 A 组 UUID
+contributor_role_expire_at = "2026-12-31T23:59:59+08:00"   # ★ = honor toml 里 cup_honor.expiration_date
 
 [[factions]]
 key = "faction_b"
-contributor_honor_uuid = "11111111-2222-3333-4444-555555555555"   # = 上一步 B 组 UUID
+contributor_role_id = 666666666
+contributor_honor_uuid = "11111111-2222-3333-4444-555555555555"
+contributor_role_expire_at = "2026-12-31T23:59:59+08:00"
 ```
 
 ### 步骤 3：bot 自动处理
 
-赛季内：用户投稿 → bot 自动 add contributor_role + 自动 `grant_honor(member.id, contributor_honor_uuid)`。
+赛季内：用户投稿 → bot 自动 `add_roles(contributor_role_id)` + 自动 `grant_honor(member.id, contributor_honor_uuid)`。
 
 > ⚠️ **失败处理**：`grant_honor` 失败（UUID 不存在、DB 错误等）**不阻断投稿**——
 > 投稿流程仍正常完成，admin 看到 `honor_granted=false` 后可手动到 honor 系统补。
 > json 里 `honor_granted` 字段记录 bot 是否成功调用。
 
+### 步骤 4：过期自动推提醒
+
+到 `expiration_date` 后：
+
+1. HonorExpirationCog 的 `expiration_check_loop`（24h 轮询）检测到 honor 过期
+2. 自动推 `ExpiredHonorNoticeView` embed 到 honor toml 的 `cup_honor.notification.channel_id` 频道
+3. admin 看到提醒后到 Discord 手动 remove 所有持有 contributor_role 的成员
+
 ### 撤销投稿不撤销 honor
 
 bot 的 `/合战丨核心 撤销投稿` 命令**只删 json**，**不撤销已授予的 honor**。
-如需撤销，请到 honor 系统的 `/荣誉头衔丨核心` 处理。
+如需撤销，请到 honor 系统的 `/荣誉头衔丨管理 管理持有者` 处理。
 
----
+### 调整过期时间
 
-## 6. 身份组回收（admin 全权负责）
+改 `honor_*.toml` 的顶层 `expiration_date` 字段，重新上传即可——下次 HonorExpirationCog 轮询会用新时间。
 
-> **简化版删除**：bot 完全不做身份组回收 / 过期提醒。
-> 一切身份组 remove 由 admin 手动到 Discord 操作。
+## 6. 身份组回收（HonorExpirationCog 推提醒 + admin 手动）
 
-按 toml 配置的 `supporter_role_id` / 贡献者身份组 ID，到 Discord 服务器设置 → 身份组 → 找到对应身份组 → 手动 remove 成员。
+> **通用机制**：contributor_role 的过期由 HonorExpirationCog（独立 cog）自动监控。
+> bot **不调** remove_roles——admin 看到提醒后**手动**到 Discord remove。
 
-| 身份组 | 何时回收 | 谁 remove |
-|---|---|---|
-| A 组 / B 组 supporter_role | admin 自己定（赛季结束后 / 比赛结算后） | admin 手动 |
-| A 组 / B 组 contributor_role | admin 自己定 | admin 手动 |
-| 最终身份组（winner_role） | **bot 不参与**——admin 走 7+7 人工流程后手动 add；下次合战结束时手动 remove | admin 手动 |
+### 6.1 contributor_role 过期（HonorExpirationCog 推提醒）
 
-> 这就是 unix 哲学：bot 是工具，身份组生命周期由 admin 决定。
+到 honor toml 的顶层 `expiration_date` 后：
 
----
+1. HonorExpirationCog 的 `expiration_check_loop`（24h 轮询）检测到 honor 过期
+2. 自动推 `ExpiredHonorNoticeView` embed 到 honor toml 的 `cup_honor.notification.channel_id` 频道（含 honor 名称 + 过期时间）
+3. admin 看到提醒后到 Discord 手动 remove 所有持有 contributor_role 的成员
+
+| 身份组 | 何时过期 / 回收 | 谁推提醒 | 谁 remove |
+|---|---|---|---|
+| A 组 / B 组 contributor_role | honor toml 的 `expiration_date` 字段 | HonorExpirationCog 自动 | admin 手动 |
 
 ## 7. 常见问题
 
@@ -458,7 +506,25 @@ bot 的 `/合战丨核心 撤销投稿` 命令**只删 json**，**不撤销已�
 
 1. 检查 creative_battle toml 的 `contributor_honor_uuid` 是否填了正确的 UUID
 2. 检查 honor toml 是否有对应的 `[[definitions]]` 块，uuid 字段一致
-3. 如有需要，admin 用 honor 系统的 `/荣誉头衔丨核心` 手动补
+3. 如有需要，admin 用 honor 系统的 `/荣誉头衔丨管理 授予` / `批量授予` 手动补
+
+### Q: cup_honor 没推过期提醒？
+
+**原因**：
+
+1. honor 没在 cup_honors.json 里配置（cup_honor 走 json，不走 toml）
+2. honor toml 的 `cup_honor.expiration_date` 还没到（cup_honor 模块按这个字段判断）
+3. honor toml 的 `cup_honor.expiration_date` 跟 creative_battle toml 的 `contributor_role_expire_at` 不一致
+4. cup_honor 模块 disabled（`config.py` 的 `honor_system.enabled = False`）
+5. 推过提醒了但 admin 没注意——cup_honor 有"已提醒"状态防重复推
+
+**解决**：
+
+1. 检查 cup_honors.json 里是否有对应 uuid 的 cup_honor，且 `cup_honor.expiration_date` 是否正确
+2. 检查 `expiration_date` 是否是未来时间
+3. 把两个 toml 的时间字段对齐
+4. 检查 `config.py` 的 `honor_system.enabled = True`
+5. 查 honor 系统的"已通知状态"json——可能要重置
 
 ### Q: 怎么撤销投稿？
 

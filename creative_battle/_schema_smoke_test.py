@@ -22,18 +22,19 @@ from creative_battle.creative_battle_season_models import (
 )
 
 
-# 简化版字段（unix 哲学）：删 winner_role / 删 expire_at × 3，加 blacklist/whitelist/honor_uuid
+# 简化版：bot 不维护 expire_at（撤回 cup_honor 模式）——过期由 HonorCog 通用 honor expiration 推提醒
 _BASE_FACTION_FIELDS = {
     "supporter_role_id": 111,
+    "contributor_role_id": 222,
     "submission_channel_id": 444,
-    "blacklist_role_ids": [],  # 简化版新增（per-faction）
-    "whitelist_role_ids": [],  # 简化版新增（per-faction）
-    "contributor_honor_uuid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",  # 简化版新增
+    "blacklist_role_ids": [],
+    "whitelist_role_ids": [],
+    "contributor_honor_uuid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
 }
 
 
 def test_toml_schema_basic():
-    """toml schema：最小有效配置。"""
+    """toml schema：最小有效配置（撤回 cup_honor 模式，无 expire_at 字段）。"""
     cfg = CreativeBattleGuildConfig(
         enabled=True,
         meta={
@@ -49,9 +50,10 @@ def test_toml_schema_basic():
                 "display_name": "A 组",
                 "emoji": "🅰️",
                 "supporter_role_id": 111,
+                "contributor_role_id": 222,
                 "submission_channel_id": 444,
-                "blacklist_role_ids": [999, 998],  # 测试黑名单
-                "whitelist_role_ids": [],  # 空 = 不限制
+                "blacklist_role_ids": [999, 998],
+                "whitelist_role_ids": [],
                 "contributor_honor_uuid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
             },
             {
@@ -59,9 +61,10 @@ def test_toml_schema_basic():
                 "display_name": "B 组",
                 "emoji": "🅱️",
                 "supporter_role_id": 555,
+                "contributor_role_id": 666,
                 "submission_channel_id": 888,
                 "blacklist_role_ids": [],
-                "whitelist_role_ids": [100, 200],  # 测试白名单（非空）
+                "whitelist_role_ids": [100, 200],
                 "contributor_honor_uuid": "11111111-2222-3333-4444-555555555555",
             },
         ],
@@ -71,18 +74,19 @@ def test_toml_schema_basic():
     assert len(cfg.factions) == 2
     assert cfg.factions[0].key == "faction_a"
     assert cfg.factions[1].submission_channel_id == 888
-    # 简化版：黑/白名单字段
+    # contributor_role_id（保留）
+    assert cfg.factions[0].contributor_role_id == 222
+    # 撤回的 expire_at 字段
+    assert not hasattr(cfg.factions[0], "contributor_role_expire_at")
+    # 黑/白名单
     assert cfg.factions[0].blacklist_role_ids == [999, 998]
     assert cfg.factions[1].whitelist_role_ids == [100, 200]
-    # 简化版：grant_honor uuid
+    # grant_honor uuid
     assert cfg.factions[0].contributor_honor_uuid == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-    # 简化版删除字段
+    # 删除字段
     assert not hasattr(cfg.meta, "loser_contributor_keep_months")
-    assert not hasattr(cfg.factions[0], "supporter_role_expire_at")
-    assert not hasattr(cfg.factions[0], "contributor_role_expire_at")
-    assert not hasattr(cfg.factions[0], "loser_contributor_role_expire_at")
     assert not hasattr(cfg.factions[0], "winner_role_id")
-    print(f"✅ toml schema basic OK: season={cfg.meta.season_id}, factions={[f.key for f in cfg.factions]}")
+    print(f"✅ toml schema basic OK (no expire_at): season={cfg.meta.season_id}, factions={[f.key for f in cfg.factions]}")
 
 
 def test_toml_schema_rejects_3_factions():

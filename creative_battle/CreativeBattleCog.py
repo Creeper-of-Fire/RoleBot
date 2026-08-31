@@ -181,6 +181,9 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
             cfg = self.config_mgr.get(guild_id)
             if cfg is None:
                 continue
+            # 注册主入口 view（每个 guild 一个实例）
+            self.bot.add_view(MainPanelView(self, cfg.factions))
+            # 注册分区 view（每个 faction 一个实例）
             for faction in cfg.factions:
                 self.bot.add_view(FactionPanelView(self, faction_key=faction.key))
 
@@ -292,9 +295,16 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
             return
 
         # 幂等 add（重复点不会报错）
+        supporter_role = interaction.guild.get_role(faction.supporter_role_id)
+        if supporter_role is None:
+            await interaction.response.send_message(
+                f"❌ 身份组 ID `{faction.supporter_role_id}` 在服务器中不存在或已被删除，请联系管理组。",
+                ephemeral=True,
+            )
+            return
         try:
             await member.add_roles(
-                faction.supporter_role_id,
+                supporter_role,
                 reason=f"创作大会 {cfg.meta.season_label} 加入 {faction.display_name}",
             )
         except discord.Forbidden:
@@ -373,9 +383,18 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
         await self.state_mgr.save_data(state)
 
         # add contributor_role
+        contributor_role = interaction.guild.get_role(faction.contributor_role_id)
+        if contributor_role is None:
+            await interaction.response.send_message(
+                f"❌ 参赛身份组 ID `{faction.contributor_role_id}` 在服务器中不存在或已被删除，未能添加。投稿仍已记录，请联系管理组补发身份组。",
+                ephemeral=True,
+            )
+            submission.contributor_role_granted = False
+            await self.state_mgr.save_data(state)
+            return
         try:
             await member.add_roles(
-                faction.contributor_role_id,
+                contributor_role,
                 reason=f"创作大会投稿 {title[:30]}",
             )
             submission.contributor_role_granted = True
@@ -548,7 +567,7 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
         await interaction.response.send_message(
             f"✅ 投稿已从 json 撤销（submission_id={submission_id[:8]}…，《{sub.title}》/ {faction_display}）。\n"
             f"⚠️ **bot 没有 remove contributor_role**——请到 Discord 手动 remove 参赛身份组。\n"
-            f"⚠️ **bot 没有撤销 grant_honor**——如需撤销 honor，请到 honor 系统的『荣誉头衔丨核心』处理。",
+            f"⚠️ **bot 没有撤销 grant_honor**——如需撤销 honor，请到 honor 系统的『荣誉头衔丨管理』处理。",
             ephemeral=True,
         )
 

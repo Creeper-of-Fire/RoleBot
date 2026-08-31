@@ -63,7 +63,7 @@ class ClaimableHonorView(ui.View):
         honor_uuid = panel_info['honor_uuid']
 
         # 检查该荣誉是否仍在配置文件的可领取列表中
-        claimable_uuids = self._get_claimable_uuids(interaction.guild_id)
+        claimable_uuids = self.cog._get_claimable_uuids(interaction.guild_id)
         if honor_uuid not in claimable_uuids:
             await interaction.followup.send("❌ 此荣誉当前已无法通过此面板领取，可能活动已结束/管理员已移除。", ephemeral=True)
             return

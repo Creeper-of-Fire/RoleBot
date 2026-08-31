@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import datetime as _dt
 from typing import Annotated, Optional
 
 from pydantic import BaseModel, Field
@@ -40,6 +41,15 @@ class HonorDefinitionItem(BaseModel):
     hidden_until_earned: bool = Field(True, description="未获得时是否隐藏")
     role_sync_honor: bool = Field(False, description="是否参与角色自同步")
     icon_url: Optional[str] = Field(None, max_length=255, description="荣誉图标 URL")
+    # ★ expiration_date：对应 Discord **身份组**的过期时间（**配置层**，不在 SQLAlchemy db）。
+    #   荣誉本身是永久记录；这里配的是"对应身份组何时过期"，到期时
+    #   HonorExpirationCog.expiration_check_loop 推提醒到 notification 频道，admin 手动 remove role。
+    #   None = 永不过期（普通 honor 默认；cup_honor 走 cup_honors.json 自己的 expiration_date）。
+    #   时区约定：naive datetime 视为 Asia/Shanghai（上海时区）。
+    expiration_date: Optional[_dt.datetime] = Field(
+        None,
+        description="对应身份组的过期时间。None=永不过期。HonorExpirationCog 24h 轮询检查，到期推提醒。",
+    )
 
 
 # --- claimable ---

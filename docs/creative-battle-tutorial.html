@@ -649,7 +649,8 @@ random_count_per_faction = 2
 key = "faction_a"                       # 必须小写英文 + 下划线
 display_name = "A 组"
 emoji = "🅰️"
-supporter_role_id = 111111111           # bot add；过期 / 移除由 admin 手动
+supporter_role_id = 111111111           # 支持者：bot add；过期/移除由 admin 手动
+contributor_role_id = 222222222         # ★ 参赛者：bot add；过期由 honor toml 的顶层 `expiration_date` 字段配置 + HonorExpirationCog 推提醒
 submission_channel_id = 444444444        # A 组分区频道（可留空）
 
 # ★ 简化版：per-faction 黑/白名单（OO 一点）
@@ -660,6 +661,8 @@ whitelist_role_ids = []                  # 例：[888] 表示必须有 888 才�
 
 # ★ 简化版：投稿成功后 bot 调 grant_honor 用的 UUID（从 honor toml 引用）
 #   留空 = 不 grant_honor
+#   ⚠️ 配 honor toml 的对应 honor 时加顶层 `expiration_date` 字段——
+#   HonorExpirationCog 自动监控过期 + 推提醒
 contributor_honor_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
 [[factions]]
@@ -667,6 +670,7 @@ key = "faction_b"
 display_name = "B 组"
 emoji = "🅱️"
 supporter_role_id = 555555555
+contributor_role_id = 666666666
 submission_channel_id = 888888888
 blacklist_role_ids = []
 whitelist_role_ids = []
@@ -701,6 +705,16 @@ admin_role_id = 000000000</code></pre>
     <span class="bench-label">blacklist / whitelist_role_ids</span>
     <div class="bench-track"><div class="bench-fill" style="width:100%"></div></div>
     <span class="bench-val">空 list = 不限制</span>
+  </div>
+  <div class="bench">
+    <span class="bench-label">contributor_role_id</span>
+    <div class="bench-track"><div class="bench-fill" style="width:100%"></div></div>
+    <span class="bench-val">必填（= honor 绑定的 role_id）</span>
+  </div>
+  <div class="bench">
+    <span class="bench-label">contributor_role_id</span>
+    <div class="bench-track"><div class="bench-fill" style="width:100%"></div></div>
+    <span class="bench-val">必填（= honor 绑定的 role_id）</span>
   </div>
   <div class="bench">
     <span class="bench-label">contributor_honor_uuid</span>
@@ -760,6 +774,63 @@ admin_role_id = 000000000</code></pre>
     <svg class="icon icon-16 callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2H3v16h5l4 4v-4h9V2z"/></svg>
     <div class="callout-body"><strong>互斥领取</strong>——用户已选 A 后点 B，bot <strong>拒绝加入并提示"如需更换请联系管理组"</strong>。bot <strong>不</strong> remove A 的 supporter_role（unix 哲学：身份组生命周期由 admin 管）。</div>
   </div>
+
+  <h3 style="margin-top: 32px;">赛季结束后动作（跨模块配合）</h3>
+  <p class="lede">创作大会 <strong>不只</strong>靠 creative_battle 模块自己——cup_honor 和 honor 系统都会参与。下方是完整时间线：</p>
+
+  <div class="mermaid">
+flowchart LR
+  A[投稿期<br/>start ~ end_date] -->|end_date 到<br/>bot 不再接受| B[投稿期结束]
+  B -->|now &gt;= cup_honor<br/>expiration_date| C[HonorExpirationCog 推提醒<br/>notification 频道]
+  C -->|admin 手动| D[remove contributor_role]
+  D -->|胜负判断<br/>人工 7+7| E[winner_role<br/>人工 add]
+  classDef active fill:#ddeae5,stroke:#2f6f5e,color:#14171e
+  classDef inactive fill:#e9e3d6,stroke:#7c7a72,color:#14171e
+  classDef gate fill:#f0e9d8,stroke:#c97b3f,color:#14171e
+  class A active
+  class B gate
+  class C inactive
+  class D inactive
+  class E inactive
+  </div>
+
+  <ol class="timeline">
+    <li>
+      <div class="timeline-title">投稿期结束（自动）</div>
+      <div class="timeline-body">
+        bot 按 <code>end_date</code> <strong>自动停止接受投稿</strong>（if-else 判断）。推广面板也停止更新。supporter_role / contributor_role 仍然挂在用户身上，bot 不主动 remove。
+      </div>
+    </li>
+    <li>
+      <div class="timeline-title">HonorExpirationCog 推过期提醒（cup_honor 通用机制）</div>
+      <div class="timeline-body">
+        投稿成功后 bot 调用的那个 honor toml 配顶层 <code>expiration_date</code> 字段。到时间后，HonorExpirationCog 的 <code>expiration_check_loop</code>（24h 轮询）自动推 <code>ExpiredHonorNoticeView</code> embed 到 honor toml 的 <code>cup_honor.notification.channel_id</code> 频道。
+      </div>
+    </li>
+    <li>
+      <div class="timeline-title">admin 手动 remove contributor_role</div>
+      <div class="timeline-body">
+        看到 HonorExpirationCog 推的提醒后，admin 到 Discord 身份组设置 → 找到 contributor_role → 手动 remove 所有持有成员。同时可点 embed 上的"补发 honor（按 role 持有者）"按钮（HonorExpirationCog 内置健康检查）。
+      </div>
+    </li>
+    <li>
+      <div class="timeline-title">人工流程：决定胜负方 + 7+7 设计投稿投票</div>
+      <div class="timeline-body">
+        admin 看 <code>data/creative_battles_*.json</code> 决定胜负方 → 委员会 7 天自由投稿 + 7 天投票 + 设计要求审核 → 设计确定后 admin <strong>手动</strong>到 Discord 给获胜方所有 supporter add winner_role（持续到下次合战结束）。
+      </div>
+    </li>
+    <li>
+      <div class="timeline-title">admin 手动 remove supporter_role</div>
+      <div class="timeline-body">
+        admin 自己定时间（赛季结束 / 一周后 / 一月后），到 Discord 身份组设置 → 手动 remove 所有 supporter。cup_honor <strong>不监控</strong> supporter_role（它只管 cup_honor 类型 honor）。
+      </div>
+    </li>
+  </ol>
+
+  <div class="callout primary">
+    <svg class="icon icon-16 callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2H3v16h5l4 4v-4h9V2z"/></svg>
+    <div class="callout-body"><strong>为什么用 HonorExpirationCog 通用机制？</strong>honor toml 的顶层 <code>expiration_date</code> 字段 + HonorExpirationCog 的 <code>expiration_check_loop</code>（24h 轮询）+ <code>ExpiredHonorNoticeView</code>——任何 honor 都可用，<strong>db 不存过期时间</strong>。creative_battle 不用自己写 expire 逻辑。unix 哲学：复用现有工具。</div>
+  </div>
 </section>
 
 <!-- ============ 06 永久贡献者荣誉 ============ -->
@@ -771,28 +842,50 @@ admin_role_id = 000000000</code></pre>
   <div class="card-grid">
     <div class="card">
       <span class="card-tag primary">步骤 1</span>
-      <h3>honor toml 加 [[definitions]]</h3>
-      <p>用 <span class="cmd">荣誉头衔丨配置 下载配置</span> 拿 honor toml，加 2 个 <code>[[definitions]]</code> 块（每个阵营一个）。UUID 用 <span class="cmd">荣誉头衔丨配置 生成UUID</span> 拿。</p>
+      <h3>honor toml 加 [[definitions]] + 顶层 expiration_date 字段</h3>
+      <p>用 <span class="cmd">荣誉头衔丨配置 下载配置</span> 拿 honor toml，加 2 个 <code>[[definitions]]</code> 块（每个阵营一个）。<strong>每个 honor 加顶层 <code>expiration_date</code> 字段</strong>（<code>HonorDefinitionItem</code> 直接属性）——HonorExpirationCog 的 24h 轮询会自动监控到期 + 推提醒。<strong>db 不存过期时间</strong>——过期时间只在 toml 配置层。</p>
       <pre><code>[[definitions]]
 uuid = "&lt;UUID v4 即可，或用 生成UUID 命令&gt;"
 name = "🍃 A 组之贡献者"
 description = "参与创作大会·A 组投稿"
-role_id = 222222222    # 仅供参考（= A 组 contributor_role_id）
-hidden_until_earned = true</code></pre>
+role_id = 222222222    # = A 组 contributor_role_id
+hidden_until_earned = true
+
+expiration_date = "2026-12-31T23:59:59+08:00"   # ★ 顶层字段——HonorExpirationCog 监控过期 + 推提醒
+expiration_date = "2026-12-31T23:59:59+08:00"
+lead_days = 3
+
+[[definitions]]
+uuid = "&lt;另一个 UUID&gt;"
+name = "🍃 B 组之贡献者"
+description = "参与创作大会·B 组投稿"
+role_id = 666666666
+hidden_until_earned = true
+
+expiration_date = "2026-12-31T23:59:59+08:00"   # ★ 顶层字段
+expiration_date = "2026-12-31T23:59:59+08:00"
+lead_days = 3</code></pre>
     </div>
     <div class="card">
       <span class="card-tag primary">步骤 2</span>
       <h3>creative_battle toml 引用 UUID</h3>
-      <p>把上一步的 UUID 填到对应阵营的 <code>contributor_honor_uuid</code> 字段。</p>
+      <p>把 honor UUID 填到对应阵营的 <code>contributor_honor_uuid</code>。</p>
       <pre><code>[[factions]]
 key = "faction_a"
-contributor_honor_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"</code></pre>
+contributor_role_id = 222222222       # = honor toml 里的 role_id
+contributor_honor_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+[[factions]]
+key = "faction_b"
+contributor_role_id = 666666666
+contributor_honor_uuid = "11111111-2222-3333-4444-555555555555"</code></pre>
     </div>
     <div class="card">
       <span class="card-tag primary">步骤 3</span>
       <h3>bot 自动处理</h3>
       <p>赛季内：用户投稿 → bot 自动 <code>add_roles(contributor_role_id)</code> + <strong>自动 <code>grant_honor(member.id, contributor_honor_uuid)</code></strong>。无需 admin 操作。</p>
       <p style="margin-top: 8px; font-size: 13px;"><strong>失败处理</strong>：<code>grant_honor</code> 失败不阻断投稿——json 标记 <code>honor_granted=false</code>，admin 看到后手动到 honor 系统补。</p>
+      <p style="margin-top: 8px; font-size: 13px;"><strong>过期处理</strong>：到 <code>顶层 expiration_date 字段</code> 后，HonorExpirationCog.expiration_check_loop（24h 轮询）自动推 <code>ExpiredHonorNoticeView</code> 到 honor toml 的 <code>cup_honor.notification.channel_id</code> 频道 → admin 看到后手动 remove contributor_role。</p>
     </div>
   </div>
 
@@ -803,36 +896,43 @@ contributor_honor_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"</code></pre>
 
   <div class="callout">
     <svg class="icon icon-16 callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01M12 2 1 22h22Z"/></svg>
-    <div class="callout-body"><strong>撤销投稿不撤销 honor</strong>——bot 的 <code>/合战丨核心 撤销投稿</code> 命令只删 json，<strong>不</strong>撤销已授予的 honor。如需撤销，请到 honor 系统的 <code>/荣誉头衔丨核心</code> 处理。</div>
+    <div class="callout-body"><strong>撤销投稿不撤销 honor</strong>——bot 的 <code>/合战丨核心 撤销投稿</code> 命令只删 json，<strong>不</strong>撤销已授予的 honor。如需撤销，请到 honor 系统的 <code>/荣誉头衔丨管理 管理持有者</code> 处理。</div>
   </div>
 </section>
 
 <!-- ============ 07 身份组回收 ============ -->
 <section id="reclaim">
   <span class="h2-num">07 / ROLE RECLAIM</span>
-  <h2>身份组回收（admin 全权负责）</h2>
-  <p class="lede">简化版：<strong>bot 完全不做身份组过期提醒 / 自动回收</strong>。所有身份组 remove 由 admin 手动到 Discord 处理。</p>
+  <h2>身份组回收（HonorExpirationCog 推提醒 + admin 手动 remove）</h2>
+  <p class="lede">contributor_role 用 honor 系统的<strong>顶层 <code>expiration_date</code> 字段</strong>（<code>HonorDefinitionItem</code> 直接属性）——HonorExpirationCog（独立 cog）24h 轮询自动监控到期 + 推提醒到 honor toml 的 <code>cup_honor.notification.channel_id</code> 频道。admin 看到提醒后手动到 Discord remove contributor_role。<strong>bot 不调 remove_roles</strong>（unix 哲学）。</p>
 
   <table>
     <thead>
-      <tr><th>身份组</th><th>何时回收</th><th>回收方</th></tr>
+      <tr><th>身份组</th><th>何时过期 / 回收</th><th>谁推提醒</th><th>谁 remove / add</th></tr>
     </thead>
     <tbody>
-      <tr><td>A 组 / B 组 supporter_role</td><td>admin 自己定（赛季结束后 / 比赛结算后）</td><td><strong>admin 手动</strong>（到 Discord 身份组设置 remove 成员）</td></tr>
-      <tr><td>A 组 / B 组 contributor_role</td><td>admin 自己定</td><td><strong>admin 手动</strong></td></tr>
-      <tr><td>最终身份组（winner_role）</td><td><strong>bot 不参与</strong>——admin 走 7+7 人工流程后手动 add；下次合战结束时手动 remove</td><td><strong>admin 手动</strong></td></tr>
+      <tr><td>A 组 / B 组 <strong>contributor_role</strong></td><td>honor toml 的顶层 <code>expiration_date</code> 字段</td><td><strong>HonorExpirationCog 自动</strong>（24h 轮询检查）</td><td><strong>admin 手动</strong>（看到提醒后到 Discord remove）</td></tr>
+      <tr><td>A 组 / B 组 <strong>supporter_role</strong></td><td>admin 自己定（赛季结束后 / 比赛结算后）</td><td><strong>无</strong>（HonorExpirationCog 不监控 supporter_role）</td><td><strong>admin 手动</strong></td></tr>
+      <tr><td>最终身份组（winner_role）</td><td>admin 走 7+7 人工流程后手动 add winner_role；下次合战结束时手动 remove</td><td><strong>无</strong></td><td><strong>admin 手动</strong>（add + remove）</td></tr>
     </tbody>
   </table>
 
   <div class="callout primary">
     <svg class="icon icon-16 callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2H3v16h5l4 4v-4h9V2z"/></svg>
-    <div class="callout-body"><strong>unix 哲学</strong>——bot 是工具，身份组生命周期由 admin 决定。bot 不维护过期时间字段、不推提醒、不调 remove。admin 看到需要回收时，自己到 Discord 处理。</div>
+    <div class="callout-body"><strong>HonorExpirationCog 自动推的提醒长什么样？</strong><code>ExpiredHonorNoticeView</code> embed——含 honor 名称 + 过期时间 + 当前持有该身份组成员数 + "bot 不调 remove_roles——admin 看到后手动 remove"提示。详细实现见 <code>honor_system/honor_expiration_cog.py</code>。</div>
   </div>
 
   <div class="callout">
     <svg class="icon icon-16 callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01M12 2 1 22h22Z"/></svg>
-    <div class="callout-body"><strong>为什么 bot 不管回收？</strong>回收时机完全由 admin 决定（比赛结束？一周后？一个月后？永久保留？）。bot 硬编码任何"几月后"规则都是过度防御 + 业务越界。</div>
+    <div class="callout-body"><strong>为什么 contributor_role 用 HonorExpirationCog，但 supporter_role 不用？</strong>supporter_role 的回收时机完全由 admin 决定（比赛结束？一周后？一个月后？永久保留？），bot 硬编码任何"几月后"规则都是过度防御。contributor_role 跟赛季强绑定——赛季结束 = 应过期——所以借力 HonorExpirationCog 的"按时间戳过期 + 推提醒"能力（cup_honor 类型 honor）。</div>
   </div>
+
+  <h3 style="margin-top: 28px;">winner_role 发放（admin 全权）</h3>
+  <p>赛季结束后，admin 决定胜负方 + 走 7+7 人工流程。设计确定后：</p>
+  <ul>
+    <li>到 Discord 身份组设置 → 找到 winner_role → 手动 add 给获胜方所有 supporter</li>
+    <li>下次合战结束时手动 remove winner_role</li>
+  </ul>
 </section>
 
 <!-- ============ 08 本地测试 ============ -->
@@ -879,7 +979,7 @@ contributor_honor_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"</code></pre>
     <ol class="checklist">
       <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>编辑本地 <code>data/creative_battle_&lt;test_guild_id&gt;.toml</code>（参考 §4 示例，把所有 ID 换成测试服务器的）</li>
       <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>通过 <span class="cmd">合战丨配置 上传配置</span> 上传（首次可省略 hash）</li>
-      <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>如果走永久贡献者荣誉流程，<strong>同时</strong>在 honor toml 加 2 个 <code>[[definitions]]</code>，并在 creative_battle toml 填 <code>contributor_honor_uuid</code> 引用</li>
+      <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>如果走永久贡献者荣誉流程，<strong>同时</strong>在 honor toml 加 2 个 <code>[[definitions]]</code>（每个加顶层 <code>expiration_date</code> 字段），并在 creative_battle toml 填 <code>contributor_honor_uuid</code> 引用。db <strong>不</strong>存过期时间——无需 alembic 迁移。</li>
     </ol>
   </div>
 
@@ -914,7 +1014,9 @@ contributor_honor_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"</code></pre>
       <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg><strong>推广面板停止更新测试</strong>：投稿期外等 5 分钟 → 推广 embed <strong>不应再 refresh</strong>（但消息本身还在频道里）</li>
       <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg><strong>身份组回收测试</strong>：bot <strong>不</strong>做任何 remove 操作。admin 手动到 Discord 身份组设置 → remove 成员。验证人工流程跑通。</li>
       <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg><strong>最终身份组测试</strong>：bot <strong>不参与</strong>——admin 手动到 Discord 给获胜方所有 supporter add winner_role（验证人工 7+7 流程）</li>
-      <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg><strong>grant_honor 验证</strong>：投稿后到 honor 系统查 <code>/荣誉头衔丨核心</code> 或用户荣誉墙，确认投稿用户已持有 <code>🍃 A/B 组之贡献者</code> honor</li>
+      <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg><strong>grant_honor 验证</strong>：投稿后到 honor 系统查 <code>/荣誉头衔丨管理</code> 或用户荣誉墙，确认投稿用户已持有 <code>🍃 A/B 组之贡献者</code> honor</li>
+      <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg><strong>HonorExpirationCog 过期提醒测试</strong>：把 honor toml 的 <code>顶层 expiration_date 字段</code> 改成今天 → 等 HonorExpirationCog.expiration_check_loop 下次轮询（24h 内）→ honor toml 的 <code>cup_honor.notification.channel_id</code> 频道应收到 <code>ExpiredHonorNoticeView</code> embed</li>
+      <li><svg class="icon icon-16 check-icon" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg><strong>winner_role 发放测试</strong>：赛季结束后，admin 手动到 Discord 身份组设置 → 给获胜方所有 supporter add winner_role（验证人工 7+7 流程 + admin 全权发放）</li>
     </ol>
   </div>
 

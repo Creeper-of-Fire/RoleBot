@@ -112,6 +112,15 @@ class FactionConfig(BaseModel):
             "过期 / 移除由 admin 手动管理。"
         ),
     )
+    contributor_role_id: int = Field(
+        ...,
+        description=(
+            "参赛者身份组 ID。用户投稿后 bot add；过期 / 移除由 admin 手动管理。"
+            "**自动过期机制**——honor toml 对应 honor 配 `expiration_date` 字段（不限 cup_honor）"
+            "→ HonorCog 通用 honor expiration_check_loop 监控到期 → 推提醒 → "
+            "admin 看到后手动 remove contributor_role。bot 不调 remove_roles。"
+        ),
+    )
     submission_channel_id: Optional[int] = Field(
         None,
         description="该阵营分区频道 ID（投稿按钮 + 分区推广面板）。未配置则不发该组分区面板",

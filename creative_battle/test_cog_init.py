@@ -28,20 +28,22 @@ class MockBot:
 
 
 def _make_test_factions():
-    """简化版：删 expire_at × 3 / winner_role_id，加 blacklist/whitelist/honor_uuid"""
+    """撤回 cup_honor 模式：无 expire_at；honor_uuid 由 honor toml 控制 expiration_date"""
     from creative_battle.creative_battle_models import FactionConfig
     return [
         FactionConfig(
             key="faction_a", display_name="A 组", emoji="🅰️",
-            supporter_role_id=1, submission_channel_id=10,
+            supporter_role_id=1, contributor_role_id=2,
+            submission_channel_id=10,
             blacklist_role_ids=[999], whitelist_role_ids=[],
             contributor_honor_uuid="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
         ),
         FactionConfig(
             key="faction_b", display_name="B 组", emoji="🅱️",
-            supporter_role_id=4, submission_channel_id=11,
+            supporter_role_id=4, contributor_role_id=5,
+            submission_channel_id=11,
             blacklist_role_ids=[], whitelist_role_ids=[100],
-            contributor_honor_uuid=None,  # 测试可选 honor uuid
+            contributor_honor_uuid=None,
         ),
     ]
 

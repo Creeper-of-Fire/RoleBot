@@ -12,10 +12,10 @@
 
 阵营意象按**抽象代号 A 组 / B 组**（具体意象由委员会在最终身份组设计阶段另定）。bot 不绑定具体意象（autumn / winter / etc.），全部走 `cfg.factions` 遍历。
 
-### 1.1 bot 只做（unix 哲学，按用户拍板）
+### 1.1 bot 只做（unix 哲学：bot 只做最少的事，身份组发放/移除交给 honor 系统）
 
 - **主入口面板**（发到 `promotion.main_channel_id`）：A 组 / B 组 **互斥**领取按钮
-  - 用户已选 A 阵营后点 B → bot 拒绝（**不 remove** A，admin 自己管）
+  - 用户已选 A 阵营后点 B → bot 拒绝（**不 remove** A，admin自己管）
 - **分区投稿面板**（每个 `submission_channel_id` 各一个）：📨 投稿按钮
   - 点击弹 Modal（标题 + 描述）→ bot add contributor_role + 写 json + grant_honor
 - **推广面板**定时 refresh（**仅投稿期内**——投稿期结束 → 停止更新）
@@ -25,6 +25,12 @@
   - `whitelist_role_ids`：非空时持任一才允许
 - **grant_honor 直接调**：投稿成功后 bot 直接调 honor 系统的 `grant_honor` 接口
   - uuid 在 toml 的 `contributor_honor_uuid` 配置（per-faction）
+- **contributor_role 过期 = HonorExpirationCog 通用机制**（honor_system/honor_expiration_cog.py）：
+  - **普通 honor**：honor toml `HonorDefinitionItem.expiration_date` 字段（pydantic 配置层，不入 SQLAlchemy db——honor 是永久记录，**只有身份组过期**）
+  - **杯赛 honor**：cup_honors.json `CupHonorDetails.expiration_date` 字段（已有，杯赛专属 json 配置）
+  - HonorExpirationCog.expiration_check_loop（24h 轮询）**合并遍历** toml + cup_honors.json → 到期推 `ExpiredHonorNoticeView` 到 `cfg.cup_honor.notification.channel_id` 频道
+  - **admin 看到提醒后手动到 Discord remove contributor_role**——bot 不调 remove_roles
+  - **关键架构**：db 是 honor 历史记录表，**不存过期时间**——过期时间是配置（toml / json），db 列加 `expiration_date` 是反模式（破坏性 schema + 真理撕裂 + 双真相）
 - **撤销投稿**（admin 命令 `/合战丨核心 撤销投稿 submission_id`）：从 json 删除投稿记录
   - **不** remove contributor_role——admin 自己到 Discord remove
   - **不** 撤销已授予的 honor——admin 自行到 honor 系统处理
@@ -113,6 +119,10 @@ key = "faction_a"
 display_name = "A 组"
 emoji = "🅰️"
 supporter_role_id = 111111111            # 支持者身份组（用户点 A 按钮后 bot add；互斥由 bot 拒绝实现，**不** remove）
+contributor_role_id = 222222222          # ★ 参赛者身份组（投稿后 bot add；过期由 cup_honor 推提醒，admin 手动 remove）
+contributor_role_expire_at = 2026-12-31T23:59:59+08:00   # ★ contributor_role 过期时间（unix 哲学：bot 不硬编码规则）
+                                                       #   honor toml 对应 honor 的 cup_honor.expiration_date 必须配这个时间
+                                                       #   到时 cup_honor.expiration_check_loop 自动推通知
 submission_channel_id = 444444444        # A 组分区频道（发投稿面板）
 
 # ★ 简化版新增：per-faction 黑/白名单（OO 一点，admin 自己配）
@@ -123,6 +133,8 @@ whitelist_role_ids = []                  # 空 = 不限制；非空 = 必须持�
 # ★ 简化版新增：contributor_honor_uuid（per-faction，从 honor toml 引用）
 #   投稿成功后 bot 调 grant_honor(member.id, contributor_honor_uuid)
 #   留空（None）= 不 grant_honor
+#   ⚠️ **强烈建议配成 cup_honor 类型**——这样 honor 的 cup_honor.expiration_date 会触发
+#   cup_honor.expiration_check_loop 自动推过期提醒，admin 不用自己记到期时间
 contributor_honor_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
 [[factions]]
@@ -130,6 +142,8 @@ key = "faction_b"
 display_name = "B 组"
 emoji = "🅱️"
 supporter_role_id = 555555555
+contributor_role_id = 666666666
+contributor_role_expire_at = 2026-12-31T23:59:59+08:00
 submission_channel_id = 888888888
 blacklist_role_ids = []
 whitelist_role_ids = [123456789]         # 例：B 组要求白名单角色 123456789
@@ -772,4 +786,57 @@ if reject_msg: return reject_msg
 - **互斥语义独立清晰**：admin doc §3.4 "已选 A 后想换 B 怎么办"明确解释互斥——和黑名单概念分开讲更好懂
 - **实现已经够清晰**：当前两套独立路径加起来才 30 行代码，重构收益低
 
-**触发重构的信号**：互斥检查逻辑变复杂（比如要支持"已选 A 后 N 天才能换 B"或"已选 A 后必须先完成某投稿才能换"），需要更灵活的策略机制时再考虑合并。
+
+**观察**：本设计之前考虑过两种方式给 contributor_role 加"过期 + 推提醒"：
+
+| 方案 | 维护方 | 状态 |
+|---|---|---|
+| creative_battle 自建 `expire_check_loop`（ver4 final） | creative_battle | 删了（ver4 final 残留被本轮清理） |
+| ~~委托 cup_honor：honor toml 加 `cup_honor.expiration_date`~~ | ~~cup_honor 模块~~ | ❌ 错——cup_honor 是杯赛专用，不应被复用为通用机制 |
+| **HonorExpirationCog 通用机制**：honor toml 加 `expiration_date` 字段（不限 cup_honor） | HonorExpirationCog | **当前采用** |
+
+**正确架构**（用户拍板）：
+
+- **HonorCog**：通用 honor CRUD（grant / revoke / 批量 sync role ↔ honor）
+- **CupHonorModuleCog**：杯赛 honor 的特殊逻辑（**只管杯赛**，不应该被复用为通用机制）
+- **HonorExpirationCog**：通用 honor 身份组过期机制——`expiration_check_loop`（24h 轮询）+ `ExpiredHonorNoticeView` 推提醒（**合并处理** honor toml `HonorDefinitionItem.expiration_date` + cup_honors.json `CupHonorDetails.expiration_date`；**db 不存过期**）
+
+**优势**：
+
+- 不污染 HonorCog（保持通用 honor CRUD 干净）
+- 不复用 cup_honor（避免架构错误）
+- creative_battle 不用自己写过期逻辑——honor toml 配 expiration_date 即可
+- admin 改 toml 的 expiration_date 即可调整过期时间
+
+### 11.3 已被撤销（"A → B 升级"反设计命令）
+
+**说明**：早期文档提出"给持有 honor_from 的成员同时 grant_honor(honor_to) + add_role(role_to)"的命令，命名 `/荣誉头衔丨核心 upgrade`。
+
+**撤销理由**（2026-08-31 用户拍板）：
+- **honor 是永久记录**——`upgrade` 命令的语义"升级到永久"逻辑错误
+- **身份组才是会过期的**——所谓"升级"实际上是"新增另一组（永久）honor + 另一组（临时）role"，这是普通 grant + add role 命令能做到的事
+- **不应该有专门的命令**——管理员用 `/荣誉头衔丨管理 授予` / `批量授予` 已能完全替代
+
+### 11.4 通用 honor 身份组过期机制（**已实现 2026-08-31**）
+
+**观察**：bot 不调 remove_roles（unix 哲学），但 admin 需要在身份组过期时收到提醒——以便手动 remove。
+
+**机制**（HonorExpirationCog，honor_system/honor_expiration_cog.py）：
+- `HonorExpirationCog.expiration_check_loop` 24h 轮询
+- **合并遍历两个配置源**（**不**读 db）：
+  - 普通 honor：`HonorConfigManager.get(guild_id).definitions[i].expiration_date`（honor toml pydantic 字段，2026-08-31 新加）
+  - 杯赛 honor：`CupHonorJsonManager.get_all_cup_honors()[i].cup_honor.expiration_date`（cup_honors.json，杯赛专属 json 配置）
+- 到期 → 推 `ExpiredHonorNoticeView` 到 `cfg.cup_honor.notification.channel_id` 频道（每个 guild 单独推）
+- 防重复通知：`NotificationStateManager`（cup_honor 已有，json 存已通知列表，全局共享）
+
+**关键架构决策**（2026-08-31 用户拍板）：
+- **db 不存过期时间**——SQLAlchemy `HonorDefinition` 表是 honor 历史记录，**没有** `expiration_date` 列
+- **过期时间是配置**——只在 toml / json 里，不入 db（避免破坏性 schema + 真理撕裂 + 双真相）
+- **cup_honor自己不再有循环**——cup_honor_module.py 撤了 `expiration_check_loop` + `ExpiredHonorNoticeView` + `_perform_expiration_check`（合并到 HonorExpirationCog）
+
+**View 字限控制**：
+- embed **不列 user list**（创作大会 contributor 持有人多，列出会爆 Discord 1024 char 字段限制）
+- 只给 summary（"N 个成员仍持有 role"）
+- `refill_by_role` 按钮：扫 role 持有者 → grant_honor(uuid)（按需触发，不预设列表）
+
+**admin doc**：见 `creative-battle-admin-doc.md` §5。

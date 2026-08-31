@@ -143,8 +143,15 @@ class HonorConfigCog(FeatureCog):
             permission_check=None,
         )
 
+    # 这里 UUID 不能大写，很神秘。
+    # 按照目前版本的 discord.py 实现，中文 OK ，大写英文不 OK。
+    # 关卡 1：字符集 regex —— ^[-_\w + 泰文组合 + 梵文组合]{1,32}$
+    #         \w 在 Python 3 默认 UNICODE 模式，包含中文，所以纯中文 OK
+    # 关卡 2：name.lower() != name —— 任何大写字符触发
+    #         中文没有大小写概念 → "生成".lower() == "生成" → 通过
+    #         "UUID" 含 U → "生成UUID".lower() == "生成uuid" ≠ "生成UUID" → 触发
     @honor_config_group.command(
-        name="生成UUID",
+        name="生成uuid",
         description="生成一个新 UUID，用于 honor toml [[definitions]] 块的 uuid 字段（手机友好）",
     )
     @is_admin()

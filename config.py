@@ -69,9 +69,7 @@ COGS = {
         "enabled": True,
     },
     "creative_battle": {
-        # v2 简化版（unix 哲学 + if-else 投稿期 + per-faction 黑/白名单）——
-        # 部署前 admin 需要先把 doc / tutorial 同步上线，再启用本 cog
-        "enabled": False,
+        "enabled": True,
     },
 }
 
