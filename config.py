@@ -66,7 +66,7 @@ COGS = {
         "enabled": True,
     },
     "heartbeat_information": {
-        "enabled": True,
+        "enabled": False,  # 2026-09-01 标记过期：_start_heartbeat_task 内部 TODO + return 死代码，未实际使用
     },
     "creative_battle": {
         "enabled": True,

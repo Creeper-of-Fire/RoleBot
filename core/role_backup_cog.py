@@ -12,10 +12,11 @@ from functools import partial
 
 import discord
 from discord import app_commands
-from discord.ext import commands, tasks
+from discord.ext import commands
 
 import config
 from utility.helpers import create_progress_bar
+from utility.scheduled_loop import scheduled_loop
 
 if typing.TYPE_CHECKING:
     from main import RoleBot
@@ -41,6 +42,11 @@ class BackupCog(commands.Cog, name="Backup"):
         self.backup_channel: discord.TextChannel | None = None
 
         # 我们不再在这里等待 ready，而是在 on_ready 事件中获取 guild 和 channel
+        # 自动启动挪到 cog_load，避免 __init__ 期间 self.bot.loop 尚未就绪导致
+        # RuntimeError: Task got Future <Future pending> attached to a different loop
+
+    async def cog_load(self) -> None:
+        """Cog 加载时按配置启动自动备份任务。"""
         if config.ENABLE_ROLE_BACKUPS and self.guild_id and self.channel_id:
             self.auto_backup_task.start()
         else:
@@ -162,7 +168,7 @@ class BackupCog(commands.Cog, name="Backup"):
 
     # --- 自动化任务 ---
 
-    @tasks.loop(hours=config.LIGHT_BACKUP_INTERVAL_HOURS)
+    @scheduled_loop(hours=config.LIGHT_BACKUP_INTERVAL_HOURS, run_on_startup=False, run_in_background=False)
     async def auto_backup_task(self):
         """每小时执行一次，根据时间决定是轻量备份还是重量备份。"""
         if not self.backup_guild or not self.backup_channel:

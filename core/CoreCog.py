@@ -23,9 +23,10 @@ from typing import Dict, List, Optional
 import discord
 import psutil
 from discord import app_commands
-from discord.ext import commands, tasks
+from discord.ext import commands
 
 from core.main_panel_view import MainPanelView, create_main_panel_ui
+from utility.scheduled_loop import scheduled_loop
 
 if typing.TYPE_CHECKING:
     from main import RoleBot
@@ -76,7 +77,7 @@ class CoreCog(commands.Cog, name="Core"):
         self._update_all_caches_task.cancel()
         self._backup_data_task.cancel()
 
-    @tasks.loop(hours=1)
+    @scheduled_loop(hours=1, run_on_startup=False, run_in_background=False)
     async def _update_all_caches_task(self):
         """每小时调用所有已注册功能模块的缓存更新方法。"""
         self.logger.info("开始执行每小时的全局安全缓存更新...")
@@ -171,7 +172,7 @@ class CoreCog(commands.Cog, name="Core"):
         finally:
             self._is_backing_up = False
 
-    @tasks.loop(hours=12)
+    @scheduled_loop(hours=12, run_on_startup=False, run_in_background=False)
     async def _backup_data_task(self):
         """每12小时自动备份 data 目录。"""
         self.logger.info("开始执行计划的数据备份任务...")

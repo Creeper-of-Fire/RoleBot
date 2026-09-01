@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING, List, Optional, Set
 
 import discord
 from discord import app_commands, ui
-from discord.ext import commands, tasks
+from discord.ext import commands
 
 import config
 from creative_battle.creative_battle_config_manager import CreativeBattleConfigManager
@@ -54,6 +54,7 @@ from creative_battle.creative_battle_state_manager import CreativeBattleStateMan
 from honor_system.data_manager.honor_data_manager import HonorDataManager
 from utility.expiring_lock import ExpiringLockPool
 from utility.feature_cog import FeatureCog, PanelEntry
+from utility.scheduled_loop import scheduled_loop
 from utility.toml_filename_utils import iter_guild_ids_from_toml_files
 
 if TYPE_CHECKING:
@@ -827,7 +828,7 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
 
     # --- Promotion loop（投稿期内 refresh 推广面板） ---
 
-    @tasks.loop(minutes=5)
+    @scheduled_loop(minutes=5, run_on_startup=False, run_in_background=False)
     async def promotion_loop(self) -> None:
         for guild_id in self._iter_configured_guild_ids():
             cfg = self.config_mgr.get(guild_id)

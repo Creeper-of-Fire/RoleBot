@@ -14,6 +14,7 @@ from core.embed_guides.embed_guides_manager import EmbedGuidesConfigManager
 from honor_system.cup_honor.cup_honor_json_manager import CupHonorJsonManager
 from honor_system.honor_config_manager import HonorConfigManager
 from utility.feature_cog import FeatureCog, PanelEntry
+from utility.scheduled_loop import scheduled_loop
 from honor_system.module.common_models import BaseHonorDefinition
 from honor_system.getCogs import getHonorAnniversaryModuleCog, getRoleClaimHonorModuleCog
 from honor_system.data_manager.honor_data_manager import HonorDataManager
@@ -37,8 +38,15 @@ class HonorCog(FeatureCog, name="Honor"):
         self.running_backfill_tasks: Dict[int, asyncio.Task] = {}
         # 安全缓存，用于存储此模块管理的所有身份组ID
         self.safe_honor_role_ids: set[int] = set()
+        # synchronize_all_honor_definitions 改用 @scheduled_loop，启动移至 cog_load
 
-        self.bot.loop.create_task(self.synchronize_all_honor_definitions())
+    async def cog_load(self) -> None:
+        """Cog 加载时：注册到 CoreCog + 启动 scheduled_loop 任务。"""
+        # super().cog_load() 等 1 秒然后注册——保留这个行为
+        await super().cog_load()
+        # 启动 @scheduled_loop 装饰的启动期一次性任务
+        # 等 ready 后会跑一次（run_on_startup=True）
+        self.synchronize_all_honor_definitions.start()
 
     def get_guide_embed(self, guild_id: int) -> discord.Embed:
         """按 guild_id 取荣誉活动指引 embed——走 embed_guides_{guild_id}.toml。
@@ -163,10 +171,27 @@ class HonorCog(FeatureCog, name="Honor"):
 
         return all_definitions
 
+    @scheduled_loop(count=1, run_on_startup=True)
     async def synchronize_all_honor_definitions(self):
-        await self.bot.wait_until_ready()
-        self.logger.info("HonorCog: 开始同步所有服务器的荣誉定义...")
+        """启动期一次性同步 honor toml → SQLite。
 
+        重活（toml 读 + SQLAlchemy session + db.commit()）放后台线程池跑——
+        防 sync SQLAlchemy 阻塞事件循环造成 404。
+
+        装饰器自动注入 wait_until_ready；run_on_startup=True 表示 ready 后立即跑一次；
+        count=1 表示跑 1 次后停止（这是启动期一次性任务，不是周期任务）。
+        """
+        # 装饰器会自动注入 await self.bot.wait_until_ready()
+        # 整个 body 扔到后台线程池
+        await asyncio.to_thread(self._blocking_sync_worker)
+
+    def _blocking_sync_worker(self):
+        """[同步/线程池] synchronize_all_honor_definitions 的重活版本——跑在后台线程。
+
+        所有同步操作（Path.glob + toml 解析 + SQLAlchemy session + db.commit()）都搬到这里。
+        原 async 方法保留 async 接口 + scheduled_loop 调度。
+        """
+        self.logger.info("HonorCog: 开始同步所有服务器的荣誉定义...")
         all_config_definitions = self.get_all_config_honor_definitions()
         all_legitimate_uuids = {str(d.uuid) for d in all_config_definitions}
 

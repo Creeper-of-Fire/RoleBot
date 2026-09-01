@@ -30,12 +30,13 @@ from typing import TYPE_CHECKING, List, Optional, Tuple
 
 import discord
 from discord import ui
-from discord.ext import commands, tasks
+from discord.ext import commands
 
 from honor_system.cup_honor.cup_honor_json_manager import CupHonorJsonManager
 from honor_system.honor_notification_state_data_manager import NotificationStateManager
 from honor_system.data_manager.honor_data_manager import HonorDataManager
 from honor_system.honor_config_manager import HonorConfigManager
+from utility.scheduled_loop import scheduled_loop
 
 if TYPE_CHECKING:
     from main import RoleBot
@@ -203,7 +204,7 @@ class HonorExpirationCog(commands.Cog, name="HonorExpiration"):
 
     # --- 24h 轮询检查（合并处理 toml + cup json） ---
 
-    @tasks.loop(hours=24)
+    @scheduled_loop(hours=24, run_on_startup=False, run_in_background=False)
     async def expiration_check_loop(self):
         await self._perform_expiration_check()
 

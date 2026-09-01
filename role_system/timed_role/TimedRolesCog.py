@@ -7,7 +7,6 @@ from typing import Optional, List, Dict
 
 import discord
 from discord import app_commands
-from discord.ext import tasks
 
 import config
 from role_system.timed_role import timer
@@ -17,6 +16,7 @@ from role_system.timed_role.timer import UTC8
 from utility.auth import is_role_dangerous
 from utility.feature_cog import FeatureCog, PanelEntry
 from utility.helpers import try_get_member
+from utility.scheduled_loop import scheduled_loop
 
 if typing.TYPE_CHECKING:
     from core.CoreCog import CoreCog
@@ -39,6 +39,12 @@ class TimedRolesCog(FeatureCog, name="TimedRoles"):
         self.timed_role_data_manager = TimedRoleDataManager.get_instance(logger=self.logger)
         self.safe_timed_role_ids_cache: Dict[int, List[int]] = {}
 
+        # daily_reset_task / check_expired_roles_task 的 .start() 挪到 cog_load，
+        # 避免 __init__ 期间 self.bot.loop 尚未就绪导致 RuntimeError。
+
+    async def cog_load(self) -> None:
+        """Cog 加载时启动后台调度任务。"""
+        await super().cog_load()
         self.daily_reset_task.start()
         self.check_expired_roles_task.start()
 
@@ -89,7 +95,7 @@ class TimedRolesCog(FeatureCog, name="TimedRoles"):
         await interaction.followup.send(f"✅ 服务器{interaction.guild.name}强制重置成功。", ephemeral=True)
         self.logger.info("管理员强制重置成功。")
 
-    @tasks.loop(minutes=1)
+    @scheduled_loop(minutes=1, run_on_startup=False, run_in_background=False)
     async def daily_reset_task(self):
         """每日定时任务，用于重置用户的限时身份组使用时间。"""
         now = datetime.now(UTC8)
@@ -116,7 +122,7 @@ class TimedRolesCog(FeatureCog, name="TimedRoles"):
 
             await self.timed_role_data_manager.daily_reset(self, guilds_to_reset)
 
-    @tasks.loop(minutes=1)
+    @scheduled_loop(minutes=1, run_on_startup=False, run_in_background=False)
     async def check_expired_roles_task(self):
         """每分钟检查并移除所有用户已过期的限时身份组。"""
         self.logger.debug("正在检查过期限时身份组...")

@@ -8,7 +8,7 @@ from typing import Dict, List, Optional
 
 import discord
 from discord import app_commands
-from discord.ext import commands, tasks
+from discord.ext import commands
 
 import config
 import config_data
@@ -17,6 +17,7 @@ from utility.auth import is_role_dangerous
 from utility.feature_cog import FeatureCog, PanelEntry
 from utility.helpers import create_progress_bar
 from utility.permison import is_super_admin
+from utility.scheduled_loop import scheduled_loop
 from shared.ui.views import ConfirmationView
 
 if typing.TYPE_CHECKING:
@@ -41,6 +42,12 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
         # {'guild_id': [{'source': source_id, 'target': target_id}]}
         self.safe_daily_sync_pairs_cache: Dict[int, List[Dict[str, int]]] = {}
 
+        # daily_sync_task.start() 挪到 cog_load，避免 __init__ 期间 self.bot.loop
+        # 尚未就绪导致 RuntimeError。
+
+    async def cog_load(self) -> None:
+        """Cog 加载时启动后台调度任务。"""
+        await super().cog_load()
         self.daily_sync_task.start()
 
     def cog_unload(self):
@@ -146,7 +153,7 @@ class RoleSyncCog(FeatureCog, name="RoleSync"):
                     except Exception as e:
                         self.logger.error(f"为 {after.display_name} 同步时出错: {e}")
 
-    @tasks.loop(hours=24)
+    @scheduled_loop(hours=24, run_on_startup=False, run_in_background=False)
     async def daily_sync_task(self):
         """每日任务：检查拥有身份组C的用户，并授予他们身份组D。"""
         self.logger.info("开始执行每日身份组同步任务...")

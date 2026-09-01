@@ -7,13 +7,13 @@ from typing import Optional, TYPE_CHECKING, Any
 import aiohttp
 import discord
 from discord import app_commands, ui
-from discord.ext import tasks
 
 from role_system.role_jukebox.admin_view import AdminDashboardView
 from role_system.role_jukebox.manager import RoleJukeboxManager
 from role_system.role_jukebox.models import Preset
 from role_system.role_jukebox.user_view import UserJukeboxView
 from utility.feature_cog import FeatureCog, PanelEntry
+from utility.scheduled_loop import scheduled_loop
 
 if TYPE_CHECKING:
     from main import RoleBot
@@ -45,6 +45,12 @@ class RoleJukeboxCog(FeatureCog, name="RoleJukebox"):
         super().__init__(bot)
         self.manager = RoleJukeboxManager.get_instance(logger=self.logger)
         self.session = aiohttp.ClientSession()
+        # rotation_task.start() 挪到 cog_load，避免 __init__ 期间 self.bot.loop
+        # 尚未就绪导致 RuntimeError。
+
+    async def cog_load(self) -> None:
+        """Cog 加载时启动后台调度任务。"""
+        await super().cog_load()
         self.rotation_task.start()
 
     def cog_unload(self):
@@ -309,7 +315,7 @@ class RoleJukeboxCog(FeatureCog, name="RoleJukebox"):
 
     # --- Rotation Task ---
 
-    @tasks.loop(seconds=1)
+    @scheduled_loop(seconds=1, run_on_startup=True, run_in_background=False)
     async def rotation_task(self):
         """每分钟检查一次是否有轨道需要轮换。"""
         try:

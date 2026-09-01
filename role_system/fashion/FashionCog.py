@@ -5,7 +5,6 @@ from typing import Optional, List, Dict
 
 import discord
 from discord import ui, Color
-from discord.ext import tasks
 
 import config
 from core.embed_guides.embed_guides_manager import EmbedGuidesConfigManager
@@ -14,6 +13,7 @@ from role_system.fashion.fashion_view import FashionManageView
 from utility.auth import is_role_dangerous
 from utility.feature_cog import FeatureCog, PanelEntry
 from utility.helpers import safe_defer, try_get_member
+from utility.scheduled_loop import scheduled_loop
 
 if typing.TYPE_CHECKING:
     from main import RoleBot
@@ -34,6 +34,12 @@ class FashionCog(FeatureCog, name="Fashion"):
     def __init__(self, bot: 'RoleBot'):
         super().__init__(bot)
         self.safe_fashion_map_cache: Dict[int, Dict[int, List[int]]] = {}
+        # check_fashion_role_validity_task.start() 挪到 cog_load，
+        # 避免 __init__ 期间 self.bot.loop 尚未就绪导致 RuntimeError。
+
+    async def cog_load(self) -> None:
+        """Cog 加载时启动后台调度任务。"""
+        await super().cog_load()
         self.check_fashion_role_validity_task.start()
 
     def cog_unload(self):
@@ -97,7 +103,7 @@ class FashionCog(FeatureCog, name="Fashion"):
             self.safe_fashion_map_cache[guild_id] = current_safe_fashion_map
         self.logger.info("FashionCog: 安全幻化身份组缓存更新完毕。")
 
-    @tasks.loop(hours=24)
+    @scheduled_loop(hours=24, run_on_startup=False, run_in_background=False)
     async def check_fashion_role_validity_task(self):
         """
         每日检查所有用户的幻化身份组是否仍然合法。
