@@ -52,6 +52,7 @@ from creative_battle.creative_battle_season_models import (
 )
 from creative_battle.creative_battle_state_manager import CreativeBattleStateManager
 from honor_system.data_manager.honor_data_manager import HonorDataManager
+from utility.expiring_lock import ExpiringLockPool
 from utility.feature_cog import FeatureCog, PanelEntry
 from utility.toml_filename_utils import iter_guild_ids_from_toml_files
 
@@ -182,6 +183,9 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
         #   改用 ``_state_for`` / ``_save_state`` helper 按需取。
         # honor 系统：bot 直接调 grant_honor（仿 claimable_honor_module 模式）
         self.honor_data_manager = HonorDataManager.getDataManager(logger=self.logger)
+        # ★ per-user asyncio.Lock 池（2026-09-01 加）—— 串行化同一 user 的 _handle_join
+        #   避免双击 A + B 双阵营按钮的 race condition。soft TTL = 30s。
+        self._join_locks = ExpiringLockPool(ttl=30.0)
 
     def _state_for(self, guild_id: int, season_id: str) -> "GuildSeasonData":
         """取 (guild_id, season_id) 对应的 in-memory state（不写盘）。"""
@@ -239,6 +243,15 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
         held = {r.id for r in member.roles}
         return any(rid in held for rid in role_ids)
 
+    @staticmethod
+    def _member_holds_any_honor(
+        held_honor_uuids: Set[str], honor_uuids: List[str]
+    ) -> bool:
+        """held_honor_uuids 中是否包含 honor_uuids 任一（**任一**即 True）。"""
+        if not honor_uuids:
+            return False
+        return any(h in held_honor_uuids for h in honor_uuids)
+
     def _check_submission_blacklist_whitelist(
         self,
         member: discord.Member,
@@ -248,20 +261,27 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
         """per-faction 投稿黑/白名单检查（unix 哲学：黑名单优先于白名单）。
 
         **仅**由投稿路径（按钮 click + modal submit 兜底）调用；_handle_join 走
-        supporter_role 互斥检查，不调本方法。
+        supporter_honor 互斥检查，不调本方法。
+
+        2026-09-01 改造：判定改查 honor DB（user_honors 集合），不查 member.roles。
 
         Returns:
             None 表示通过；非 None = 拒绝原因（中文，给用户看）。
         """
+        # 查 user_honors 一次——同时用于黑/白名单检查
+        held_honor_uuids = {
+            uh.honor_uuid for uh in self.honor_data_manager.get_user_honors(member.id)
+        }
+
         # 黑名单优先：持任一即拒
-        if faction.submission_blacklist_role_ids and self._member_holds_any_role(
-            member, faction.submission_blacklist_role_ids
+        if faction.submission_blacklist_honor_uuids and self._member_holds_any_honor(
+            held_honor_uuids, faction.submission_blacklist_honor_uuids
         ):
-            # ★ 把黑名单里的 role_id 映射回具体阵营——给用户看"你已加入 X，不能投稿 Y"
+            # ★ 把黑名单里的 honor uuid 映射回具体阵营——给用户看"你已加入 X，不能投稿 Y"
             other_faction = next(
                 (
                     f for f in all_factions
-                    if f.supporter_role_id in faction.submission_blacklist_role_ids
+                    if f.supporter_honor_uuid in faction.submission_blacklist_honor_uuids
                 ),
                 None,
             )
@@ -276,8 +296,8 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
             )
 
         # 白名单：非空时持任一才允许
-        if faction.submission_whitelist_role_ids and not self._member_holds_any_role(
-            member, faction.submission_whitelist_role_ids
+        if faction.submission_whitelist_honor_uuids and not self._member_holds_any_honor(
+            held_honor_uuids, faction.submission_whitelist_honor_uuids
         ):
             # ★ 明确告诉用户怎么解决——去主面板加阵营
             return (
@@ -286,6 +306,25 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
             )
 
         return None
+
+    def _get_supporter_role_for_faction(
+        self, faction: FactionConfig, guild: discord.Guild
+    ) -> Optional[discord.Role]:
+        """通过 supporter_honor_uuid 查 honor_def，再拿 role_id，最后 get_role。
+
+        2026-09-01 添加：FactionConfig 不再存 supporter_role_id，需要从 honor toml 反查。
+        每次都走 DB 查询（未缓存）——接受这个代价，
+        因为 promotion_loop 5 分钟跳一次，每次服务器几个 faction 查询可忽略。
+        返回 None 表示 honor_def 不存在 / role_id 未配 / role 在服务器中不存在。
+        """
+        if not faction.supporter_honor_uuid:
+            return None
+        honor_def = self.honor_data_manager.get_honor_definition_by_uuid(
+            faction.supporter_honor_uuid
+        )
+        if not honor_def or not honor_def.role_id:
+            return None
+        return guild.get_role(honor_def.role_id)
 
     async def _check_submission_preconditions(
         self,
@@ -326,11 +365,13 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
         return self._check_submission_blacklist_whitelist(member, faction, cfg.factions)
 
     @staticmethod
-    def _other_supporter_role_ids(
+    def _other_supporter_honor_uuids(
         cfg: CreativeBattleGuildConfig, faction: FactionConfig
-    ) -> Set[int]:
-        """返回"其他阵营的 supporter_role_id"集合——互斥检查用。"""
-        return {f.supporter_role_id for f in cfg.factions if f.key != faction.key}
+    ) -> Set[str]:
+        """返回"其他阵营的 supporter_honor_uuid"集合——互斥检查用（2026-09-01 改造）。"""
+        return {
+            f.supporter_honor_uuid for f in cfg.factions if f.key != faction.key
+        }
 
     # --- 按钮 handler：支持者加入（互斥 + 黑/白名单） ---
 
@@ -357,58 +398,85 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
             await interaction.response.send_message("❌ 找不到成员。", ephemeral=True)
             return
 
-        # ★ 互斥检查：用户已持有"其他阵营的 supporter_role" → 拒绝（**不 remove**）
-        other_supporter_ids = self._other_supporter_role_ids(cfg, faction)
-        held_other = [r.id for r in member.roles if r.id in other_supporter_ids]
-        if held_other:
-            held_faction = next(
-                (f for f in cfg.factions if f.supporter_role_id in held_other),
-                None,
+        guild_id = interaction.guild.id
+        user_id = member.id
+
+        # ★ per-user lock 串行化（2026-09-01 加）—— 避免同 user 双击 A+B 双阵营按钮
+        #   的 race condition（两个 callback 都查不到其他阵营 honor，都通过，都 grant）。
+        #   持锁时间应极短：DB 查询 + grant + 一次 add_role API。
+        lock = await self._join_locks.get_or_create(guild_id, user_id)
+        async with lock:
+            # ★ 互斥检查（2026-09-01 改造）：查 honor DB，不查 member.roles
+            #   用户通过荣誉墙卸下 role 不会绕过——DB 里的 honor 记录仍在
+            user_honors = self.honor_data_manager.get_user_honors(user_id)
+            held_honor_uuids = {uh.honor_uuid for uh in user_honors}
+
+            # 用户已持有本阵营 supporter honor → 已经是该阵营（幂等返回）
+            if faction.supporter_honor_uuid in held_honor_uuids:
+                await interaction.response.send_message(
+                    f"✅ 你已经是 {faction.emoji} {faction.display_name} 的成员了。",
+                    ephemeral=True,
+                )
+                return
+
+            # 用户已持有其他阵营 supporter honor → 拒绝（**不 remove**，与原设计一致）
+            other_supporter_uuids = self._other_supporter_honor_uuids(cfg, faction)
+            held_other = held_honor_uuids & other_supporter_uuids
+            if held_other:
+                held_faction = next(
+                    (
+                        f for f in cfg.factions
+                        if f.supporter_honor_uuid in held_other
+                    ),
+                    None,
+                )
+                # ★ 不提管理组——文案只陈述事实
+                held_label = (
+                    f"{held_faction.emoji}{held_faction.display_name}"
+                    if held_faction
+                    else "其他阵营"
+                )
+                await interaction.response.send_message(
+                    f"❌ 因为你已持有 {held_label} 身份组，所以不能加入其他阵营。",
+                    ephemeral=True,
+                )
+                return
+
+            # ★ 通过 mutex 检查——grant_honor(supporter_honor_uuid)
+            granted_def = self.honor_data_manager.grant_honor(
+                user_id, faction.supporter_honor_uuid
             )
-            # ★ 不提管理组——文案只陈述事实："你已持有 X，所以不能加入其他阵营"
-            #   admin 仍然能通过管理命令手动 remove + 重新加入，但这是 admin 工具，
-            #   不应在面向用户的提示里暴露（避免几万人缠着管理组换阵营）
-            held_label = (
-                f"{held_faction.emoji}{held_faction.display_name}"
-                if held_faction
-                else "其他阵营"
+            if granted_def is None:
+                # honor_def 不存在（uuid 错误）或已被归档
+                await interaction.response.send_message(
+                    f"❌ 荣誉 `{faction.supporter_honor_uuid[:8]}…` 不存在或已归档，请联系 BOT 维护者。",
+                    ephemeral=True,
+                )
+                return
+
+            # ★ 手动 add role（grant_honor 不自动 add；2026-09-01 TODO 之后改 grant_honor 自动 add）
+            supporter_role = (
+                interaction.guild.get_role(granted_def.role_id)
+                if granted_def.role_id
+                else None
             )
+            if supporter_role is not None:
+                try:
+                    await member.add_roles(
+                        supporter_role,
+                        reason=f"创作大会 {cfg.meta.season_label} 加入 {faction.display_name}",
+                    )
+                except discord.Forbidden:
+                    await interaction.response.send_message(
+                        "❌ Bot 缺少 manage_roles 权限。",
+                        ephemeral=True,
+                    )
+                    return
+
             await interaction.response.send_message(
-                f"❌ 因为你已持有 {held_label} 身份组，所以不能加入其他阵营。",
+                f"✅ 你已加入 {faction.emoji} {faction.display_name}！",
                 ephemeral=True,
             )
-            return
-
-        # ★ 不调黑/白名单——加入路径靠 supporter_role 互斥检查（line 275-298）就够了。
-        #   黑/白名单**仅**用于 _handle_submission：投稿时必须持有本阵营 supporter
-        #   （白名单）+ 持有对面 supporter 即拒（黑名单）。
-
-        # 幂等 add（重复点不会报错）
-        supporter_role = interaction.guild.get_role(faction.supporter_role_id)
-        if supporter_role is None:
-            await interaction.response.send_message(
-                f"❌ 身份组 ID `{faction.supporter_role_id}` 在服务器中不存在或已被删除，请联系管理组。",
-                ephemeral=True,
-            )
-            return
-        try:
-            await member.add_roles(
-                supporter_role,
-                reason=f"创作大会 {cfg.meta.season_label} 加入 {faction.display_name}",
-            )
-        except discord.Forbidden:
-            await interaction.response.send_message(
-                "❌ Bot 缺少 manage_roles 权限。", ephemeral=True
-            )
-            return
-
-        # ★ supporters 不存 json：add_role 本身就是支持者状态的唯一真相源。
-        #   面板"当前支持者 X 人"走 cached role.members（不 fetch）。
-        await interaction.response.send_message(
-            f"✅ 你已加入 {faction.emoji} {faction.display_name}！", ephemeral=True
-        )
-
-    # --- Modal handler：参赛者投稿（if-else 投稿期 + grant_honor） ---
 
     async def _handle_submission(
         self,
@@ -419,6 +487,7 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
     ) -> None:
         # ★ 前置检查兜底——按钮 click 时已做（_on_submit_click），modal submit
         #   再做一次防止 race condition（用户连续点击 / 跨面板 / 上传期间配置变更）。
+        # 2026-09-01 改造：前置检查中的黑/白名单现在查 honor DB。
         reject_msg = await self._check_submission_preconditions(interaction, faction_key)
         if reject_msg:
             await interaction.response.send_message(reject_msg, ephemeral=True)
@@ -443,33 +512,10 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
         state.season.submissions[submission.submission_id] = submission
         await self._save_state(interaction.guild.id, cfg.meta.season_id)
 
-        # add contributor_role
-        contributor_role = interaction.guild.get_role(faction.contributor_role_id)
-        if contributor_role is None:
-            await interaction.response.send_message(
-                f"❌ 参赛身份组 ID `{faction.contributor_role_id}` 在服务器中不存在或已被删除，未能添加。投稿仍已记录，请联系管理组补发身份组。",
-                ephemeral=True,
-            )
-            submission.contributor_role_granted = False
-            await self._save_state(interaction.guild.id, cfg.meta.season_id)
-            return
-        try:
-            await member.add_roles(
-                contributor_role,
-                reason=f"创作大会投稿 {title[:30]}",
-            )
-            submission.contributor_role_granted = True
-        except discord.Forbidden:
-            await interaction.response.send_message(
-                "❌ Bot 缺少 manage_roles 权限，未能添加参赛身份组。请联系管理组。",
-                ephemeral=True,
-            )
-            # 仍然标记失败但 json 已记录——admin 可后续手动补
-            submission.contributor_role_granted = False
-            await self._save_state(interaction.guild.id, cfg.meta.season_id)
-            return
-
         # ★ grant_honor（按 toml contributor_honor_uuid 配置；可选）
+        #   2026-09-01 改造：删除 contributor_role_id 字段。
+        #   role 从 grant_honor 返回的 HonorDefinition.role_id 反查后手动 add。
+        granted_def = None
         if faction.contributor_honor_uuid:
             try:
                 granted_def = self.honor_data_manager.grant_honor(
@@ -492,6 +538,38 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
                     f"创作大会 {cfg.meta.season_label}: {member.id} 投稿 "
                     f"grant_honor 失败: {e}"
                 )
+
+        # ★ add contributor_role（从 grant_honor 返回的 HonorDefinition 反查 role_id）
+        #   如果 grant_honor 失败（def 不存在）或 已有，则不 add role。
+        if granted_def and granted_def.role_id:
+            contributor_role = interaction.guild.get_role(granted_def.role_id)
+            if contributor_role is None:
+                # role 不存在——但 json + honor 已记录
+                self.logger.warning(
+                    f"创作大会 {cfg.meta.season_label}: 赛事身份组 ID "
+                    f"{granted_def.role_id} 在服务器中不存在或已被删除，未能添加。"
+                )
+                submission.contributor_role_granted = False
+                await self._save_state(interaction.guild.id, cfg.meta.season_id)
+                await interaction.response.send_message(
+                    f"❌ 赛事身份组 ID `{granted_def.role_id}` 在服务器中不存在或已被删除，未能添加。投稿仍已记录，请联系管理组补发身份组。",
+                    ephemeral=True,
+                )
+                return
+            try:
+                await member.add_roles(
+                    contributor_role,
+                    reason=f"创作大会投稿 {title[:30]}",
+                )
+                submission.contributor_role_granted = True
+            except discord.Forbidden:
+                submission.contributor_role_granted = False
+                await self._save_state(interaction.guild.id, cfg.meta.season_id)
+                await interaction.response.send_message(
+                    "❌ Bot 缺少 manage_roles 权限，未能添加参赛身份组。请联系管理组。",
+                    ephemeral=True,
+                )
+                return
 
         await self._save_state(interaction.guild.id, cfg.meta.season_id)
         await interaction.response.send_message(
@@ -645,8 +723,10 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
         #   跨赛季会膨胀（admin 切赛季要手动 remove 旧 supporter_role），但能反映 admin
         #   手动 add/remove，且不会跟 add_role 之间出现 race。
         supporters = {
-            f.key: len((guild.get_role(f.supporter_role_id).members
-                        if guild.get_role(f.supporter_role_id) else []))
+            f.key: len((
+                self._get_supporter_role_for_faction(f, guild).members
+                if self._get_supporter_role_for_faction(f, guild) else []
+            ))
             for f in cfg.factions
         }
         submissions = self._count_by_faction(
@@ -697,7 +777,7 @@ class CreativeBattleCog(FeatureCog, name="CreativeBattle"):
     ) -> discord.Embed:
         subs = [s for s in season.submissions.values() if s.faction == faction.key]
         # ★ 走 cached role.members（见 _build_main_embed 注释）
-        role = guild.get_role(faction.supporter_role_id)
+        role = self._get_supporter_role_for_faction(faction, guild)
         supporters = len(role.members) if role else 0
 
         # random N 个投稿

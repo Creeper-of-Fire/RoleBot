@@ -33,16 +33,18 @@ def _make_test_factions():
     return [
         FactionConfig(
             key="faction_a", display_name="A 组", emoji="🅰️",
-            supporter_role_id=1, contributor_role_id=2,
+            supporter_honor_uuid="aaaaaaaa-bbbb-cccc-dddd-aaaaaaaaaaaa",
             submission_channel_id=10,
-            submission_blacklist_role_ids=[999], submission_whitelist_role_ids=[],
+            submission_blacklist_honor_uuids=["ffffffff-ffff-ffff-ffff-ffffffffffff"],
+            submission_whitelist_honor_uuids=[],
             contributor_honor_uuid="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
         ),
         FactionConfig(
             key="faction_b", display_name="B 组", emoji="🅱️",
-            supporter_role_id=4, contributor_role_id=5,
+            supporter_honor_uuid="bbbbbbbb-cccc-dddd-eeee-bbbbbbbbbbbb",
             submission_channel_id=11,
-            submission_blacklist_role_ids=[], submission_whitelist_role_ids=[100],
+            submission_blacklist_honor_uuids=[],
+            submission_whitelist_honor_uuids=["bbbbbbbb-cccc-dddd-eeee-bbbbbbbbbbbb"],
             contributor_honor_uuid=None,
         ),
     ]

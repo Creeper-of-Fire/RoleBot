@@ -1,6 +1,9 @@
 """Schema smoke test — 验证 toml / json schema 能正常工作。
 
 跑法：python -m creative_battle._schema_smoke_test
+
+2026-09-01 改造：FactionConfig.supporter_role_id / contributor_role_id / *_role_ids 字段全部删除
+改用 supporter_honor_uuid / *_honor_uuids（honor uuid string）。
 """
 from __future__ import annotations
 
@@ -22,19 +25,19 @@ from creative_battle.creative_battle_season_models import (
 )
 
 
-# 简化版：bot 不维护 expire_at（撤回 cup_honor 模式）——过期由 HonorCog 通用 honor expiration 推提醒
+# 2026-09-01 改造：FactionConfig 不再有 supporter_role_id / contributor_role_id / *_role_ids
+# 全用 honor uuid 字段
 _BASE_FACTION_FIELDS = {
-    "supporter_role_id": 111,
-    "contributor_role_id": 222,
+    "supporter_honor_uuid": "aaaaaaaa-bbbb-cccc-dddd-aaaaaaaaaaaa",
     "submission_channel_id": 444,
-    "submission_blacklist_role_ids": [],
-    "submission_whitelist_role_ids": [],
+    "submission_blacklist_honor_uuids": [],
+    "submission_whitelist_honor_uuids": [],
     "contributor_honor_uuid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
 }
 
 
 def test_toml_schema_basic():
-    """toml schema：最小有效配置（撤回 cup_honor 模式，无 expire_at 字段）。"""
+    """toml schema：最小有效配置。"""
     cfg = CreativeBattleGuildConfig(
         enabled=True,
         meta={
@@ -44,27 +47,35 @@ def test_toml_schema_basic():
             "start_date": dt.date(2026, 9, 1),
             "end_date": dt.date(2026, 12, 31),
         },
+        promotion={
+            "main_intro_text": "S0 秋冬创作大会",
+            "anonymize_options": ["数字"],
+        },
         factions=[
             {
                 "key": "faction_a",
                 "display_name": "A 组",
                 "emoji": "🅰️",
-                "supporter_role_id": 111,
-                "contributor_role_id": 222,
+                "supporter_honor_uuid": "aaaaaaaa-bbbb-cccc-dddd-aaaaaaaaaaaa",
                 "submission_channel_id": 444,
-                "submission_blacklist_role_ids": [999, 998],
-                "submission_whitelist_role_ids": [],
+                "submission_blacklist_honor_uuids": [
+                    "ffffffff-ffff-ffff-ffff-ffffffffffff",
+                    "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+                ],
+                "submission_whitelist_honor_uuids": [],
                 "contributor_honor_uuid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
             },
             {
                 "key": "faction_b",
                 "display_name": "B 组",
                 "emoji": "🅱️",
-                "supporter_role_id": 555,
-                "contributor_role_id": 666,
+                "supporter_honor_uuid": "bbbbbbbb-cccc-dddd-eeee-bbbbbbbbbbbb",
                 "submission_channel_id": 888,
-                "submission_blacklist_role_ids": [],
-                "submission_whitelist_role_ids": [100, 200],
+                "submission_blacklist_honor_uuids": [],
+                "submission_whitelist_honor_uuids": [
+                    "11111111-2222-3333-4444-555555555555",
+                    "22222222-3333-4444-5555-666666666666",
+                ],
                 "contributor_honor_uuid": "11111111-2222-3333-4444-555555555555",
             },
         ],
@@ -74,19 +85,24 @@ def test_toml_schema_basic():
     assert len(cfg.factions) == 2
     assert cfg.factions[0].key == "faction_a"
     assert cfg.factions[1].submission_channel_id == 888
-    # contributor_role_id（保留）
-    assert cfg.factions[0].contributor_role_id == 222
-    # 撤回的 expire_at 字段
-    assert not hasattr(cfg.factions[0], "contributor_role_expire_at")
-    # 黑/白名单
-    assert cfg.factions[0].submission_blacklist_role_ids == [999, 998]
-    assert cfg.factions[1].submission_whitelist_role_ids == [100, 200]
+    # supporter_honor_uuid
+    assert cfg.factions[0].supporter_honor_uuid == "aaaaaaaa-bbbb-cccc-dddd-aaaaaaaaaaaa"
+    # 删除字段检查
+    assert not hasattr(cfg.factions[0], "supporter_role_id")
+    assert not hasattr(cfg.factions[0], "contributor_role_id")
+    assert not hasattr(cfg.factions[0], "winner_role_id")
+    # 黑/白名单改成 *_honor_uuids
+    assert cfg.factions[0].submission_blacklist_honor_uuids == [
+        "ffffffff-ffff-ffff-ffff-ffffffffffff",
+        "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+    ]
+    assert cfg.factions[1].submission_whitelist_honor_uuids == [
+        "11111111-2222-3333-4444-555555555555",
+        "22222222-3333-4444-5555-666666666666",
+    ]
     # grant_honor uuid
     assert cfg.factions[0].contributor_honor_uuid == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-    # 删除字段
-    assert not hasattr(cfg.meta, "loser_contributor_keep_months")
-    assert not hasattr(cfg.factions[0], "winner_role_id")
-    print(f"✅ toml schema basic OK (no expire_at): season={cfg.meta.season_id}, factions={[f.key for f in cfg.factions]}")
+    print(f"✅ toml schema basic OK: season={cfg.meta.season_id}, factions={[f.key for f in cfg.factions]}")
 
 
 def test_toml_schema_rejects_3_factions():
@@ -101,10 +117,14 @@ def test_toml_schema_rejects_3_factions():
                 "start_date": dt.date(2026, 1, 1),
                 "end_date": dt.date(2026, 2, 1),
             },
+            promotion={
+                "main_intro_text": "test",
+                "anonymize_options": ["1"],
+            },
             factions=[
-                {**_BASE_FACTION_FIELDS, "key": "faction_a", "display_name": "A", "emoji": "✨", "supporter_role_id": 1, "submission_channel_id": 10},
-                {**_BASE_FACTION_FIELDS, "key": "faction_b", "display_name": "B", "emoji": "✨", "supporter_role_id": 4, "submission_channel_id": 11},
-                {**_BASE_FACTION_FIELDS, "key": "faction_c", "display_name": "C", "emoji": "✨", "supporter_role_id": 7, "submission_channel_id": 12},
+                {**_BASE_FACTION_FIELDS, "key": "faction_a", "display_name": "A", "emoji": "✨", "submission_channel_id": 10},
+                {**_BASE_FACTION_FIELDS, "key": "faction_b", "display_name": "B", "emoji": "✨", "submission_channel_id": 11},
+                {**_BASE_FACTION_FIELDS, "key": "faction_c", "display_name": "C", "emoji": "✨", "submission_channel_id": 12},
             ],
             notification={"channel_id": 1, "admin_role_id": 2},
         )
@@ -126,9 +146,13 @@ def test_toml_schema_rejects_duplicate_key():
                 "start_date": dt.date(2026, 1, 1),
                 "end_date": dt.date(2026, 2, 1),
             },
+            promotion={
+                "main_intro_text": "test",
+                "anonymize_options": ["1"],
+            },
             factions=[
-                {**_BASE_FACTION_FIELDS, "key": "faction_a", "display_name": "A", "emoji": "✨", "supporter_role_id": 1, "submission_channel_id": 10},
-                {**_BASE_FACTION_FIELDS, "key": "faction_a", "display_name": "B", "emoji": "✨", "supporter_role_id": 4, "submission_channel_id": 11},
+                {**_BASE_FACTION_FIELDS, "key": "faction_a", "display_name": "A", "emoji": "✨", "submission_channel_id": 10},
+                {**_BASE_FACTION_FIELDS, "key": "faction_a", "display_name": "B", "emoji": "✨", "submission_channel_id": 11},
             ],
             notification={"channel_id": 1, "admin_role_id": 2},
         )
@@ -150,9 +174,13 @@ def test_toml_schema_rejects_bad_date_range():
                 "start_date": dt.date(2026, 12, 31),
                 "end_date": dt.date(2026, 1, 1),  # 早于 start
             },
+            promotion={
+                "main_intro_text": "test",
+                "anonymize_options": ["1"],
+            },
             factions=[
-                {**_BASE_FACTION_FIELDS, "key": "faction_a", "display_name": "A", "emoji": "✨", "supporter_role_id": 1, "submission_channel_id": 10},
-                {**_BASE_FACTION_FIELDS, "key": "faction_b", "display_name": "B", "emoji": "✨", "supporter_role_id": 4, "submission_channel_id": 11},
+                {**_BASE_FACTION_FIELDS, "key": "faction_a", "display_name": "A", "emoji": "✨", "submission_channel_id": 10},
+                {**_BASE_FACTION_FIELDS, "key": "faction_b", "display_name": "B", "emoji": "✨", "submission_channel_id": 11},
             ],
             notification={"channel_id": 1, "admin_role_id": 2},
         )
@@ -163,7 +191,7 @@ def test_toml_schema_rejects_bad_date_range():
 
 
 def test_toml_schema_accepts_empty_black_white_lists():
-    """简化版：submission_blacklist_role_ids/submission_whitelist_role_ids 空 list 是合法的（不限制）。"""
+    """2026-09-01 改造：submission_blacklist_honor_uuids/submission_whitelist_honor_uuids 空 list 是合法的（不限制）。"""
     cfg = CreativeBattleGuildConfig(
         enabled=True,
         meta={
@@ -173,16 +201,20 @@ def test_toml_schema_accepts_empty_black_white_lists():
             "start_date": dt.date(2026, 9, 1),
             "end_date": dt.date(2026, 12, 31),
         },
+        promotion={
+            "main_intro_text": "test",
+            "anonymize_options": ["1"],
+        },
         factions=[
-            {**_BASE_FACTION_FIELDS, "key": "faction_a", "display_name": "A", "emoji": "✨", "supporter_role_id": 1, "submission_channel_id": 10,
-             "submission_blacklist_role_ids": [], "submission_whitelist_role_ids": []},
-            {**_BASE_FACTION_FIELDS, "key": "faction_b", "display_name": "B", "emoji": "✨", "supporter_role_id": 4, "submission_channel_id": 11,
-             "submission_blacklist_role_ids": [], "submission_whitelist_role_ids": []},
+            {**_BASE_FACTION_FIELDS, "key": "faction_a", "display_name": "A", "emoji": "✨", "submission_channel_id": 10,
+             "submission_blacklist_honor_uuids": [], "submission_whitelist_honor_uuids": []},
+            {**_BASE_FACTION_FIELDS, "key": "faction_b", "display_name": "B", "emoji": "✨", "submission_channel_id": 11,
+             "submission_blacklist_honor_uuids": [], "submission_whitelist_honor_uuids": []},
         ],
         notification={"channel_id": 1, "admin_role_id": 2},
     )
-    assert cfg.factions[0].submission_blacklist_role_ids == []
-    assert cfg.factions[0].submission_whitelist_role_ids == []
+    assert cfg.factions[0].submission_blacklist_honor_uuids == []
+    assert cfg.factions[0].submission_whitelist_honor_uuids == []
     print("✅ empty submission black/white lists accepted (semantic: no restriction)")
 
 
@@ -197,10 +229,14 @@ def test_toml_schema_accepts_optional_honor_uuid():
             "start_date": dt.date(2026, 9, 1),
             "end_date": dt.date(2026, 12, 31),
         },
+        promotion={
+            "main_intro_text": "test",
+            "anonymize_options": ["1"],
+        },
         factions=[
-            {**_BASE_FACTION_FIELDS, "key": "faction_a", "display_name": "A", "emoji": "✨", "supporter_role_id": 1, "submission_channel_id": 10,
+            {**_BASE_FACTION_FIELDS, "key": "faction_a", "display_name": "A", "emoji": "✨", "submission_channel_id": 10,
              "contributor_honor_uuid": None},
-            {**_BASE_FACTION_FIELDS, "key": "faction_b", "display_name": "B", "emoji": "✨", "supporter_role_id": 4, "submission_channel_id": 11,
+            {**_BASE_FACTION_FIELDS, "key": "faction_b", "display_name": "B", "emoji": "✨", "submission_channel_id": 11,
              "contributor_honor_uuid": None},
         ],
         notification={"channel_id": 1, "admin_role_id": 2},
@@ -222,7 +258,7 @@ def test_json_schema_basic():
                     title="我的作品",
                     description="描述",
                     contributor_role_granted=True,
-                    honor_granted=True,  # 简化版新增字段
+                    honor_granted=True,
                 ),
             },
         ),

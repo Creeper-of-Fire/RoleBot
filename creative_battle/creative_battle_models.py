@@ -19,20 +19,23 @@
 - toml 是 admin 单一控制源：bot 是只读消费者（除 admin 通过 ``/上传配置`` 改 toml 外）
 - 不硬编码任何 faction key——所有 faction 处理走 ``for f in cfg.factions`` 遍历
 - **unix 哲学**：bot 只做最少的、互相独立的事
-  - 投稿面板（每个分区频道各一个）：用户点投稿 → 写 json + add contributor_role + grant_honor
+  - 投稿面板（每个分区频道各一个）：用户点投稿 → 写 json + grant_honor + 手动 add role
   - 主入口面板：A/B 互斥领取
   - 撤销投稿：admin 命令删 json（**不** remove role——admin 自己管）
 - **不做**：身份组过期提醒、winner_role、自动 remove、状态机、游客领取面板（admin 复用 honor claimable）
 - **投稿期判断 = if-else**：bot 读 toml 的 ``start_date`` / ``end_date``，
   ``now in [start_date, end_date]`` 就接受投稿，否则拒。不是状态机。
-- **互斥**：用户已选 A 阵营后点 B → bot 拒绝（ephemeral 提示），
-  不 remove A。如需更换请管理组手动 remove A 后再点 B。
-- **投稿黑/白名单 per-faction**：每个阵营各自一份（仅投稿路径生效；加入靠 supporter_role 互斥）
-  - ``submission_blacklist_role_ids``：持任一即拒绝投稿（黑名单语义）
-  - ``submission_whitelist_role_ids``：非空时持任一才允许投稿（白名单语义）
-  - 两者并存时：**黑名单优先**（黑名单中的角色即使在白名单也拒）
-- **grant_honor**：bot 在投稿成功后**直接调** honor 系统的 ``grant_honor`` 接口，
-  uuid 在 toml 的 ``contributor_honor_uuid`` 配置（per-faction，从 honor toml 引用）
+- **互斥以荣誉为基准**（2026-09-01 改造）：bot 检查 honor DB，不查 Discord role。
+  用户通过荣誉墙卸下 role 不会绕过 mutex——DB 里的 honor 记录仍然存在。
+  - 加入阵营：检查用户是否已持有任何 faction supporter honor；如有且不是本阵营 → 拒绝
+  - 投稿：白名单 = 必须持有本阵营 supporter honor；黑名单 = 持有任何其他阵营 supporter honor → 拒绝
+- **黑/白名单 per-faction**：每个阵营各自一份（仅投稿路径生效）
+  - ``submission_blacklist_honor_uuids``：持任一即拒绝投稿
+  - ``submission_whitelist_honor_uuids``：非空时持任一才允许投稿
+  - 两者并存时：**黑名单优先**
+- **grant_honor 是单一真相源**（2026-09-01 改造）：bot grant_honor 后从返回的
+  ``HonorDefinition.role_id`` 手动 add role。后续计划让 ``grant_honor`` 自身加 role
+  （所有 caller 受益），但当前仍是手动两步。
 """
 from __future__ import annotations
 
@@ -93,6 +96,8 @@ class FactionConfig(BaseModel):
     - bot 提供的核心是投稿面板 + 主入口阵营按钮
     - 过期机制 / winner_role / 自动回收 → 全部删除（按拍板记录）
     - 投稿后 bot 直接 ``grant_honor(contributor_honor_uuid)`` 给投稿用户
+    - Discord role 从 ``HonorDefinition.role_id`` 反查（forward 查 honor toml）——
+      互斥判定查 honor DB 而非 Discord role，role 通过 ``role_sync_honor=true`` 自动附
     """
 
     key: str = Field(
@@ -103,44 +108,41 @@ class FactionConfig(BaseModel):
     display_name: str = Field(..., min_length=1, max_length=50, description="用户可见名")
     emoji: str = Field(..., min_length=1, max_length=64, description="用户可见 emoji")
 
-    # --- 身份组 ID ---
-    supporter_role_id: int = Field(
+    # --- 荣誉 UUID（互斥判定的真相源）---
+    # 2026-09-01 改造：原先 supporter_role_id 改为 supporter_honor_uuid。
+    # bot 查 honor DB 而不是 Discord role。Role 通过 HonorDefinitionItem.role_id 反查。
+
+    supporter_honor_uuid: str = Field(
         ...,
         description=(
-            "支持者身份组 ID。用户点主入口面板'加入阵营'按钮后 bot add；"
-            "已持有 A 阵营时点 B 按钮 bot 拒绝（不 remove）。"
+            "支持者荣誉 UUID（引用 honor toml）。用户点主入口面板'加入阵营'按钮后 "
+            "bot grant_honor 此 uuid；已持有其他阵营 supporter honor 时 bot 拒绝（不 remove）。"
+            "对应 Discord role 从 HonorDefinitionItem.role_id 查，bot 手动 add。"
             "过期 / 移除由 admin 手动管理。"
         ),
     )
-    contributor_role_id: int = Field(
-        ...,
-        description=(
-            "参赛者身份组 ID。用户投稿后 bot add；过期 / 移除由 admin 手动管理。"
-            "**自动过期机制**——honor toml 对应 honor 配 `expiration_date` 字段（不限 cup_honor）"
-            "→ HonorCog 通用 honor expiration_check_loop 监控到期 → 推提醒 → "
-            "admin 看到后手动 remove contributor_role。bot 不调 remove_roles。"
-        ),
-    )
+
     submission_channel_id: Optional[int] = Field(
         None,
         description="该阵营分区频道 ID（投稿按钮 + 分区推广面板）。未配置则不发该组分区面板",
     )
 
     # --- 投稿黑/白名单（per-faction，unix 哲学：黑名单优先） ---
-    # ★ 仅 _handle_submission（投稿路径）使用；加入路径靠 supporter_role 互斥检查。
+    # ★ 仅 _handle_submission（投稿路径）使用；加入路径靠 supporter_honor 互斥检查。
+    # 2026-09-01 改造：原来是 list[int] role_id，现改为 list[str] honor uuid。
 
-    submission_blacklist_role_ids: list[int] = Field(
+    submission_blacklist_honor_uuids: list[str] = Field(
         default_factory=list,
         description=(
-            "投稿黑名单身份组 ID 列表。**持任一即拒**（拒绝投稿该阵营）。"
-            "黑名单优先于白名单——即使持白名单角色之一，黑名单命中也拒。"
+            "投稿黑名单 honor uuid 列表。**持任一即拒**（拒绝投稿该阵营）。"
+            "黑名单优先于白名单——即使持白名单 honor 之一，黑名单命中也拒。"
             "**仅**作用于投稿路径；加入路径不调本字段。"
         ),
     )
-    submission_whitelist_role_ids: list[int] = Field(
+    submission_whitelist_honor_uuids: list[str] = Field(
         default_factory=list,
         description=(
-            "投稿白名单身份组 ID 列表。**非空时持任一才允许**投稿该阵营；"
+            "投稿白名单 honor uuid 列表。**非空时持任一才允许**投稿该阵营；"
             "**空列表 = 不限制**。黑名单优先于白名单。"
             "**仅**作用于投稿路径；加入路径不调本字段。"
         ),
@@ -153,18 +155,19 @@ class FactionConfig(BaseModel):
         description=(
             "投稿成功后 bot 调 grant_honor(member.id, contributor_honor_uuid) 给投稿用户。"
             "UUID 须在 honor toml 已存在。可选——不配则不 grant_honor。"
+            "对应 Discord role 从 HonorDefinitionItem.role_id 反查后 add。"
         ),
     )
 
-    # --- 跨 faction 互斥时使用的"对方阵营 supporter_role_id"集合 ---
+    # --- 跨 faction 互斥时使用的"对方阵营 supporter_honor_uuid"集合 ---
 
     @property
-    def other_factions_supporter_role_ids(self, all_factions: list["FactionConfig"]) -> set[int]:
-        """返回"其他阵营的 supporter_role_id 集合"——互斥检查用。
+    def other_factions_supporter_honor_uuids(self, all_factions: list["FactionConfig"]) -> set[str]:
+        """返回"其他阵营的 supporter_honor_uuid 集合"——互斥检查用。
 
         不缓存，调用方应在 hot path 外预先算好。
         """
-        return {f.supporter_role_id for f in all_factions if f.key != self.key}
+        return {f.supporter_honor_uuid for f in all_factions if f.key != self.key}
 
 
 # --- [promotion] ---
