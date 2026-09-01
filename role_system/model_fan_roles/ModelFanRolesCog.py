@@ -4,6 +4,7 @@ model_roles/cog.py
 """
 from __future__ import annotations
 
+import asyncio
 import datetime
 import typing
 from typing import Dict, List, Optional
@@ -104,10 +105,22 @@ class ModelFanRolesCog(FeatureCog, name="ModelFanRoles"):
         self.safe_model_config_cache = new_cache
         self.logger.info(f"ModelFanRolesCog: 缓存更新完毕，共加载 {len(new_cache)} 个服务器的配置。")
 
+        # 主动触发一次 stats 后台刷新（fire-and-forget，不阻塞）
+        # ——让首次访问 view 的用户不看到"0 人"空 cache。
+        for guild_id in new_cache:
+            self.bot.loop.create_task(self._refresh_stats_background(guild_id))
+
     async def get_ranked_model_data(self, guild: discord.Guild) -> tuple[List[ModelRoleConfig], datetime.datetime]:
         """
         获取经过排序（按人数降序）的模型数据列表。
-        如果缓存过期，会重新计算人数。
+
+        设计要点（避免 view callback 阻塞事件循环触发 404）：
+        - 永远**立刻用 cache 返回**排序结果（最多过期 1 分钟）。
+        - 如果 cache 过期 / 为空，fire-and-forget 后台刷新——不 await，
+          调用方零等待。
+        - ``Role.members`` 在 discord.py 2.x 里是 ``[m for m in guild._members.values() if m._roles.has(role_id)]``
+          ——纯内存 list comprehension，**不触发网络请求**；但 guild 有 10000+ 成员、K 个 model role 时
+          O(K·N) 同步遍历能跑 1+ 秒，所以实际统计放 ``asyncio.to_thread`` 的线程池跑。
 
         Returns:
             (sorted_data_list, last_updated_time)
@@ -120,31 +133,64 @@ class ModelFanRolesCog(FeatureCog, name="ModelFanRoles"):
         now = datetime.datetime.now()
         last_update = self.stats_last_updated.get(guild_id)
 
-        # 检查是否需要刷新统计
-        if not last_update or (now - last_update) > datetime.timedelta(minutes=STATS_CACHE_TIMEOUT_MINUTES):
-            self.logger.info(f"刷新服务器 {guild.name} 的模型身份组统计数据...")
-            new_stats = {}
-            for config in base_configs:
-                role_id = config.role_id
-                role = guild.get_role(role_id)
-                # 如果 role 没了，计数为 -1，沉底
-                count = len(role.members) if role else -1
-                new_stats[role_id] = count
+        # cache 过期 / 为空 → 后台 fire-and-forget 刷新（**不 await**）
+        needs_refresh = (
+            not last_update
+            or (now - last_update) > datetime.timedelta(minutes=STATS_CACHE_TIMEOUT_MINUTES)
+        )
+        if needs_refresh:
+            self.bot.loop.create_task(self._refresh_stats_background(guild_id))
 
-            self.stats_cache[guild_id] = new_stats
-            self.stats_last_updated[guild_id] = now
-            last_update = now
-
+        # 立刻用 cache 排序返回（哪怕过期 1 分钟——对人气榜展示完全可接受）
         stats = self.stats_cache.get(guild_id, {})
-
-        # 根据统计数据排序：人数多的排前面 (强者羞辱弱者 logic)
         sorted_configs = sorted(
             base_configs,
             key=lambda x: stats.get(x.role_id, 0),
-            reverse=True
+            reverse=True,
         )
 
-        return sorted_configs, last_update
+        return sorted_configs, last_update or now
+
+    async def _refresh_stats_background(self, guild_id: int):
+        """
+        后台异步刷新 stats——纯 CPU 工作移到线程池，不阻塞事件循环。
+
+        配合 ``get_ranked_model_data`` 的"立刻返回 cache"模式使用：
+        view callback 永远不被 stats 计算阻塞。
+        """
+        guild = self.bot.get_guild(guild_id)
+        if guild is None:
+            return
+        base_configs = self.safe_model_config_cache.get(guild_id, [])
+        if not base_configs:
+            return
+
+        self.logger.info(f"后台刷新服务器 {guild.name} 的模型身份组统计数据...")
+        new_stats = await asyncio.to_thread(
+            self._blocking_count_role_members, base_configs, guild,
+        )
+        self.stats_cache[guild_id] = new_stats
+        self.stats_last_updated[guild_id] = datetime.datetime.now()
+
+    @staticmethod
+    def _blocking_count_role_members(
+        base_configs: List[ModelRoleConfig],
+        guild: discord.Guild,
+    ) -> Dict[int, int]:
+        """
+        [同步/线程池] 遍历 base_configs，对每个 model role 调 ``len(role.members)``。
+
+        Role.members 在 discord.py 2.x 里是纯内存 list comprehension，
+        不触发网络请求；但 K 个 model role × N 个 members = O(K·N) 同步遍历
+        在 guild 有 10000+ 成员时能跑 1+ 秒——必须放线程池，不能阻塞事件循环。
+        """
+        new_stats: Dict[int, int] = {}
+        for config in base_configs:
+            role_id = config.role_id
+            role = guild.get_role(role_id)
+            # role 没了，计数为 -1，沉底
+            new_stats[role_id] = len(role.members) if role else -1
+        return new_stats
 
 
 class ModelFanPanelButton(ui.Button):
