@@ -34,7 +34,6 @@ from core.embed_guides.embed_guides_manager import EmbedGuidesConfigManager
 from honor_system.data_manager.honor_data_manager import HonorDataManager
 from honor_system.honor_config_manager import HonorConfigManager
 from honor_system.HonorManageView import HonorHoldersManageView
-from honor_system.honor_def_models import HonorDefinition
 from honor_system.honor_notification_state_data_manager import NotificationStateManager
 from shared.ui.views import ConfirmationView
 from utility.feature_cog import FeatureCog, PanelEntry
@@ -111,6 +110,37 @@ class HonorAdminCog(FeatureCog, name="HonorAdmin"):
             .honor_celebrate_guide.to_embed()
         )
 
+    # --- 配置层 helpers: ``role_sync_honor`` 是 config 真理源, 不应从 ORM 读 ---
+
+    def _cfg_definitions(self, guild_id: int) -> List:
+        """返回 guild 的 honor config 中所有 ``definitions`` 项。
+
+        没有 toml 文件时返回空 list (HonorGuildConfig 含 required fields,
+        ``get()`` 无 toml 返回 None, 我们直接在调用方容忍空)。
+        """
+        cfg = self.honor_config.get(guild_id)
+        if cfg is None:
+            return []
+        return cfg.definitions
+
+    def _find_cfg_def_by_uuid(self, guild_id: int, uuid_str: str):
+        """按 uuid 在 config 层查找 (返回 HonorDefinitionItem 或 None)。"""
+        for d in self._cfg_definitions(guild_id):
+            if d.uuid == uuid_str:
+                return d
+        return None
+
+    def _find_cfg_def_by_role_id(self, guild_id: int, role_id: int):
+        """按 role_id 在 config 层查找 (返回 HonorDefinitionItem 或 None)。
+
+        通常 role_id 在 config 层是 unique (一个 role 对应一个 honor),
+        取首个命中。多对多不预期。
+        """
+        for d in self._cfg_definitions(guild_id):
+            if d.role_id == role_id:
+                return d
+        return None
+
     # --- autocomplete ---
 
     async def honor_uuid_autocomplete(
@@ -141,14 +171,14 @@ class HonorAdminCog(FeatureCog, name="HonorAdmin"):
         guild = interaction.guild
         if guild is None:
             return choices
-        all_defs = self.data_manager.get_all_honor_definitions(guild.id)
-        for honor_def in all_defs:
-            if not honor_def.role_sync_honor or not honor_def.role_id:
+        # role_sync_honor 是配置层状态 → 走 cfg.definitions 而非 ORM
+        for defn in self._cfg_definitions(guild.id):
+            if not defn.role_sync_honor or not defn.role_id:
                 continue
-            role = guild.get_role(honor_def.role_id)
+            role = guild.get_role(defn.role_id)
             if role is None:
                 continue
-            choice_name = f"[{role.name}] {honor_def.name} ({str(honor_def.uuid)[:8]})"
+            choice_name = f"[{role.name}] {defn.name} ({str(defn.uuid)[:8]})"
             if not current or current.lower() in choice_name.lower():
                 choices.append(app_commands.Choice(name=choice_name, value=str(role.id)))
         return choices[:25]
@@ -159,14 +189,17 @@ class HonorAdminCog(FeatureCog, name="HonorAdmin"):
         current: str,
     ) -> List[app_commands.Choice[str]]:
         """只列出 role_sync_honor=true 的 honor UUID。"""
-        all_defs = self.data_manager.get_all_honor_definitions(interaction.guild_id)
         choices: List[app_commands.Choice[str]] = []
-        for honor_def in all_defs:
-            if not honor_def.role_sync_honor:
+        guild_id = interaction.guild_id
+        if guild_id is None:
+            return choices
+        # role_sync_honor 是配置层状态 → 走 cfg.definitions 而非 ORM
+        for defn in self._cfg_definitions(guild_id):
+            if not defn.role_sync_honor:
                 continue
-            choice_name = f"{honor_def.name} ({str(honor_def.uuid)[:8]})"
+            choice_name = f"{defn.name} ({str(defn.uuid)[:8]})"
             if not current or current.lower() in choice_name.lower():
-                choices.append(app_commands.Choice(name=choice_name, value=str(honor_def.uuid)))
+                choices.append(app_commands.Choice(name=choice_name, value=str(defn.uuid)))
         return choices[:25]
 
     # --- admin 命令（@admin_group.command 标准 pattern，自动注册到 `/荣誉头衔丨管理`）---
@@ -242,33 +275,37 @@ class HonorAdminCog(FeatureCog, name="HonorAdmin"):
         scope_desc = ""
 
         if all_sync:
-            all_defs = self.data_manager.get_all_honor_definitions(guild.id)
+            # role_sync_honor 是配置层状态 → cfg.definitions 而不是 ORM
+            # config 是真理源 + 没有 is_archived 概念 (归档靠从 toml 删除)
             target_honor_uuids = [
-                str(d.uuid) for d in all_defs
-                if d.role_sync_honor and d.role_id and not d.is_archived
+                str(d.uuid) for d in self._cfg_definitions(guild.id)
+                if d.role_sync_honor and d.role_id
             ]
             scope_desc = "🌐 全部 role_sync_honor=true honor"
         elif role_id is not None:
-            with self.data_manager.get_db() as db:
-                honor_def = db.query(HonorDefinition).filter_by(
-                    role_id=role_id, is_archived=False,
-                ).first()
-            if honor_def is None or not honor_def.role_sync_honor:
+            # role_sync_honor 是配置层状态 → cfg 查; 不需要拉 ORM
+            cfg_def = self._find_cfg_def_by_role_id(guild.id, role_id)
+            if cfg_def is None or not cfg_def.role_sync_honor:
                 await interaction.response.send_message(
                     f"❌ 身份组 ID {role_id} 没有对应 role_sync_honor 的 honor",
                     ephemeral=True,
                 )
                 return
-            target_honor_uuids = [str(honor_def.uuid)]
+            target_honor_uuids = [cfg_def.uuid]
             role = guild.get_role(role_id)
             role_name = role.name if role else f"ID:{role_id}"
             scope_desc = f"🎭 [身份组] {role_name}"
         else:  # honor_uuid
-            with self.data_manager.get_db() as db:
-                honor_def = db.query(HonorDefinition).filter_by(
-                    uuid=honor_uuid, is_archived=False,
-                ).first()
-            if honor_def is None or not honor_def.role_sync_honor or not honor_def.role_id:
+            honor_def = self.data_manager.get_honor_definition_by_uuid(honor_uuid)
+            if honor_def is None:
+                await interaction.response.send_message(
+                    f"❌ honor '{honor_uuid[:8]}' 不存在",
+                    ephemeral=True,
+                )
+                return
+            # role_sync_honor 是配置层状态 → cfg 查
+            cfg_def = self._find_cfg_def_by_uuid(guild.id, honor_uuid)
+            if cfg_def is None or not cfg_def.role_sync_honor or not cfg_def.role_id:
                 await interaction.response.send_message(
                     f"❌ honor '{honor_uuid[:8]}' 无效或非 role_sync_honor 类型",
                     ephemeral=True,
@@ -357,43 +394,42 @@ class HonorAdminCog(FeatureCog, name="HonorAdmin"):
         skip_reasons: List[str] = []
 
         if scope == "all":
-            all_defs = self.data_manager.get_all_honor_definitions(guild.id)
-            for honor_def in all_defs:
-                if not honor_def.role_sync_honor or not honor_def.role_id or honor_def.is_archived:
+            # role_sync_honor 是配置层状态 → cfg 查, 不用 ORM (ORM 无该字段)
+            for cfg_def in self._cfg_definitions(guild.id):
+                if not cfg_def.role_sync_honor or not cfg_def.role_id:
                     continue
-                role = guild.get_role(honor_def.role_id)
+                role = guild.get_role(cfg_def.role_id)
                 if role is None:
                     skip_reasons.append(
-                        f"⚠️ honor `{honor_def.name}` ({str(honor_def.uuid)[:8]}) 的 "
-                        f"role_id {honor_def.role_id} 在 Discord 中不存在"
+                        f"⚠️ honor `{cfg_def.name}` ({str(cfg_def.uuid)[:8]}) 的 "
+                        f"role_id {cfg_def.role_id} 在 Discord 中不存在"
                     )
                     continue
-                sync_pairs.append((str(honor_def.uuid), role))
+                sync_pairs.append((cfg_def.uuid, role))
         elif scope == "role":
-            with self.data_manager.get_db() as db:
-                honor_def = db.query(HonorDefinition).filter_by(
-                    role_id=target, is_archived=False,
-                ).first()
-            if honor_def is None or not honor_def.role_sync_honor:
+            # role_sync_honor 是配置层状态 → cfg 查
+            cfg_def = self._find_cfg_def_by_role_id(guild.id, int(target))  # type: ignore[arg-type]
+            if cfg_def is None or not cfg_def.role_sync_honor:
                 skip_reasons.append(f"❌ 身份组 ID {target} 没有对应 role_sync_honor 的 honor")
             else:
-                role = guild.get_role(honor_def.role_id)
+                role = guild.get_role(cfg_def.role_id)
                 if role is None:
                     skip_reasons.append(f"❌ 身份组 ID {target} 在 Discord 中不存在")
                 else:
-                    sync_pairs.append((str(honor_def.uuid), role))
+                    sync_pairs.append((cfg_def.uuid, role))
         else:  # scope == "honor"
-            honor_def = self.data_manager.get_honor_definition_by_uuid(target)
-            if honor_def is None or not honor_def.role_sync_honor or not honor_def.role_id:
-                skip_reasons.append(f"❌ honor `{target[:8]}` 无效或非 role_sync_honor 类型")
+            # role_sync_honor 是配置层状态 → cfg 查
+            cfg_def = self._find_cfg_def_by_uuid(guild.id, str(target))  # type: ignore[arg-type]
+            if cfg_def is None or not cfg_def.role_sync_honor or not cfg_def.role_id:
+                skip_reasons.append(f"❌ honor `{str(target)[:8]}` 无效或非 role_sync_honor 类型")
             else:
-                role = guild.get_role(honor_def.role_id)
+                role = guild.get_role(cfg_def.role_id)
                 if role is None:
                     skip_reasons.append(
-                        f"❌ honor `{honor_def.name}` 的 role_id {honor_def.role_id} 在 Discord 中不存在"
+                        f"❌ honor `{cfg_def.name}` 的 role_id {cfg_def.role_id} 在 Discord 中不存在"
                     )
                 else:
-                    sync_pairs.append((target, role))
+                    sync_pairs.append((str(target), role))
 
         return sync_pairs, skip_reasons
 
