@@ -244,7 +244,11 @@ class HonorAdminCog(FeatureCog, name="HonorAdmin"):
         self,
         interaction: discord.Interaction,
         all_sync: bool = False,
-        role_id: Optional[int] = None,
+        # role_id 声明为 str 是有意的: Discord 身份组 snowflake 64-bit 常超过
+        # 2^53-1, 但 INTEGER 参数的 autocomplete choice 会被 Discord API 做 int53 校验
+        # → 即便 Choice.value=str(...) 也照样报 50035。改 STRING 参数绕过此校验,
+        # 内部 int() 转换; honor_uuid 本就是 str 同样的原因。
+        role_id: Optional[str] = None,
         honor_uuid: Optional[str] = None,
     ):
         """手动批量 sync：遍历 guild 所有成员，给持有 role_sync_honor=true honor role 的人 grant_honor。
@@ -283,8 +287,16 @@ class HonorAdminCog(FeatureCog, name="HonorAdmin"):
             ]
             scope_desc = "🌐 全部 role_sync_honor=true honor"
         elif role_id is not None:
+            # role_id 是 str（绕过 Discord int53 校验）→ 校验 + 转 int
+            if not role_id.isdigit():
+                await interaction.response.send_message(
+                    f"❌ 身份组 ID `{role_id}` 不是合法的整数",
+                    ephemeral=True,
+                )
+                return
+            role_id_int = int(role_id)
             # role_sync_honor 是配置层状态 → cfg 查; 不需要拉 ORM
-            cfg_def = self._find_cfg_def_by_role_id(guild.id, role_id)
+            cfg_def = self._find_cfg_def_by_role_id(guild.id, role_id_int)
             if cfg_def is None or not cfg_def.role_sync_honor:
                 await interaction.response.send_message(
                     f"❌ 身份组 ID {role_id} 没有对应 role_sync_honor 的 honor",
@@ -292,7 +304,7 @@ class HonorAdminCog(FeatureCog, name="HonorAdmin"):
                 )
                 return
             target_honor_uuids = [cfg_def.uuid]
-            role = guild.get_role(role_id)
+            role = guild.get_role(role_id_int)
             role_name = role.name if role else f"ID:{role_id}"
             scope_desc = f"🎭 [身份组] {role_name}"
         else:  # honor_uuid
