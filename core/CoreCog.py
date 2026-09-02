@@ -77,7 +77,7 @@ class CoreCog(commands.Cog, name="Core"):
         self._update_all_caches_task.cancel()
         self._backup_data_task.cancel()
 
-    @scheduled_loop(hours=1, run_on_startup=False, run_in_background=False)
+    @scheduled_loop(hours=1, run_on_startup=True, run_in_background=False)
     async def _update_all_caches_task(self):
         """每小时调用所有已注册功能模块的缓存更新方法。"""
         self.logger.info("开始执行每小时的全局安全缓存更新...")
